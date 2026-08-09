@@ -11,9 +11,9 @@ const authRouter = express.Router();
 // ==========================================
 authRouter.post('/register', async (req, res) => {
     try {
-        const { name, email, password } = req.body;
+        const { email, password } = req.body;
 
-        if (!name || !email || !password) {
+        if (!email || !password) {
             return res.status(400).json({ message: 'Please provide all required fields' });
         }
 
@@ -38,14 +38,13 @@ authRouter.post('/register', async (req, res) => {
         const hashedPassword = await bcrypt.hash(password, salt);
 
         const user = await User.create({
-            name,
+            name: email.split('@')[0],  
             email,
             password: hashedPassword,
         });
 
         res.status(201).json({
             _id: user._id,
-            name: user.name,
             email: user.email,
             profilePicture: user.profilePicture,
             token: generateToken(user._id),
@@ -84,7 +83,6 @@ authRouter.post('/login', async (req, res) => {
         // Send back user data and token
         res.json({
             _id: user._id,
-            name: user.name,
             email: user.email,
             profilePicture: user.profilePicture,
             token: generateToken(user._id),

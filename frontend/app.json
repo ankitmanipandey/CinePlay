@@ -6,6 +6,7 @@
     "orientation": "portrait",
     "scheme": "cineplay",
     "userInterfaceStyle": "automatic",
+    "backgroundColor": "#0A0A0C",
     "ios": {},
     "android": {
       "predictiveBackGestureEnabled": false
@@ -20,7 +21,8 @@
         {
           "backgroundColor": "#0F1014"
         }
-      ]
+      ],
+      "expo-secure-store"
     ],
     "experiments": {
       "typedRoutes": false,
