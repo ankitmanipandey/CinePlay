@@ -1,14 +1,13 @@
 const express = require('express');
 require('dotenv').config();
 const connectDB = require('../database/connectDb');
+const authRouter = require('../routes/authRouter');
 
 const app = express();
 
 app.use(express.json());
 
-app.get('/', (req, res) => {
-    res.send('CinePlay Backend is running...');
-});
+app.use('/api/auth', authRouter);
 
 const PORT = process.env.PORT || 5000;
 
