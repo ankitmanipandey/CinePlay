@@ -1,13 +1,12 @@
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View, SafeAreaView } from 'react-native';
+import LoginScreen from './src/screens/LoginScreen';
 
 export default function App() {
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>MOVIX+</Text>
-      <Text style={styles.subtitle}>Stream Unlimited Movies & Trailers</Text>
-      <StatusBar style="light" />
-    </View>
+    <SafeAreaView style={styles.container}>
+      <LoginScreen />
+    </SafeAreaView>
   );
 }
 
