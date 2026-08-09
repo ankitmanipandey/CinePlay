@@ -4,7 +4,7 @@ import { StyleSheet, Text, View } from 'react-native';
 export default function App() {
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>MOVIX</Text>
+      <Text style={styles.title}>MOVIX+</Text>
       <Text style={styles.subtitle}>Stream Unlimited Movies & Trailers</Text>
       <StatusBar style="light" />
     </View>
