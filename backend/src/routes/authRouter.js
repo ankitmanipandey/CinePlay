@@ -38,7 +38,7 @@ authRouter.post('/register', async (req, res) => {
         const hashedPassword = await bcrypt.hash(password, salt);
 
         const user = await User.create({
-            name: email.split('@')[0],  
+            name: email.split('@')[0],
             email,
             password: hashedPassword,
         });
@@ -90,6 +90,18 @@ authRouter.post('/login', async (req, res) => {
     } catch (error) {
         console.error('Login error:', error);
         res.status(500).json({ message: 'Server error during login' });
+    }
+});
+
+// ==========================================
+// 3. LOGOUT ENDPOINT
+// ==========================================
+authRouter.post('/logout', (req, res) => {
+    try {
+        return res.status(200).json({ message: 'Logged out successfully' });
+    } catch (error) {x
+        console.error('Logout error:', error);
+        res.status(500).json({ message: 'Server error during logout' });
     }
 });
 

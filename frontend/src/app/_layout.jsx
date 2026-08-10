@@ -1,8 +1,13 @@
-import { Stack } from 'expo-router';
+import React, { useEffect, useState } from 'react';
+import { View, Text, StyleSheet, ActivityIndicator } from 'react-native';
+import { Stack, useRouter, useSegments } from 'expo-router';
 import Toast from 'react-native-toast-message';
-import { View, Text, StyleSheet } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import * as SecureStore from 'expo-secure-store';
+
+// ✅ FIXED IMPORT FOR EXPO SDK 56
+import { ThemeProvider, DarkTheme } from 'expo-router/react-navigation';
 
 const toastConfig = {
   hotstarSuccess: ({ text1 }) => (
@@ -17,27 +22,57 @@ const toastConfig = {
         <Text style={styles.toastText}>{text1}</Text>
       </LinearGradient>
     </View>
-  )
+  ),
 };
 
 export default function RootLayout() {
+  const [isLoading, setIsLoading] = useState(true);
+  const router = useRouter();
+
+  useEffect(() => {
+    const checkUserAuth = async () => {
+      try {
+        const token = await SecureStore.getItemAsync('userToken');
+        if (token) {
+          router.replace('/tabs/home');
+        }
+      } catch (error) {
+        console.error('Error checking authentication state:', error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    checkUserAuth();
+  }, []);
+
+  if (isLoading) {
+    return (
+      <LinearGradient colors={['#170D22', '#0A0A0C']} style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color="#1F80E0" />
+      </LinearGradient>
+    );
+  }
+
   return (
-    // Wrap the Stack in a dark View to act as the background canvas
-    <View style={{ flex: 1, backgroundColor: '#0A0A0C' }}>
+    <ThemeProvider value={DarkTheme}>
       <Stack
         screenOptions={{
           headerShown: false,
           contentStyle: { backgroundColor: '#0A0A0C' },
-          animation: 'slide_from_right'
         }}
       />
-      {/* Toast sits outside so it floats over everything */}
       <Toast config={toastConfig} />
-    </View>
+    </ThemeProvider>
   );
 }
 
 const styles = StyleSheet.create({
+  loadingContainer: {
+    flex: 1,
+    justify: 'center',
+    alignItems: 'center',
+  },
   toastWrapper: {
     width: '100%',
     alignItems: 'flex-end',
@@ -60,5 +95,5 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     marginLeft: 8,
     fontSize: 14,
-  }
+  },
 });

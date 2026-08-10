@@ -9,13 +9,14 @@ import {
     StatusBar,
     Pressable,
     Animated,
-    Keyboard // <-- Added Keyboard import
+    Keyboard,
+    ActivityIndicator
 } from 'react-native';
 import React, { useState, useRef } from 'react';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useRouter, Stack } from 'expo-router';
 import Toast from 'react-native-toast-message';
 
 import axios from 'axios';
@@ -27,12 +28,14 @@ const LoginScreen = () => {
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [isSignUp, setIsSignUp] = useState(false);
+    const [isLoading, setIsLoading] = useState(false); // <-- Loader state
 
     // Error States
     const [emailError, setEmailError] = useState('');
     const [passwordError, setPasswordError] = useState('');
 
     const router = useRouter();
+    const insets = useSafeAreaInsets(); // <-- Dynamically get notch/status bar height
 
     // Animations
     const fadeAnim = useRef(new Animated.Value(1)).current;
@@ -50,8 +53,6 @@ const LoginScreen = () => {
 
     const validateFields = () => {
         let isValid = true;
-
-        // Basic Regex to check if email format is roughly valid (e.g., test@test.com)
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
         if (!email.trim()) {
@@ -94,39 +95,43 @@ const LoginScreen = () => {
         }
     };
 
+    const handleAuthSuccess = async (token, successMessage) => {
+        await SecureStore.setItemAsync('userToken', token);
+
+        // 1. Shift the user to the home screen instantly
+        router.replace('/tabs/home');
+
+        // 2. Fire the toast AFTER the navigation completes, using dynamic safe area offset
+        setTimeout(() => {
+            Toast.show({
+                type: 'hotstarSuccess',
+                text1: successMessage,
+                position: 'top',
+                topOffset: insets.top > 0 ? insets.top + 10 : 50,
+                visibilityTime: 3000,
+            });
+        }, 400);
+    };
+
     const handleLogin = async () => {
         setEmailError('');
         setPasswordError('');
 
         if (!validateFields()) return;
 
-        // FIX 3: Dismiss the keyboard instantly to clear it from the layout
         Keyboard.dismiss();
+        setIsLoading(true);
 
         try {
             const response = await axios.post(`${API_URL}/login`, { email, password });
-
             if (response.data.token) {
-                await SecureStore.setItemAsync('userToken', response.data.token);
-
-                // Show toast immediately while the keyboard is closing
-                Toast.show({
-                    type: 'hotstarSuccess',
-                    text1: 'Login Successful',
-                    position: 'top',
-                    topOffset: 60,
-                    visibilityTime: 3000,
-                });
-
-                // FIX 4: Delay the screen transition by 150ms. 
-                // This gives the Keyboard time to animate away completely before sliding the screen.
-                setTimeout(() => {
-                    router.replace('/home');
-                }, 150);
+                await handleAuthSuccess(response.data.token, 'Login Successful');
             }
         } catch (error) {
             const errorMessage = error.response?.data?.message || "Network error occurred";
             handleBackendError(errorMessage);
+        } finally {
+            setIsLoading(false);
         }
     };
 
@@ -136,32 +141,19 @@ const LoginScreen = () => {
 
         if (!validateFields()) return;
 
-        // FIX 3: Dismiss keyboard
         Keyboard.dismiss();
+        setIsLoading(true);
 
         try {
             const response = await axios.post(`${API_URL}/register`, { email, password });
-
             if (response.data.token) {
-                await SecureStore.setItemAsync('userToken', response.data.token);
-
-                // Show toast immediately
-                Toast.show({
-                    type: 'hotstarSuccess',
-                    text1: 'Signup Successful',
-                    position: 'top',
-                    topOffset: 60,
-                    visibilityTime: 3000,
-                });
-
-                // FIX 4: Delay navigation
-                setTimeout(() => {
-                    router.replace('/home');
-                }, 150);
+                await handleAuthSuccess(response.data.token, 'Signup Successful');
             }
         } catch (error) {
             const errorMessage = error.response?.data?.message || "Network error occurred";
             handleBackendError(errorMessage);
+        } finally {
+            setIsLoading(false);
         }
     };
 
@@ -185,6 +177,8 @@ const LoginScreen = () => {
 
     return (
         <LinearGradient colors={['#170D22', '#0A0A0C']} style={styles.background}>
+            <Stack.Screen options={{ animation: 'slide_from_right' }} />
+
             <SafeAreaView style={styles.safeArea}>
                 <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
 
@@ -192,7 +186,7 @@ const LoginScreen = () => {
                     style={styles.container}
                     behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
                 >
-                    <TouchableOpacity style={styles.backButton}>
+                    <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
                         <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
                     </TouchableOpacity>
 
@@ -218,15 +212,13 @@ const LoginScreen = () => {
                                     onChangeText={(text) => {
                                         setEmail(text);
                                         setEmailError('');
-                                        if (passwordError.toLowerCase().includes('invalid')) {
-                                            setPasswordError('');
-                                        }
+                                        if (passwordError.toLowerCase().includes('invalid')) setPasswordError('');
                                     }}
                                     keyboardType="email-address"
                                     autoCapitalize="none"
                                 />
                             </Animated.View>
-                            {emailError.trim() !== '' ? <Text style={styles.errorText}>{emailError}</Text> : null}
+                            {emailError.trim() !== '' && <Text style={styles.errorText}>{emailError}</Text>}
                         </View>
 
                         {/* Password Input */}
@@ -244,34 +236,34 @@ const LoginScreen = () => {
                                     onChangeText={(text) => {
                                         setPassword(text);
                                         setPasswordError('');
-                                        if (emailError === ' ') {
-                                            setEmailError('');
-                                        }
+                                        if (emailError === ' ') setEmailError('');
                                     }}
                                     secureTextEntry={true}
                                 />
                             </Animated.View>
-                            {passwordError.trim() !== '' ? <Text style={styles.errorText}>{passwordError}</Text> : null}
+                            {passwordError.trim() !== '' && <Text style={styles.errorText}>{passwordError}</Text>}
                         </View>
 
-                        {/* Login Button */}
+                        {/* Login Button with Loader */}
                         <Pressable
-                            style={styles.loginButton}
+                            style={[styles.loginButton, isLoading && styles.loginButtonDisabled]}
                             onPress={isSignUp ? handleSignup : handleLogin}
+                            disabled={isLoading}
                         >
-                            <Animated.Text style={[styles.loginButtonText, { opacity: fadeAnim }]}>
-                                {isSignUp ? 'Sign Up' : 'Login'}
-                            </Animated.Text>
+                            {isLoading ? (
+                                <ActivityIndicator color="#FFFFFF" />
+                            ) : (
+                                <Animated.Text style={[styles.loginButtonText, { opacity: fadeAnim }]}>
+                                    {isSignUp ? 'Sign Up' : 'Login'}
+                                </Animated.Text>
+                            )}
                         </Pressable>
 
                         {/* Footer Text */}
                         <View style={styles.footerContainer}>
                             <Animated.Text style={[styles.footerText, { opacity: fadeAnim }]}>
                                 {isSignUp ? "Already have an account" : "Don't have an account"}?{' '}
-                                <Text
-                                    style={styles.linkText}
-                                    onPress={handleSignUpNavigation}
-                                >
+                                <Text style={styles.linkText} onPress={handleSignUpNavigation}>
                                     {isSignUp ? 'Login' : 'Sign Up'}
                                 </Text>
                             </Animated.Text>
@@ -318,10 +310,13 @@ const styles = StyleSheet.create({
     loginButton: {
         backgroundColor: '#1F80E0',
         borderRadius: 8,
-        paddingTop: 16,
-        paddingBottom: 16,
+        height: 52,
+        justifyContent: 'center',
         alignItems: 'center',
         marginTop: 8,
+    },
+    loginButtonDisabled: {
+        opacity: 0.7,
     },
     loginButtonText: { color: '#FFFFFF', fontSize: 16, fontWeight: 'bold' },
     footerContainer: { alignItems: 'center', marginTop: 20 },
