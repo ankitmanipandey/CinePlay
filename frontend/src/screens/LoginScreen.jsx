@@ -18,9 +18,10 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, Stack } from 'expo-router';
 import Toast from 'react-native-toast-message';
-
 import axios from 'axios';
-import * as SecureStore from 'expo-secure-store';
+
+// --- IMPORT YOUR GLOBAL STORE ---
+import { useAuthStore } from '../store/useAuthStore';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL;
 
@@ -28,14 +29,17 @@ const LoginScreen = () => {
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [isSignUp, setIsSignUp] = useState(false);
-    const [isLoading, setIsLoading] = useState(false); // <-- Loader state
+    const [isLoading, setIsLoading] = useState(false);
 
     // Error States
     const [emailError, setEmailError] = useState('');
     const [passwordError, setPasswordError] = useState('');
 
     const router = useRouter();
-    const insets = useSafeAreaInsets(); // <-- Dynamically get notch/status bar height
+    const insets = useSafeAreaInsets();
+
+    // --- GRAB THE setSession METHOD FROM ZUSTAND ---
+    const setSession = useAuthStore((state) => state.setSession);
 
     // Animations
     const fadeAnim = useRef(new Animated.Value(1)).current;
@@ -95,13 +99,15 @@ const LoginScreen = () => {
         }
     };
 
-    const handleAuthSuccess = async (token, successMessage) => {
-        await SecureStore.setItemAsync('userToken', token);
+    // --- UPDATED: Pass email, trigger setSession ---
+    const handleAuthSuccess = async (token, userEmail, successMessage) => {
+        // 1. Update Global Store (This also handles SecureStore under the hood!)
+        await setSession(token, userEmail);
 
-        // 1. Shift the user to the home screen instantly
+        // 2. Shift the user to the home screen instantly
         router.replace('/tabs/home');
 
-        // 2. Fire the toast AFTER the navigation completes, using dynamic safe area offset
+        // 3. Fire the toast AFTER the navigation completes
         setTimeout(() => {
             Toast.show({
                 type: 'hotstarSuccess',
@@ -123,9 +129,10 @@ const LoginScreen = () => {
         setIsLoading(true);
 
         try {
-            const response = await axios.post(`${API_URL}/login`, { email, password });
+            const response = await axios.post(`${API_URL}/auth/login`, { email, password });
             if (response.data.token) {
-                await handleAuthSuccess(response.data.token, 'Login Successful');
+                // Pass the email so setSession can use it
+                await handleAuthSuccess(response.data.token, email, 'Login Successful');
             }
         } catch (error) {
             const errorMessage = error.response?.data?.message || "Network error occurred";
@@ -145,9 +152,10 @@ const LoginScreen = () => {
         setIsLoading(true);
 
         try {
-            const response = await axios.post(`${API_URL}/register`, { email, password });
+            const response = await axios.post(`${API_URL}/auth/register`, { email, password });
             if (response.data.token) {
-                await handleAuthSuccess(response.data.token, 'Signup Successful');
+                // Pass the email so setSession can use it
+                await handleAuthSuccess(response.data.token, email, 'Signup Successful');
             }
         } catch (error) {
             const errorMessage = error.response?.data?.message || "Network error occurred";

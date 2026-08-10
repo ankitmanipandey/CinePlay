@@ -28,7 +28,14 @@ const userSchema = new mongoose.Schema(
         profilePicture: {
             type: String,
             default: null
-        }
+        },
+        // --- NEW FIELDS FOR MOVIE LISTS ---
+        watchlist: [{
+            type: String
+        }],
+        watched: [{
+            type: String
+        }]
     },
     {
         timestamps: true,

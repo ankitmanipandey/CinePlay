@@ -15,7 +15,6 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import * as SecureStore from 'expo-secure-store';
 import Toast from 'react-native-toast-message';
 import YoutubePlayer from 'react-native-youtube-iframe';
 import * as ScreenOrientation from 'expo-screen-orientation';
@@ -24,12 +23,15 @@ import * as ScreenOrientation from 'expo-screen-orientation';
 import { tmdbService } from '../services/tmdbService';
 import { getImageUrl } from '../constants/config';
 import { useUserListStore } from '../store/useUserListStore';
+import { useAuthStore } from '../store/useAuthStore';
+
+const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL;
 
 export default function PlayerScreen() {
     const router = useRouter();
     const insets = useSafeAreaInsets();
     const { width, height } = useWindowDimensions();
-    const { id, type } = useLocalSearchParams();
+    const { id, type } = useLocalSearchParams(); // <-- TYPE is already here!
 
     const [isLoading, setIsLoading] = useState(true);
     const [mediaDetails, setMediaDetails] = useState(null);
@@ -42,8 +44,8 @@ export default function PlayerScreen() {
     const [isFullScreen, setIsFullScreen] = useState(false);
 
     const { watchlist, watched, toggleWatchlist, toggleWatched } = useUserListStore();
+    const { token } = useAuthStore();
 
-    // Reset orientation if user leaves screen while in fullscreen
     useEffect(() => {
         return () => {
             ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
@@ -80,18 +82,58 @@ export default function PlayerScreen() {
         fetchAllData();
     }, [id, type]);
 
-    const handleAuthAction = async (actionCallback) => {
-        const token = await SecureStore.getItemAsync('userToken');
+    const handleAuthAction = (actionCallback) => {
         if (!token) {
-            Toast.show({ type: 'hotstarInfo', text1: 'Log in for personalization', position: 'top', topOffset: insets.top > 0 ? insets.top + 10 : 50, visibilityTime: 2500 });
+            Toast.show({
+                type: 'hotstarInfo',
+                text1: 'Log in for personalization',
+                position: 'top',
+                topOffset: insets.top > 0 ? insets.top + 10 : 50,
+                visibilityTime: 2500
+            });
         } else {
             actionCallback();
         }
     };
 
-    const handleToggleAction = (mediaId, targetList) => {
-        if (targetList === 'watchlist') toggleWatchlist(mediaId);
-        if (targetList === 'watched') toggleWatched(mediaId);
+    const handleToggleAction = async (mediaId, mediaType, targetList) => {
+        // 1. Optimistic UI Update passing mediaType
+        if (targetList === 'watchlist') toggleWatchlist(mediaId, mediaType);
+        if (targetList === 'watched') toggleWatched(mediaId, mediaType);
+
+        try {
+            const tmdbIdWithType = `${mediaId}:${mediaType}`;
+
+            const response = await fetch(`${BACKEND_URL}/user/${targetList}/toggle`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${token}`
+                },
+                body: JSON.stringify({ tmdbId: tmdbIdWithType })
+            });
+
+            if (!response.ok) throw new Error('Failed to update on server');
+
+            const data = await response.json();
+            const arrayToMap = (arr) => arr.reduce((acc, curr) => {
+                const [idStr, typeStr] = String(curr).split(':');
+                acc[idStr] = typeStr || 'movie';
+                return acc;
+            }, {});
+
+            useUserListStore.setState({
+                watchlist: arrayToMap(data.watchlist),
+                watched: arrayToMap(data.watched)
+            });
+
+        } catch (error) {
+            console.error('API Sync Error:', error);
+            Toast.show({ type: 'error', text1: `Failed to save to ${targetList}` });
+
+            if (targetList === 'watchlist') toggleWatchlist(mediaId, mediaType);
+            if (targetList === 'watched') toggleWatched(mediaId, mediaType);
+        }
     };
 
     const toggleFullScreen = async () => {
@@ -142,7 +184,6 @@ export default function PlayerScreen() {
     const isCurrentInWatched = watched[id];
     const streamingPlatforms = watchProviders?.flatrate || [];
 
-    // Screen dimension calculations
     const actualWidth = Math.max(width, height);
     const actualHeight = Math.min(width, height);
 
@@ -157,26 +198,15 @@ export default function PlayerScreen() {
             <View style={styles.container}>
                 <StatusBar hidden={isFullScreen} showHideTransition="slide" barStyle="light-content" backgroundColor="#000" translucent={false} />
 
-                {/* =========================================
-                    1. VIDEO PLAYER 
-                ========================================= */}
                 <View style={[
                     styles.playerContainer,
                     { width: containerWidth, height: containerHeight },
                     isFullScreen && {
-                        position: 'absolute',
-                        top: 0,
-                        left: 0,
-                        zIndex: 9999,
-                        elevation: 9999,
-                        backgroundColor: '#000',
-                        justifyContent: 'center',
-                        alignItems: 'center'
+                        position: 'absolute', top: 0, left: 0, zIndex: 9999, elevation: 9999,
+                        backgroundColor: '#000', justifyContent: 'center', alignItems: 'center'
                     }
                 ]}>
                     <View style={{ width: innerVideoWidth, height: innerVideoHeight, backgroundColor: '#000', position: 'relative' }}>
-
-                        {/* Pre-mount the YoutubePlayer so it loads the video in the background for instant play */}
                         {trailerKey && (
                             <YoutubePlayer
                                 height={innerVideoHeight}
@@ -184,9 +214,7 @@ export default function PlayerScreen() {
                                 play={isPlaying}
                                 videoId={trailerKey}
                                 webViewProps={{ allowsFullscreenVideo: false }}
-                                initialPlayerParams={{
-                                    controls: 1, modestbranding: 1, rel: 0, iv_load_policy: 3, fs: 0
-                                }}
+                                initialPlayerParams={{ controls: 1, modestbranding: 1, rel: 0, iv_load_policy: 3, fs: 0 }}
                                 onChangeState={(state) => {
                                     if (state === 'playing') setIsPlaying(true);
                                     if (state === 'paused' || state === 'ended') setIsPlaying(false);
@@ -194,7 +222,6 @@ export default function PlayerScreen() {
                             />
                         )}
 
-                        {/* Thumbnail Overlay - Hides as soon as user taps play */}
                         {!hasStarted && (
                             <View style={[StyleSheet.absoluteFill, { zIndex: 10 }]}>
                                 <Image
@@ -220,7 +247,6 @@ export default function PlayerScreen() {
                             </View>
                         )}
 
-                        {/* Floating Exit Fullscreen Button (Only shows when in landscape) */}
                         {isFullScreen && (
                             <TouchableOpacity style={styles.fullscreenExitBtn} onPress={toggleFullScreen} activeOpacity={0.7}>
                                 <Ionicons name="close" size={26} color="#FFFFFF" />
@@ -229,15 +255,11 @@ export default function PlayerScreen() {
                     </View>
                 </View>
 
-                {/* =========================================
-                    2. SCROLL CONTENT
-                ========================================= */}
                 <ScrollView
                     style={{ display: isFullScreen ? 'none' : 'flex' }}
                     showsVerticalScrollIndicator={false}
                     contentContainerStyle={styles.scrollContent}
                 >
-                    {/* Permanent Controls Bar Below The Video */}
                     <View style={styles.externalControlBar}>
                         <View style={styles.externalLeftControls}>
                             <TouchableOpacity onPress={handleBackPress} style={styles.externalBtn}>
@@ -249,21 +271,19 @@ export default function PlayerScreen() {
                         </View>
 
                         <View style={styles.externalRightControls}>
-                            <TouchableOpacity onPress={() => handleAuthAction(() => handleToggleAction(id, 'watchlist'))} style={styles.externalBtn}>
+                            <TouchableOpacity onPress={() => handleAuthAction(() => handleToggleAction(id, type, 'watchlist'))} style={styles.externalBtn}>
                                 <Ionicons name={isCurrentInWatchlist ? "bookmark" : "bookmark-outline"} size={22} color={isCurrentInWatchlist ? "#F5C518" : "#FFFFFF"} />
                                 <Text style={[styles.externalBtnText, isCurrentInWatchlist && { color: '#F5C518' }]}>Save</Text>
                             </TouchableOpacity>
-                            <TouchableOpacity onPress={() => handleAuthAction(() => handleToggleAction(id, 'watched'))} style={styles.externalBtn}>
+                            <TouchableOpacity onPress={() => handleAuthAction(() => handleToggleAction(id, type, 'watched'))} style={styles.externalBtn}>
                                 <Ionicons name="checkmark-done" size={22} color={isCurrentInWatched ? "#1F80E0" : "#FFFFFF"} />
                                 <Text style={[styles.externalBtnText, isCurrentInWatched && { color: '#1F80E0' }]}>Watched</Text>
                             </TouchableOpacity>
                         </View>
                     </View>
 
-                    {/* MEDIA DETAILS SECTION */}
                     <View style={styles.detailsContainer}>
                         <Text style={styles.mediaTitle}>{title}</Text>
-
                         <View style={styles.metaRow}>
                             <Text style={styles.metaText}>{year}</Text>
                             <Text style={styles.metaDot}>•</Text>
@@ -293,7 +313,6 @@ export default function PlayerScreen() {
                         <Text style={styles.overviewText}>{mediaDetails.overview}</Text>
                     </View>
 
-                    {/* MORE LIKE THIS ROW */}
                     {similarMedia.length > 0 && (
                         <View style={styles.sectionContainer}>
                             <Text style={styles.sectionTitle}>More Like This</Text>
@@ -301,6 +320,7 @@ export default function PlayerScreen() {
                                 horizontal
                                 showsHorizontalScrollIndicator={false}
                                 data={similarMedia}
+                                extraData={{ watchlist, watched }}
                                 keyExtractor={(item) => item.id.toString()}
                                 contentContainerStyle={styles.listContent}
                                 renderItem={({ item }) => {
@@ -321,10 +341,10 @@ export default function PlayerScreen() {
                                                 <Text style={styles.smallCardRatingText}>{item.vote_average?.toFixed(1) || 'NR'}</Text>
                                             </View>
                                             <View style={styles.smallCardActions}>
-                                                <TouchableOpacity style={styles.smallIconBtn} onPress={() => handleAuthAction(() => handleToggleAction(item.id, 'watchlist'))}>
+                                                <TouchableOpacity style={styles.smallIconBtn} onPress={() => handleAuthAction(() => handleToggleAction(item.id, simType, 'watchlist'))}>
                                                     <Ionicons name={inWatchlist ? "bookmark" : "bookmark-outline"} size={14} color={inWatchlist ? "#F5C518" : "#FFFFFF"} />
                                                 </TouchableOpacity>
-                                                <TouchableOpacity style={styles.smallIconBtn} onPress={() => handleAuthAction(() => handleToggleAction(item.id, 'watched'))}>
+                                                <TouchableOpacity style={styles.smallIconBtn} onPress={() => handleAuthAction(() => handleToggleAction(item.id, simType, 'watched'))}>
                                                     <Ionicons name="checkmark-done" size={14} color={inWatched ? "#1F80E0" : "#FFFFFF"} />
                                                 </TouchableOpacity>
                                             </View>

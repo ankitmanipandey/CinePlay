@@ -1,13 +1,16 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ActivityIndicator } from 'react-native';
-import { Stack, useRouter, useSegments } from 'expo-router';
+import { Stack, useRouter } from 'expo-router';
 import Toast from 'react-native-toast-message';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import * as SecureStore from 'expo-secure-store';
 
-// ✅ FIXED IMPORT FOR EXPO SDK 56
+// ✅ FIXED IMPORT FOR EXPO SDK
 import { ThemeProvider, DarkTheme } from 'expo-router/react-navigation';
+
+// --- GLOBAL AUTH STORE ---
+import { useAuthStore } from '../store/useAuthStore';
 
 const toastConfig = {
   hotstarSuccess: ({ text1 }) => (
@@ -31,7 +34,6 @@ const toastConfig = {
         end={{ x: 1, y: 1 }}
         style={styles.toastContainer}
       >
-        {/* Changed the icon to information-circle */}
         <Ionicons name="information-circle" size={20} color="#FFFFFF" />
         <Text style={styles.toastText}>{text1}</Text>
       </LinearGradient>
@@ -43,11 +45,16 @@ export default function RootLayout() {
   const [isLoading, setIsLoading] = useState(true);
   const router = useRouter();
 
+  // Grab restoreSession from your global Zustand store
+  const restoreSession = useAuthStore((state) => state.restoreSession);
+
   useEffect(() => {
     const checkUserAuth = async () => {
       try {
         const token = await SecureStore.getItemAsync('userToken');
         if (token) {
+          // ✅ CRITICAL FIX: Populate global store with token so the whole app knows you're logged in
+          restoreSession(token, { email: 'User' });
           router.replace('/tabs/home');
         }
       } catch (error) {
@@ -84,7 +91,7 @@ export default function RootLayout() {
 const styles = StyleSheet.create({
   loadingContainer: {
     flex: 1,
-    justify: 'center',
+    justifyContent: 'center', // Fixed typo: 'justify' to 'justifyContent'
     alignItems: 'center',
   },
   toastWrapper: {

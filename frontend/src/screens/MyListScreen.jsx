@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
     StyleSheet,
     Text,
@@ -6,44 +6,159 @@ import {
     TouchableOpacity,
     FlatList,
     Image,
+    ActivityIndicator,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import Toast from 'react-native-toast-message';
 
-// Mock Data - Strictly Movies, including IMDb ratings
-const INITIAL_MOVIES = [
-    { id: '1', title: 'PREMALU', duration: '2h 36m', year: '2024', genre: 'Romance, Comedy', rating: '8.3', poster: 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=200&q=80', status: 'watchlist' },
-    { id: '2', title: 'RATSASAN', duration: '2h 50m', year: '2018', genre: 'Crime, Thriller', rating: '8.7', poster: 'https://images.unsplash.com/photo-1614729939124-03290b55c9ce?w=200&q=80', status: 'watchlist' },
-    { id: '3', title: 'SPIDER-MAN: NO WAY HOME', duration: '2h 28m', year: '2021', genre: 'Action, Adventure', rating: '8.2', poster: 'https://images.unsplash.com/photo-1635805737707-575885ab0820?w=200&q=80', status: 'watched' },
-];
+// --- Global State & Config ---
+import { useUserListStore } from '../store/useUserListStore';
+import { useAuthStore } from '../store/useAuthStore';
+import { tmdbService } from '../services/tmdbService';
+import { getImageUrl } from '../constants/config';
+
+// Base URL for backend sync
+const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL;
 
 const MyListScreen = () => {
     const router = useRouter();
     const insets = useSafeAreaInsets();
 
     const [activeTab, setActiveTab] = useState('watchlist');
-    const [movies, setMovies] = useState(INITIAL_MOVIES);
+    const [moviesData, setMoviesData] = useState([]);
+    const [isLoading, setIsLoading] = useState(true);
 
-    const activeData = movies.filter(movie => movie.status === activeTab);
+    // Global Stores
+    const { watchlist, watched, toggleWatchlist, toggleWatched } = useUserListStore();
+    const { token } = useAuthStore();
 
-    const handleStatusChange = (id, targetStatus) => {
-        setMovies(prev => prev.map(movie => {
-            if (movie.id === id) {
-                return { ...movie, status: movie.status === targetStatus ? 'none' : targetStatus };
+    // Fetch details for all IDs currently stored in the user's lists
+    useEffect(() => {
+        const fetchListDetails = async () => {
+            setIsLoading(true);
+            try {
+                // Get all unique IDs from both watchlist and watched hash maps
+                const watchlistIds = Object.keys(watchlist);
+                const watchedIds = Object.keys(watched);
+                const allIds = Array.from(new Set([...watchlistIds, ...watchedIds]));
+
+                if (allIds.length === 0) {
+                    setMoviesData([]);
+                    setIsLoading(false);
+                    return;
+                }
+
+                // Fetch details for each item in parallel from TMDB
+                const detailedItemsPromises = allIds.map(async (id) => {
+                    // Try fetching as movie first, fallback to tv if needed or use default
+                    const type = watchlist[id] === 'tv' || watched[id] === 'tv' ? 'tv' : 'movie';
+                    const details = await tmdbService.getDetails(id, type);
+
+                    if (!details) return null;
+
+                    return {
+                        id: String(details.id),
+                        title: details.title || details.name,
+                        duration: details.runtime ? `${Math.floor(details.runtime / 60)}h ${details.runtime % 60}m` : 'N/A',
+                        year: (details.release_date || details.first_air_date || '').substring(0, 4),
+                        genre: details.genres?.map(g => g.name).join(', ') || 'General',
+                        rating: details.vote_average ? details.vote_average.toFixed(1) : 'NR',
+                        poster: getImageUrl(details.poster_path),
+                        media_type: type // <-- Pass this down so buttons know what it is
+                    };
+                });
+
+                const results = await Promise.all(detailedItemsPromises);
+                setMoviesData(results.filter(Boolean));
+            } catch (error) {
+                console.error('Error loading list details:', error);
+            } finally {
+                setIsLoading(false);
             }
-            return movie;
-        }));
-    };
+        };
+
+        fetchListDetails();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [token]); // <-- Only re-run when auth changes. Removes the flashing UI trap.
+
+    // --- 1. Instant Auth Check ---
+    const handleAuthAction = useCallback((actionCallback) => {
+        if (!token) {
+            Toast.show({
+                type: 'hotstarInfo',
+                text1: 'Log in for personalization',
+                position: 'top',
+                topOffset: insets.top > 0 ? insets.top + 10 : 50,
+                visibilityTime: 2500,
+            });
+        } else {
+            actionCallback();
+        }
+    }, [token, insets.top]);
+
+    // --- 2. API Sync & Optimistic Update ---
+    // Added mediaType parameter to prevent the "ghost movie" bug
+    const handleStatusChange = useCallback(async (id, mediaType, targetStatus) => {
+        // Optimistic UI Update (Instant Tab Swap)
+        if (targetStatus === 'watchlist') toggleWatchlist(id, mediaType);
+        if (targetStatus === 'watched') toggleWatched(id, mediaType);
+
+        try {
+            // Construct the ID + Type payload
+            const tmdbIdWithType = `${id}:${mediaType}`;
+
+            const response = await fetch(`${BACKEND_URL}/user/${targetStatus}/toggle`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${token}`
+                },
+                body: JSON.stringify({ tmdbId: tmdbIdWithType })
+            });
+
+            if (!response.ok) throw new Error('Failed to update list on server');
+
+            const data = await response.json();
+
+            // Parse "123:tv" back into local HashMap
+            const arrayToMap = (arr) => arr.reduce((acc, curr) => {
+                const [idStr, typeStr] = String(curr).split(':');
+                acc[idStr] = typeStr || 'movie';
+                return acc;
+            }, {});
+
+            useUserListStore.setState({
+                watchlist: arrayToMap(data.watchlist),
+                watched: arrayToMap(data.watched)
+            });
+
+        } catch (error) {
+            console.error('API Sync Error:', error);
+            Toast.show({ type: 'error', text1: `Failed to move to ${targetStatus}` });
+
+            // Revert on failure
+            if (targetStatus === 'watchlist') toggleWatchlist(id, mediaType);
+            if (targetStatus === 'watched') toggleWatched(id, mediaType);
+        }
+    }, [toggleWatchlist, toggleWatched, token]);
+
+    // Filter data instantly based on Zustand global memory, NOT stale TMDB data
+    const activeData = moviesData.filter(movie => {
+        if (activeTab === 'watchlist') return !!watchlist[movie.id];
+        if (activeTab === 'watched') return !!watched[movie.id];
+        return false;
+    });
 
     const renderMovieItem = ({ item }) => {
-        const inWatchlist = item.status === 'watchlist';
-        const inWatched = item.status === 'watched';
+        // Read directly from Zustand memory so buttons light up instantly
+        const inWatchlist = !!watchlist[item.id];
+        const inWatched = !!watched[item.id];
 
         return (
             <View style={styles.movieCard}>
-                {/* Poster Container with Absolute Rating Badge */}
                 <View style={styles.posterContainer}>
                     <Image source={{ uri: item.poster }} style={styles.poster} resizeMode="cover" />
                     <View style={styles.translucentRatingBadge}>
@@ -55,13 +170,13 @@ const MyListScreen = () => {
                 <View style={styles.detailsContainer}>
                     <Text style={styles.title} numberOfLines={2}>{item.title}</Text>
                     <Text style={styles.metadata}>{item.year}  •  {item.duration}</Text>
-                    <Text style={styles.genre}>{item.genre}</Text>
+                    <Text style={styles.genre} numberOfLines={1}>{item.genre}</Text>
 
                     <View style={styles.actionButtonsRow}>
                         <TouchableOpacity
                             style={styles.smallIconBtn}
                             activeOpacity={0.8}
-                            onPress={() => handleStatusChange(item.id, 'watchlist')}
+                            onPress={() => handleAuthAction(() => handleStatusChange(item.id, item.media_type, 'watchlist'))}
                         >
                             <Ionicons
                                 name={inWatchlist ? "bookmark" : "bookmark-outline"}
@@ -73,7 +188,7 @@ const MyListScreen = () => {
                         <TouchableOpacity
                             style={styles.smallIconBtn}
                             activeOpacity={0.8}
-                            onPress={() => handleStatusChange(item.id, 'watched')}
+                            onPress={() => handleAuthAction(() => handleStatusChange(item.id, item.media_type, 'watched'))}
                         >
                             <Ionicons
                                 name="checkmark-done"
@@ -84,7 +199,11 @@ const MyListScreen = () => {
                     </View>
                 </View>
 
-                <TouchableOpacity style={styles.playIcon} activeOpacity={0.7} onPress={() => router.push('/player')}>
+                <TouchableOpacity
+                    style={styles.playIcon}
+                    activeOpacity={0.7}
+                    onPress={() => router.push({ pathname: '/player', params: { id: item.id, type: item.media_type } })}
+                >
                     <Ionicons name="play-circle" size={42} color="#E5E5EA" />
                 </TouchableOpacity>
             </View>
@@ -121,19 +240,26 @@ const MyListScreen = () => {
                     </TouchableOpacity>
                 </View>
 
-                <FlatList
-                    data={activeData}
-                    keyExtractor={(item) => item.id}
-                    renderItem={renderMovieItem}
-                    contentContainerStyle={styles.listContent}
-                    showsVerticalScrollIndicator={false}
-                    ListEmptyComponent={
-                        <View style={styles.emptyContainer}>
-                            <Ionicons name="film-outline" size={48} color="rgba(255,255,255,0.2)" style={styles.emptyIcon} />
-                            <Text style={styles.emptyText}>No movies in this list yet.</Text>
-                        </View>
-                    }
-                />
+                {isLoading ? (
+                    <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+                        <ActivityIndicator size="large" color="#1F80E0" />
+                    </View>
+                ) : (
+                    <FlatList
+                        data={activeData}
+                        extraData={{ watchlist, watched }}
+                        keyExtractor={(item) => item.id}
+                        renderItem={renderMovieItem}
+                        contentContainerStyle={styles.listContent}
+                        showsVerticalScrollIndicator={false}
+                        ListEmptyComponent={
+                            <View style={styles.emptyContainer}>
+                                <Ionicons name="film-outline" size={48} color="rgba(255,255,255,0.2)" style={styles.emptyIcon} />
+                                <Text style={styles.emptyText}>No movies in this list yet.</Text>
+                            </View>
+                        }
+                    />
+                )}
 
             </View>
         </LinearGradient>
@@ -183,7 +309,6 @@ const styles = StyleSheet.create({
         borderColor: 'rgba(255,255,255,0.05)'
     },
 
-    // Poster and Badge Styles
     posterContainer: {
         position: 'relative',
     },

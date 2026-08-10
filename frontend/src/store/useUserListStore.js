@@ -4,31 +4,29 @@ export const useUserListStore = create((set) => ({
     watchlist: {},
     watched: {},
 
-    toggleWatchlist: (id) => set((state) => {
+    toggleWatchlist: (id, mediaType = 'movie') => set((state) => {
         const newWatchlist = { ...state.watchlist };
         const newWatched = { ...state.watched };
 
         if (newWatchlist[id]) {
-            delete newWatchlist[id]; // Toggle off
+            delete newWatchlist[id];
         } else {
-            newWatchlist[id] = true; // Toggle on
-            delete newWatched[id];   // Ensure mutually exclusive
+            newWatchlist[id] = mediaType; // Save 'movie' or 'tv'
+            delete newWatched[id];
         }
-
         return { watchlist: newWatchlist, watched: newWatched };
     }),
 
-    toggleWatched: (id) => set((state) => {
+    toggleWatched: (id, mediaType = 'movie') => set((state) => {
         const newWatchlist = { ...state.watchlist };
         const newWatched = { ...state.watched };
 
         if (newWatched[id]) {
-            delete newWatched[id]; // Toggle off
+            delete newWatched[id];
         } else {
-            newWatched[id] = true; // Toggle on
-            delete newWatchlist[id]; // Ensure mutually exclusive
+            newWatched[id] = mediaType; // Save 'movie' or 'tv'
+            delete newWatchlist[id];
         }
-
         return { watchlist: newWatchlist, watched: newWatched };
     })
 }));

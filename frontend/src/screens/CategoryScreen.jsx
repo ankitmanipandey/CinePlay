@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
     StyleSheet,
     Text,
@@ -8,19 +8,22 @@ import {
     Image,
     Dimensions,
     StatusBar,
-    ActivityIndicator
+    ActivityIndicator,
+    Platform
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import * as SecureStore from 'expo-secure-store';
 import Toast from 'react-native-toast-message';
 
 // --- API & Store Imports ---
 import { tmdbService } from '../services/tmdbService';
 import { getImageUrl } from '../constants/config';
 import { useUserListStore } from '../store/useUserListStore';
+import { useAuthStore } from '../store/useAuthStore';
+
+const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL;
 
 const { width } = Dimensions.get('window');
 const SCREEN_PADDING = 12;
@@ -48,6 +51,110 @@ const TITLE_TO_API_MAP = {
     'Romance': { type: 'genre', val: 10749 },
 };
 
+// ==========================================
+// 1. EXTRACTED MEMOIZED MOVIE CARD 
+// Prevents the entire grid from re-rendering
+// ==========================================
+const MovieCard = React.memo(({ item, inWatchlist, inWatched, onToggleAction, handleAuthAction, router }) => {
+    // Dynamically compute badges based on real data
+    const posterUri = getImageUrl(item.poster_path || item.backdrop_path);
+    const rating = item.vote_average ? item.vote_average.toFixed(1) : null;
+    const mediaType = item.media_type || (item.first_air_date ? 'tv' : 'movie');
+
+    const isNew = item.release_date && item.release_date > '2024-01-01';
+    const bottomBadge = isNew ? 'NEW RELEASE' : null;
+    const topBadge = item.popularity > 1500 ? 'TOP\n10' : null;
+    const bottomText = mediaType === 'tv' ? 'SERIES' : null;
+
+    return (
+        <TouchableOpacity
+            style={styles.cardContainer}
+            activeOpacity={0.8}
+            onPress={() => router.push({ pathname: '/player', params: { id: item.id, type: mediaType } })}
+        >
+            {posterUri ? (
+                <Image source={{ uri: posterUri }} style={styles.cardImage} resizeMode="cover" />
+            ) : (
+                <View style={[styles.cardImage, { backgroundColor: '#25252A', justifyContent: 'center', alignItems: 'center' }]}>
+                    <Ionicons name="film-outline" size={24} color="#8F98A0" />
+                </View>
+            )}
+
+            {/* Dark gradient for text readability if there is bottom text */}
+            {bottomText && (
+                <LinearGradient
+                    colors={['transparent', 'rgba(0,0,0,0.9)']}
+                    style={styles.cardBottomGradient}
+                />
+            )}
+
+            {/* IMDb Rating Badge (Top Left) */}
+            {rating && (
+                <View style={styles.translucentRatingBadge}>
+                    <Ionicons name="star" size={10} color="#F5C518" />
+                    <Text style={styles.ratingText}>{rating}</Text>
+                </View>
+            )}
+
+            {/* Action Buttons Overlay (Top Right) */}
+            <View style={[styles.cardActions, { top: topBadge ? 32 : 6 }]}>
+                <TouchableOpacity
+                    style={styles.smallIconBtn}
+                    activeOpacity={0.8}
+                    // FIX: Passed `mediaType` explicitly here!
+                    onPress={() => handleAuthAction(() => onToggleAction(item.id, mediaType, 'watchlist'))}
+                >
+                    <Ionicons
+                        name={inWatchlist ? "bookmark" : "bookmark-outline"}
+                        size={14}
+                        color={inWatchlist ? "#F5C518" : "#FFFFFF"}
+                    />
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                    style={styles.smallIconBtn}
+                    activeOpacity={0.8}
+                    // FIX: Passed `mediaType` explicitly here!
+                    onPress={() => handleAuthAction(() => onToggleAction(item.id, mediaType, 'watched'))}
+                >
+                    <Ionicons
+                        name="checkmark-done"
+                        size={14}
+                        color={inWatched ? "#1F80E0" : "#FFFFFF"}
+                    />
+                </TouchableOpacity>
+            </View>
+
+            {/* Top 10 Badge */}
+            {topBadge && (
+                <View style={styles.topBadgeContainer}>
+                    <Text style={styles.topBadgeText}>{topBadge}</Text>
+                </View>
+            )}
+
+            {/* Bottom Solid Badge (e.g., NEW RELEASE) */}
+            {bottomBadge && (
+                <View style={[styles.bottomBadgeContainer, { backgroundColor: '#E6398A' }]}>
+                    <Text style={styles.bottomBadgeText}>{bottomBadge}</Text>
+                </View>
+            )}
+
+            {/* Bottom Overlay Text (e.g., SERIES) */}
+            {bottomText && !bottomBadge && (
+                <View style={styles.bottomTextContainer}>
+                    <Text style={styles.bottomText} numberOfLines={2}>{bottomText}</Text>
+                </View>
+            )}
+        </TouchableOpacity>
+    );
+}, (prevProps, nextProps) => {
+    return (
+        prevProps.inWatchlist === nextProps.inWatchlist &&
+        prevProps.inWatched === nextProps.inWatched &&
+        prevProps.item.id === nextProps.item.id
+    );
+});
+
 export default function CategoryScreen() {
     const router = useRouter();
     const insets = useSafeAreaInsets();
@@ -56,8 +163,9 @@ export default function CategoryScreen() {
     const [data, setData] = useState([]);
     const [isLoading, setIsLoading] = useState(true);
 
-    // Global Store for personalization
+    // Global Stores
     const { watchlist, watched, toggleWatchlist, toggleWatched } = useUserListStore();
+    const { token } = useAuthStore();
 
     // Fetch data based on category title
     useEffect(() => {
@@ -95,8 +203,10 @@ export default function CategoryScreen() {
         if (title) loadData();
     }, [title]);
 
-    const handleAuthAction = async (actionCallback) => {
-        const token = await SecureStore.getItemAsync('userToken');
+    // ==========================================
+    // 2. INSTANT AUTH CHECK
+    // ==========================================
+    const handleAuthAction = useCallback((actionCallback) => {
         if (!token) {
             Toast.show({
                 type: 'hotstarInfo',
@@ -108,114 +218,66 @@ export default function CategoryScreen() {
         } else {
             actionCallback();
         }
-    };
+    }, [token, insets.top]);
 
-    const handleToggleAction = (id, targetList) => {
-        if (targetList === 'watchlist') {
-            toggleWatchlist(id);
-            if (watched[id]) toggleWatched(id); // Keep mutually exclusive
-        } else if (targetList === 'watched') {
-            toggleWatched(id);
-            if (watchlist[id]) toggleWatchlist(id); // Keep mutually exclusive
+    // ==========================================
+    // 3. API SYNC & OPTIMISTIC UPDATE
+    // ==========================================
+    const handleToggleAction = useCallback(async (id, mediaType, targetList) => {
+        // Optimistic UI Update passing mediaType
+        if (targetList === 'watchlist') toggleWatchlist(id, mediaType);
+        if (targetList === 'watched') toggleWatched(id, mediaType);
+
+        try {
+            // Append type so backend saves it as "123:tv"
+            const tmdbIdWithType = `${id}:${mediaType}`;
+
+            const response = await fetch(`${BACKEND_URL}/user/${targetList}/toggle`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${token}`
+                },
+                body: JSON.stringify({ tmdbId: tmdbIdWithType })
+            });
+
+            if (!response.ok) throw new Error('Failed to update on server');
+
+            const data = await response.json();
+
+            // Parse "123:tv" back into local HashMap
+            const arrayToMap = (arr) => arr.reduce((acc, curr) => {
+                const [idStr, typeStr] = String(curr).split(':');
+                acc[idStr] = typeStr || 'movie';
+                return acc;
+            }, {});
+
+            useUserListStore.setState({
+                watchlist: arrayToMap(data.watchlist),
+                watched: arrayToMap(data.watched)
+            });
+
+        } catch (error) {
+            console.error('API Sync Error:', error);
+            Toast.show({ type: 'error', text1: `Failed to save to ${targetList}` });
+
+            // Revert
+            if (targetList === 'watchlist') toggleWatchlist(id, mediaType);
+            if (targetList === 'watched') toggleWatched(id, mediaType);
         }
-    };
+    }, [toggleWatchlist, toggleWatched, token]);
 
-    const renderMovieCard = ({ item }) => {
-        const inWatchlist = watchlist[item.id];
-        const inWatched = watched[item.id];
-
-        // Dynamically compute badges based on real data
-        const posterUri = getImageUrl(item.poster_path || item.backdrop_path);
-        const rating = item.vote_average ? item.vote_average.toFixed(1) : null;
-        const mediaType = item.media_type || (item.first_air_date ? 'tv' : 'movie');
-
-        const isNew = item.release_date && item.release_date > '2024-01-01';
-        const bottomBadge = isNew ? 'NEW RELEASE' : null;
-        const topBadge = item.popularity > 1500 ? 'TOP\n10' : null;
-        const bottomText = mediaType === 'tv' ? 'SERIES' : null;
-
-        return (
-            <TouchableOpacity
-                style={styles.cardContainer}
-                activeOpacity={0.8}
-                onPress={() => router.push({ pathname: '/player', params: { id: item.id, type: mediaType } })}
-            >
-                {posterUri ? (
-                    <Image source={{ uri: posterUri }} style={styles.cardImage} resizeMode="cover" />
-                ) : (
-                    <View style={[styles.cardImage, { backgroundColor: '#25252A', justifyContent: 'center', alignItems: 'center' }]}>
-                        <Ionicons name="film-outline" size={24} color="#8F98A0" />
-                    </View>
-                )}
-
-                {/* Dark gradient for text readability if there is bottom text */}
-                {bottomText && (
-                    <LinearGradient
-                        colors={['transparent', 'rgba(0,0,0,0.9)']}
-                        style={styles.cardBottomGradient}
-                    />
-                )}
-
-                {/* IMDb Rating Badge (Top Left) */}
-                {rating && (
-                    <View style={styles.translucentRatingBadge}>
-                        <Ionicons name="star" size={10} color="#F5C518" />
-                        <Text style={styles.ratingText}>{rating}</Text>
-                    </View>
-                )}
-
-                {/* Action Buttons Overlay (Top Right)
-                    Dynamically shifted down if the 'TOP 10' badge is present so they don't overlap 
-                */}
-                <View style={[styles.cardActions, { top: topBadge ? 32 : 6 }]}>
-                    <TouchableOpacity
-                        style={styles.smallIconBtn}
-                        activeOpacity={0.8}
-                        onPress={() => handleAuthAction(() => handleToggleAction(item.id, 'watchlist'))}
-                    >
-                        <Ionicons
-                            name={inWatchlist ? "bookmark" : "bookmark-outline"}
-                            size={14}
-                            color={inWatchlist ? "#F5C518" : "#FFFFFF"}
-                        />
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                        style={styles.smallIconBtn}
-                        activeOpacity={0.8}
-                        onPress={() => handleAuthAction(() => handleToggleAction(item.id, 'watched'))}
-                    >
-                        <Ionicons
-                            name="checkmark-done"
-                            size={14}
-                            color={inWatched ? "#1F80E0" : "#FFFFFF"}
-                        />
-                    </TouchableOpacity>
-                </View>
-
-                {/* Top 10 Badge */}
-                {topBadge && (
-                    <View style={styles.topBadgeContainer}>
-                        <Text style={styles.topBadgeText}>{topBadge}</Text>
-                    </View>
-                )}
-
-                {/* Bottom Solid Badge (e.g., NEW RELEASE) */}
-                {bottomBadge && (
-                    <View style={[styles.bottomBadgeContainer, { backgroundColor: '#E6398A' }]}>
-                        <Text style={styles.bottomBadgeText}>{bottomBadge}</Text>
-                    </View>
-                )}
-
-                {/* Bottom Overlay Text (e.g., SERIES) */}
-                {bottomText && !bottomBadge && (
-                    <View style={styles.bottomTextContainer}>
-                        <Text style={styles.bottomText} numberOfLines={2}>{bottomText}</Text>
-                    </View>
-                )}
-            </TouchableOpacity>
-        );
-    };
+    // Map function for FlatList
+    const renderItem = useCallback(({ item }) => (
+        <MovieCard
+            item={item}
+            inWatchlist={!!watchlist[item.id]}
+            inWatched={!!watched[item.id]}
+            onToggleAction={handleToggleAction}
+            handleAuthAction={handleAuthAction}
+            router={router}
+        />
+    ), [watchlist, watched, handleToggleAction, handleAuthAction, router]);
 
     return (
         <LinearGradient colors={['#170D22', '#0A0A0C']} style={styles.background}>
@@ -238,12 +300,20 @@ export default function CategoryScreen() {
                 ) : (
                     <FlatList
                         data={data}
+                        extraData={{ watchlist, watched }}
                         keyExtractor={(item, index) => `${item.id}-${index}`}
                         numColumns={3}
                         contentContainerStyle={styles.listContent}
                         columnWrapperStyle={styles.columnWrapper}
                         showsVerticalScrollIndicator={false}
-                        renderItem={renderMovieCard}
+                        renderItem={renderItem}
+
+                        // --- Grid Performance Enhancements ---
+                        initialNumToRender={12}
+                        maxToRenderPerBatch={12}
+                        windowSize={5}
+                        removeClippedSubviews={Platform.OS === 'android'}
+
                         ListEmptyComponent={
                             <Text style={{ color: '#8F98A0', textAlign: 'center', marginTop: 40 }}>
                                 No titles found for this category.

@@ -40,6 +40,8 @@ const { width } = Dimensions.get('window');
 const SWIPE_THRESHOLD = 60;
 const SWIPE_VELOCITY = 1.0;
 
+const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL;
+
 const MOCK_LANGUAGES = [
     { id: 'l1', title: 'Hindi', code: 'hi', subtitle: 'हिन्दी', fallbackImage: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=300&q=60', color: '#323246' },
     { id: 'l2', title: 'English', code: 'en', subtitle: 'Hollywood', fallbackImage: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=300&q=60', color: '#5A3732' },
@@ -49,7 +51,6 @@ const MOCK_LANGUAGES = [
     { id: 'l6', title: 'Malayalam', code: 'ml', subtitle: 'മലയാളം', fallbackImage: 'https://images.unsplash.com/photo-1524492412937-b28074a5d7da?w=300&q=60', color: '#284A3B' },
 ];
 
-// --- DROP-DOWN FILTER UI COMPONENTS ---
 const FilterDropdown = ({ filters, setFilter }) => {
     const regionOptions = [{ l: 'All', v: 'all' }, { l: 'Indian', v: 'indian' }, { l: 'Others', v: 'others' }];
     const typeOptions = [{ l: 'All', v: 'all' }, { l: 'Movies', v: 'movie' }, { l: 'TV Shows / Web Series', v: 'tv' }];
@@ -84,9 +85,59 @@ const FilterDropdown = ({ filters, setFilter }) => {
     );
 };
 
-// --- ROWS ---
+// 1. EXTRACTED MOVIE CARD
+const MovieCard = React.memo(({ item, inWatchlist, inWatched, onToggleAction, router }) => {
+    const posterUri = getImageUrl(item.poster_path);
+    const rating = item.vote_average ? item.vote_average.toFixed(1) : 'NR';
+    const mediaType = item.media_type || (item.first_air_date ? 'tv' : 'movie');
+
+    return (
+        <TouchableOpacity
+            style={styles.smallCard}
+            activeOpacity={0.7}
+            delayPressIn={0}
+            onPress={() => router.push({ pathname: '/player', params: { id: item.id, type: mediaType } })}
+        >
+            <Image source={{ uri: posterUri }} style={styles.smallCardImage} resizeMode="cover" />
+            <View style={styles.translucentRatingBadge}>
+                <Ionicons name="star" size={10} color="#F5C518" />
+                <Text style={styles.smallCardRatingText}>{rating}</Text>
+            </View>
+            <View style={styles.smallCardActions}>
+                <TouchableOpacity style={styles.smallIconBtn} activeOpacity={0.8} onPress={() => onToggleAction(item.id, mediaType, 'watchlist')}>
+                    <Ionicons name={inWatchlist ? "bookmark" : "bookmark-outline"} size={14} color={inWatchlist ? "#F5C518" : "#FFFFFF"} />
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.smallIconBtn} activeOpacity={0.8} onPress={() => onToggleAction(item.id, mediaType, 'watched')}>
+                    <Ionicons name="checkmark-done" size={14} color={inWatched ? "#1F80E0" : "#FFFFFF"} />
+                </TouchableOpacity>
+            </View>
+        </TouchableOpacity>
+    );
+}, (prevProps, nextProps) => {
+    return (
+        prevProps.inWatchlist === nextProps.inWatchlist &&
+        prevProps.inWatched === nextProps.inWatched &&
+        prevProps.item.id === nextProps.item.id
+    );
+});
+
+// 2. UPDATED HORIZONTAL ROW
 const HorizontalRow = React.memo(({ title, data, onAuthAction, watchlist, watched, toggleAction, router }) => {
     if (!data || data.length === 0) return null;
+
+    const handleToggle = useCallback((id, mediaType, listType) => {
+        onAuthAction(() => toggleAction(id, mediaType, listType));
+    }, [onAuthAction, toggleAction]);
+
+    const renderItem = useCallback(({ item }) => (
+        <MovieCard
+            item={item}
+            inWatchlist={!!watchlist[item.id]}
+            inWatched={!!watched[item.id]}
+            onToggleAction={handleToggle}
+            router={router}
+        />
+    ), [watchlist, watched, handleToggle, router]);
 
     return (
         <View style={styles.rowContainer}>
@@ -94,45 +145,25 @@ const HorizontalRow = React.memo(({ title, data, onAuthAction, watchlist, watche
             <FlatList
                 horizontal
                 data={data}
-                keyExtractor={(item, index) => `${item.id}-${index}`}
+                extraData={{ watchlist, watched }}
+                keyExtractor={(item) => String(item.id)}
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={styles.rowListContent}
-                renderItem={({ item }) => {
-                    const inWatchlist = watchlist[item.id];
-                    const inWatched = watched[item.id];
-                    const posterUri = getImageUrl(item.poster_path);
-                    const rating = item.vote_average ? item.vote_average.toFixed(1) : 'NR';
-                    const type = item.media_type || (item.first_air_date ? 'tv' : 'movie');
-
-                    return (
-                        <TouchableOpacity
-                            style={styles.smallCard}
-                            activeOpacity={0.7}
-                            delayPressIn={0}
-                            onPress={() => router.push({ pathname: '/player', params: { id: item.id, type: type } })}
-                        >
-                            <Image source={{ uri: posterUri }} style={styles.smallCardImage} resizeMode="cover" />
-                            <View style={styles.translucentRatingBadge}>
-                                <Ionicons name="star" size={10} color="#F5C518" />
-                                <Text style={styles.smallCardRatingText}>{rating}</Text>
-                            </View>
-                            <View style={styles.smallCardActions}>
-                                <TouchableOpacity style={styles.smallIconBtn} activeOpacity={0.8} onPress={() => onAuthAction(() => toggleAction(item.id, 'watchlist'))}>
-                                    <Ionicons name={inWatchlist ? "bookmark" : "bookmark-outline"} size={14} color={inWatchlist ? "#F5C518" : "#FFFFFF"} />
-                                </TouchableOpacity>
-                                <TouchableOpacity style={styles.smallIconBtn} activeOpacity={0.8} onPress={() => onAuthAction(() => toggleAction(item.id, 'watched'))}>
-                                    <Ionicons name="checkmark-done" size={14} color={inWatched ? "#1F80E0" : "#FFFFFF"} />
-                                </TouchableOpacity>
-                            </View>
-                        </TouchableOpacity>
-                    );
-                }}
+                renderItem={renderItem}
+                initialNumToRender={4}
+                maxToRenderPerBatch={4}
+                windowSize={3}
+                removeClippedSubviews={Platform.OS === 'android'}
+                getItemLayout={(data, index) => ({
+                    length: 122,
+                    offset: 122 * index,
+                    index,
+                })}
             />
         </View>
     );
 });
 
-// Dynamic Language Row - Fetches 1st movie per language
 const LanguageRow = React.memo(({ router }) => {
     const [dynamicImages, setDynamicImages] = useState({});
 
@@ -142,7 +173,6 @@ const LanguageRow = React.memo(({ router }) => {
             await Promise.all(MOCK_LANGUAGES.map(async (lang) => {
                 try {
                     const res = await tmdbService.fetchSection({ type: 'movie', language: lang.code }, {});
-
                     if (res && res.length > 0) {
                         newImages[lang.id] = getImageUrl(res[0].backdrop_path || res[0].poster_path);
                     }
@@ -170,7 +200,6 @@ const LanguageRow = React.memo(({ router }) => {
                         <TouchableOpacity
                             style={[styles.wideCard, { backgroundColor: item.color }]}
                             activeOpacity={0.85}
-                            // Route directly to CategoryScreen, passing the Language Title
                             onPress={() => router.push({ pathname: '/category', params: { title: item.title } })}
                         >
                             <Image source={{ uri: imageUri }} style={styles.languageImage} resizeMode="cover" />
@@ -192,7 +221,6 @@ const LanguageRow = React.memo(({ router }) => {
     );
 });
 
-// Dynamic Genre Row - Pulls 1st movie from existing store arrays
 const GenreRow = React.memo(({ router, lists }) => {
     const genres = [
         { id: 'g1', title: 'Action', data: lists.actionList, tint: 'rgba(150, 50, 50, 0.4)' },
@@ -222,7 +250,6 @@ const GenreRow = React.memo(({ router, lists }) => {
                         <TouchableOpacity
                             style={styles.wideCard}
                             activeOpacity={0.85}
-                            // Route directly to CategoryScreen, passing the Genre Title
                             onPress={() => router.push({ pathname: '/category', params: { title: item.title } })}
                         >
                             <Image source={{ uri: imageUri }} style={styles.genreImage} resizeMode="cover" />
@@ -265,25 +292,99 @@ const HomeScreen = () => {
         fetchAllData();
     }, []);
 
-    // Toggle Filters with a smooth animation
+    useEffect(() => {
+        const syncUserLists = async () => {
+            if (!token) return;
+            try {
+                const response = await fetch(`${BACKEND_URL}/user/lists`, {
+                    headers: { Authorization: `Bearer ${token}` }
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+
+                    // Convert string "123:tv" to object map
+                    const arrayToMap = (arr) => arr.reduce((acc, curr) => {
+                        const [idStr, typeStr] = String(curr).split(':');
+                        acc[idStr] = typeStr || 'movie';
+                        return acc;
+                    }, {});
+
+                    useUserListStore.setState({
+                        watchlist: arrayToMap(data.watchlist || []),
+                        watched: arrayToMap(data.watched || [])
+                    });
+                }
+            } catch (error) {
+                console.error("Failed to sync user lists on load:", error);
+            }
+        };
+
+        syncUserLists();
+    }, [token]);
+
     const toggleFilterMenu = () => {
         LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
         setShowFilters(!showFilters);
     };
 
-    // Memoize actions so rows don't re-render
     const handleAuthAction = useCallback((actionCallback) => {
         if (!token) {
-            Toast.show({ type: 'hotstarInfo', text1: 'Log in for personalization', position: 'top', topOffset: insets.top > 0 ? insets.top + 10 : 50, visibilityTime: 2500 });
+            Toast.show({
+                type: 'hotstarInfo',
+                text1: 'Log in for personalization',
+                position: 'top',
+                topOffset: insets.top > 0 ? insets.top + 10 : 50,
+                visibilityTime: 2500,
+            });
         } else {
             actionCallback();
         }
     }, [token, insets.top]);
 
-    const handleToggleAction = useCallback((id, targetList) => {
-        if (targetList === 'watchlist') toggleWatchlist(id);
-        if (targetList === 'watched') toggleWatched(id);
-    }, [toggleWatchlist, toggleWatched]);
+    const handleToggleAction = useCallback(async (id, mediaType, targetList) => {
+        // Optimistic UI Update
+        if (targetList === 'watchlist') toggleWatchlist(id, mediaType);
+        if (targetList === 'watched') toggleWatched(id, mediaType);
+
+        try {
+            // Construct the ID + Type payload
+            const tmdbIdWithType = `${id}:${mediaType}`;
+
+            const response = await fetch(`${BACKEND_URL}/user/${targetList}/toggle`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${token}`
+                },
+                body: JSON.stringify({ tmdbId: tmdbIdWithType })
+            });
+
+            if (!response.ok) throw new Error('Failed to update on server');
+
+            const data = await response.json();
+
+            // Map data back from backend formats
+            const arrayToMap = (arr) => arr.reduce((acc, curr) => {
+                const [idStr, typeStr] = String(curr).split(':');
+                acc[idStr] = typeStr || 'movie';
+                return acc;
+            }, {});
+
+            useUserListStore.setState({
+                watchlist: arrayToMap(data.watchlist),
+                watched: arrayToMap(data.watched)
+            });
+
+        } catch (error) {
+            console.error('API Sync Error:', error);
+            Toast.show({ type: 'error', text1: `Failed to save to ${targetList}` });
+
+            // Revert Optimistic Update on failure
+            if (targetList === 'watchlist') toggleWatchlist(id, mediaType);
+            if (targetList === 'watched') toggleWatched(id, mediaType);
+        }
+    }, [toggleWatchlist, toggleWatched, token]);
 
     const forceSwipe = (direction, isAuto = false) => {
         isTransitioning.current = true;
@@ -363,14 +464,14 @@ const HomeScreen = () => {
     const nextCardScale = pan.x.interpolate({ inputRange: [-width / 2, 0, width / 2], outputRange: [1, 0.92, 1], extrapolate: 'clamp' });
 
     const renderCardContent = (item) => {
-        const inWatchlist = watchlist[item.id];
-        const inWatched = watched[item.id];
+        const inWatchlist = !!watchlist[item.id];
+        const inWatched = !!watched[item.id];
         const posterUri = getImageUrl(item.poster_path);
         const title = item.title || item.name;
         const dateString = item.release_date || item.first_air_date;
         const year = dateString ? dateString.substring(0, 4) : '';
         const rating = item.vote_average ? item.vote_average.toFixed(1) : 'NR';
-        const type = item.media_type || (item.first_air_date ? 'tv' : 'movie');
+        const mediaType = item.media_type || (item.first_air_date ? 'tv' : 'movie');
 
         return (
             <>
@@ -384,13 +485,13 @@ const HomeScreen = () => {
                     </View>
                 </LinearGradient>
                 <View style={styles.actionButtonsWrapper}>
-                    <TouchableOpacity style={styles.iconActionBtn} activeOpacity={0.8} onPress={() => handleAuthAction(() => handleToggleAction(item.id, 'watchlist'))}>
+                    <TouchableOpacity style={styles.iconActionBtn} activeOpacity={0.8} onPress={() => handleAuthAction(() => handleToggleAction(item.id, mediaType, 'watchlist'))}>
                         <Ionicons name={inWatchlist ? "bookmark" : "bookmark-outline"} size={24} color={inWatchlist ? "#F5C518" : "#FFFFFF"} />
                     </TouchableOpacity>
-                    <TouchableOpacity style={styles.iconActionBtn} activeOpacity={0.8} onPress={() => handleAuthAction(() => handleToggleAction(item.id, 'watched'))}>
+                    <TouchableOpacity style={styles.iconActionBtn} activeOpacity={0.8} onPress={() => handleAuthAction(() => handleToggleAction(item.id, mediaType, 'watched'))}>
                         <Ionicons name="checkmark-done" size={22} color={inWatched ? "#1F80E0" : "#FFFFFF"} />
                     </TouchableOpacity>
-                    <TouchableOpacity style={styles.playButton} activeOpacity={0.8} onPress={() => router.push({ pathname: '/player', params: { id: item.id, type: type } })}>
+                    <TouchableOpacity style={styles.playButton} activeOpacity={0.8} onPress={() => router.push({ pathname: '/player', params: { id: item.id, type: mediaType } })}>
                         <Ionicons name="play" size={26} color="#000000" style={{ marginLeft: 3 }} />
                     </TouchableOpacity>
                 </View>

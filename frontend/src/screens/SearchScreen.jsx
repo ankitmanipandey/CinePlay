@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   StyleSheet,
   Text,
@@ -20,12 +20,13 @@ import {
   useSpeechRecognitionEvent,
 } from 'expo-speech-recognition';
 import { useRouter } from 'expo-router';
-import * as SecureStore from 'expo-secure-store';
 import Toast from 'react-native-toast-message';
 
 // --- API & Config Imports ---
 import { tmdbService } from '../services/tmdbService';
 import { getImageUrl } from '../constants/config';
+import { useUserListStore } from '../store/useUserListStore';
+import { useAuthStore } from '../store/useAuthStore';
 
 const { width } = Dimensions.get('window');
 
@@ -37,6 +38,7 @@ const STANDARD_CARD_WIDTH = (AVAILABLE_WIDTH - (GAP * 2)) / 3;
 const CARD_HEIGHT = STANDARD_CARD_WIDTH * 1.45;
 
 const FILTER_CHIPS = ['Action', 'Comedy', 'Drama', 'Thriller', 'Sci-Fi', 'Horror'];
+const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL;
 
 export default function SearchScreen() {
   const router = useRouter();
@@ -46,14 +48,12 @@ export default function SearchScreen() {
   const [activeChip, setActiveChip] = useState('Action');
 
   // Search state
-  const [results, setResults] = useState([]);
+  const [rawResults, setRawResults] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  // --- Mutually Exclusive List State Tracker ---
-  const [userLists, setUserLists] = useState({
-    watchlist: {},
-    watched: {}
-  });
+  // --- Global State Tracker ---
+  const { watchlist, watched, toggleWatchlist, toggleWatched } = useUserListStore();
+  const { token } = useAuthStore();
 
   // Voice State
   const [isListening, setIsListening] = useState(false);
@@ -74,23 +74,24 @@ export default function SearchScreen() {
       setIsLoading(true);
 
       try {
-        if (searchQuery.trim().length > 0) {
-          // 1. If typing in search bar, prioritize text search
-          const searchData = await tmdbService.searchMulti(searchQuery);
-          setResults(searchData);
-        } else {
-          // 2. If search bar is empty, filter by the active chip!
-          const genreId = GENRE_MAP[activeChip];
+        let rawData = [];
 
+        if (searchQuery.trim().length > 0) {
+          // 1. Text search
+          rawData = await tmdbService.searchMulti(searchQuery);
+        } else {
+          // 2. Chip search or Trending fallback
+          const genreId = GENRE_MAP[activeChip];
           if (genreId) {
-            const genreData = await tmdbService.discoverByGenre(genreId);
-            setResults(genreData);
+            rawData = await tmdbService.discoverByGenre(genreId);
           } else {
-            // Fallback (just in case a chip has no mapped ID)
-            const trendingData = await tmdbService.getTrending();
-            setResults(trendingData);
+            rawData = await tmdbService.getTrending();
           }
         }
+
+        // Store the raw data directly, without filtering it yet
+        setRawResults(rawData);
+
       } catch (error) {
         console.error("Search fetch failed", error);
       } finally {
@@ -98,9 +99,13 @@ export default function SearchScreen() {
       }
     }, 500);
 
-    // IMPORTANT: activeChip is now in the dependency array
+    // REMOVED 'watched' from this array! Now it only fetches when you type or click a chip.
     return () => clearTimeout(delayDebounceFn);
   }, [searchQuery, activeChip]);
+
+  const filteredResults = React.useMemo(() => {
+    return rawResults.filter(item => !watched[item.id]);
+  }, [rawResults, watched]);
 
   // --- Helper to convert flat array to grid rows ---
   const getChunkedRows = (data, chunkSize = 3) => {
@@ -111,8 +116,7 @@ export default function SearchScreen() {
     return chunked;
   };
 
-  const gridRows = getChunkedRows(results);
-
+  const gridRows = getChunkedRows(filteredResults);
 
   // --- Voice Commands ---
   useSpeechRecognitionEvent('start', () => setIsListening(true));
@@ -167,8 +171,8 @@ export default function SearchScreen() {
   };
 
   // --- Auth & Personalization Actions ---
-  const handleAuthAction = async (actionCallback) => {
-    const token = await SecureStore.getItemAsync('userToken');
+  const handleAuthAction = useCallback((actionCallback) => {
+    // Synchronous, instant check against Zustand memory
     if (!token) {
       Toast.show({
         type: 'hotstarInfo',
@@ -180,31 +184,50 @@ export default function SearchScreen() {
     } else {
       actionCallback();
     }
-  };
+  }, [token, insets.top]);
 
-  const handleToggleAction = (id, targetList) => {
-    setUserLists(prev => {
-      const newWatchlist = { ...prev.watchlist };
-      const newWatched = { ...prev.watched };
+  const handleToggleAction = useCallback(async (id, mediaType, targetList) => {
+    // 1. Optimistic UI Update (Instant visual feedback)
+    if (targetList === 'watchlist') toggleWatchlist(id, mediaType);
+    if (targetList === 'watched') toggleWatched(id, mediaType);
 
-      if (targetList === 'watchlist') {
-        if (newWatchlist[id]) {
-          delete newWatchlist[id]; // Toggle Off
-        } else {
-          newWatchlist[id] = true; // Toggle On
-          delete newWatched[id];   // Ensure mutually exclusive
-        }
-      } else if (targetList === 'watched') {
-        if (newWatched[id]) {
-          delete newWatched[id]; // Toggle Off
-        } else {
-          newWatched[id] = true; // Toggle On
-          delete newWatchlist[id]; // Ensure mutually exclusive
-        }
-      }
-      return { watchlist: newWatchlist, watched: newWatched };
-    });
-  };
+    try {
+      const tmdbIdWithType = `${id}:${mediaType}`;
+
+      // 2. Send request to Node.js backend to permanently save
+      const response = await fetch(`${BACKEND_URL}/user/${targetList}/toggle`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ tmdbId: tmdbIdWithType })
+      });
+
+      if (!response.ok) throw new Error('Failed to update on server');
+
+      // 3. Sync exact state from server to guarantee mutual exclusivity safety
+      const data = await response.json();
+      const arrayToMap = (arr) => arr.reduce((acc, curr) => {
+        const [idStr, typeStr] = String(curr).split(':');
+        acc[idStr] = typeStr || 'movie';
+        return acc;
+      }, {});
+
+      useUserListStore.setState({
+        watchlist: arrayToMap(data.watchlist),
+        watched: arrayToMap(data.watched)
+      });
+
+    } catch (error) {
+      console.error('API Sync Error:', error);
+      Toast.show({ type: 'error', text1: `Failed to save to ${targetList}` });
+
+      // Revert Optimistic Update on network failure
+      if (targetList === 'watchlist') toggleWatchlist(id, mediaType);
+      if (targetList === 'watched') toggleWatched(id, mediaType);
+    }
+  }, [toggleWatchlist, toggleWatched, token]);
 
   const renderBadge = (item) => {
     // Generate a contextual badge based on data
@@ -299,9 +322,9 @@ export default function SearchScreen() {
                 {gridRows.map((row, rowIndex) => (
                   <View key={`row-${rowIndex}`} style={styles.row}>
                     {row.map((item) => {
-                      const inWatchlist = userLists.watchlist[item.id];
-                      const inWatched = userLists.watched[item.id];
-                      const mediaType = item.media_type || 'movie';
+                      const inWatchlist = watchlist[item.id];
+                      const inWatched = watched[item.id];
+                      const mediaType = item.media_type || (item.first_air_date ? 'tv' : 'movie');
 
                       // Fallback image if poster is missing
                       const imageUri = getImageUrl(item.poster_path || item.backdrop_path);
@@ -340,7 +363,7 @@ export default function SearchScreen() {
                             <TouchableOpacity
                               style={styles.smallIconBtn}
                               activeOpacity={0.8}
-                              onPress={() => handleAuthAction(() => handleToggleAction(item.id, 'watchlist'))}
+                              onPress={() => handleAuthAction(() => handleToggleAction(item.id, mediaType, 'watchlist'))}
                             >
                               <Ionicons
                                 name={inWatchlist ? "bookmark" : "bookmark-outline"}
@@ -352,7 +375,7 @@ export default function SearchScreen() {
                             <TouchableOpacity
                               style={styles.smallIconBtn}
                               activeOpacity={0.8}
-                              onPress={() => handleAuthAction(() => handleToggleAction(item.id, 'watched'))}
+                              onPress={() => handleAuthAction(() => handleToggleAction(item.id, mediaType, 'watched'))}
                             >
                               <Ionicons
                                 name="checkmark-done"
@@ -367,7 +390,7 @@ export default function SearchScreen() {
                   </View>
                 ))}
 
-                {!isLoading && results.length === 0 && (
+                {!isLoading && filteredResults.length === 0 && (
                   <Text style={{ color: '#8F98A0', textAlign: 'center', marginTop: 40 }}>
                     No results found.
                   </Text>
