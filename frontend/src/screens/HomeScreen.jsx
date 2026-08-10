@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect, useMemo } from 'react';
 import {
     StyleSheet,
     Text,
@@ -11,69 +11,33 @@ import {
     PanResponder,
     ScrollView,
     FlatList,
-    Easing
+    Easing,
+    ActivityIndicator
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import MaskedView from '@react-native-masked-view/masked-view';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import * as SecureStore from 'expo-secure-store';
 import Toast from 'react-native-toast-message';
+
+// --- Global State & Config ---
+import { useMovieStore } from '../store/useMovieStore';
+import { useUserListStore } from '../store/useUserListStore';
+import { useAuthStore } from '../store/useAuthStore';
+import { getImageUrl } from '../constants/config';
 
 const { width } = Dimensions.get('window');
 const SWIPE_THRESHOLD = 60;
 const SWIPE_VELOCITY = 1.0;
 
-// --- Mock Data ---
-const MOCK_MOVIES = [
-    {
-        id: '1',
-        title: 'ASUR 2',
-        subtitle: '|| RISE OF THE DARK SIDE ||',
-        metadata: '2023  •  8 Languages  •  Crime',
-        badgeType: 'imdb',
-        badgeText: 'IMDb 8.5',
-        poster: 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=800&auto=format&fit=crop&q=80',
-    },
-    {
-        id: '2',
-        title: 'SPIDER-MAN',
-        subtitle: 'NO WAY HOME',
-        metadata: '2021  •  10 Languages  •  Action',
-        badgeType: 'rank',
-        badgeText: '#10 in Hindi Today',
-        poster: 'https://images.unsplash.com/photo-1635805737707-575885ab0820?w=800&auto=format&fit=crop&q=80',
-    },
-    {
-        id: '3',
-        title: 'IND vs SL',
-        subtitle: 'India Tour of Sri Lanka 2026',
-        metadata: '5m  •  Cricket',
-        badgeType: 'live',
-        badgeText: 'FOLLOW THE BLUES',
-        poster: 'https://images.unsplash.com/photo-1540747913346-19e32dc3e97e?w=800&auto=format&fit=crop&q=80',
-    },
-];
-
-const MOCK_ROW_POSTERS = [
-    { id: '101', rating: '8.4', image: 'https://images.unsplash.com/photo-1485846234645-a62644f84728?w=300&auto=format&fit=crop&q=60' },
-    { id: '102', rating: '9.1', image: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=300&auto=format&fit=crop&q=60' },
-    { id: '103', rating: '7.8', image: 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=300&auto=format&fit=crop&q=60' },
-    { id: '104', rating: '8.0', image: 'https://images.unsplash.com/photo-1540747913346-19e32dc3e97e?w=300&auto=format&fit=crop&q=60' },
-    { id: '105', rating: '6.5', image: 'https://images.unsplash.com/photo-1635805737707-575885ab0820?w=300&auto=format&fit=crop&q=60' },
-];
-
 const CATEGORIES = [
     "Trending",
     "Top Rated",
-    "Rewinding this Year",
     "Action",
     "Drama",
-    "Inspirational Movies",
     "Horror",
-    "Crime",
-    "Popular in Comedy",
+    "Comedy",
     "Romance"
 ];
 
@@ -94,18 +58,23 @@ const MOCK_GENRES = [
 const HorizontalRow = ({ title, data, onAuthAction, userLists, toggleAction }) => {
     const router = useRouter();
 
+    if (!data || data.length === 0) return null;
+
     return (
         <View style={styles.rowContainer}>
             <Text style={styles.rowTitle}>{title}</Text>
             <FlatList
                 horizontal
                 data={data}
-                keyExtractor={(item) => item.id}
+                keyExtractor={(item) => item.id.toString()}
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={styles.rowListContent}
                 renderItem={({ item }) => {
                     const inWatchlist = userLists.watchlist[item.id];
                     const inWatched = userLists.watched[item.id];
+
+                    const posterUri = getImageUrl(item.poster_path);
+                    const rating = item.vote_average ? item.vote_average.toFixed(1) : 'NR';
 
                     return (
                         <TouchableOpacity
@@ -114,11 +83,11 @@ const HorizontalRow = ({ title, data, onAuthAction, userLists, toggleAction }) =
                             delayPressIn={0}
                             onPress={() => router.push('/player')}
                         >
-                            <Image source={{ uri: item.image }} style={styles.smallCardImage} resizeMode="cover" />
+                            <Image source={{ uri: posterUri }} style={styles.smallCardImage} resizeMode="cover" />
 
                             <View style={styles.translucentRatingBadge}>
                                 <Ionicons name="star" size={10} color="#F5C518" />
-                                <Text style={styles.smallCardRatingText}>{item.rating}</Text>
+                                <Text style={styles.smallCardRatingText}>{rating}</Text>
                             </View>
 
                             <View style={styles.smallCardActions}>
@@ -218,18 +187,29 @@ const HomeScreen = () => {
     const router = useRouter();
     const insets = useSafeAreaInsets();
 
-    const scrollRef = useRef(null);
+    const { trendingMovies, topRatedMovies, fetchTrending, fetchTopRated, isLoading } = useMovieStore();
+    const { watchlist, watched, toggleWatchlist, toggleWatched } = useUserListStore();
+    const { token } = useAuthStore();
+
     const [currentIndex, setCurrentIndex] = useState(0);
-    const panRef = useRef(new Animated.ValueXY());
+
+    const [pan, setPan] = useState(() => new Animated.ValueXY());
     const isDragging = useRef(false);
 
-    const [userLists, setUserLists] = useState({
-        watchlist: {},
-        watched: {}
-    });
+    // THE FIX: Add a transition lock
+    const isTransitioning = useRef(false);
 
-    const handleAuthAction = async (actionCallback) => {
-        const token = await SecureStore.getItemAsync('userToken');
+    const moviesLengthRef = useRef(0);
+    useEffect(() => {
+        moviesLengthRef.current = trendingMovies.length;
+    }, [trendingMovies]);
+
+    useEffect(() => {
+        fetchTrending();
+        fetchTopRated();
+    }, []);
+
+    const handleAuthAction = (actionCallback) => {
         if (!token) {
             Toast.show({
                 type: 'hotstarInfo',
@@ -244,164 +224,133 @@ const HomeScreen = () => {
     };
 
     const handleToggleAction = (id, targetList) => {
-        setUserLists(prev => {
-            const newWatchlist = { ...prev.watchlist };
-            const newWatched = { ...prev.watched };
-
-            if (targetList === 'watchlist') {
-                if (newWatchlist[id]) {
-                    delete newWatchlist[id];
-                } else {
-                    newWatchlist[id] = true;
-                    delete newWatched[id];
-                }
-            } else if (targetList === 'watched') {
-                if (newWatched[id]) {
-                    delete newWatched[id];
-                } else {
-                    newWatched[id] = true;
-                    delete newWatchlist[id];
-                }
-            }
-
-            return { watchlist: newWatchlist, watched: newWatched };
-        });
+        if (targetList === 'watchlist') toggleWatchlist(id);
+        if (targetList === 'watched') toggleWatched(id);
     };
 
-    const panResponder = useRef(
-        PanResponder.create({
-            onMoveShouldSetPanResponderCapture: (_, gestureState) => {
-                const isHorizontal = Math.abs(gestureState.dx) > Math.abs(gestureState.dy);
-                const isSignificant = Math.abs(gestureState.dx) > 5;
-                return isHorizontal && isSignificant;
-            },
-            onMoveShouldSetPanResponder: (_, gestureState) => {
-                const isHorizontal = Math.abs(gestureState.dx) > Math.abs(gestureState.dy);
-                const isSignificant = Math.abs(gestureState.dx) > 5;
-                return isHorizontal && isSignificant;
-            },
-            onPanResponderGrant: () => {
-                isDragging.current = true;
-                if (scrollRef.current) {
-                    scrollRef.current.setNativeProps({ scrollEnabled: false });
-                }
-            },
-            onPanResponderMove: (_, gestureState) => {
-                panRef.current.setValue({ x: gestureState.dx, y: 0 });
-            },
-            onPanResponderTerminationRequest: () => false,
-            onPanResponderRelease: (_, gestureState) => {
-                isDragging.current = false;
-                if (scrollRef.current) {
-                    scrollRef.current.setNativeProps({ scrollEnabled: true });
-                }
-
-                if (gestureState.dx > SWIPE_THRESHOLD || gestureState.vx > SWIPE_VELOCITY) {
-                    forceSwipe('right', false);
-                } else if (gestureState.dx < -SWIPE_THRESHOLD || gestureState.vx < -SWIPE_VELOCITY) {
-                    forceSwipe('left', false);
-                } else {
-                    resetPosition();
-                }
-            },
-            onPanResponderTerminate: () => {
-                isDragging.current = false;
-                if (scrollRef.current) {
-                    scrollRef.current.setNativeProps({ scrollEnabled: true });
-                }
-                resetPosition();
-            }
-        })
-    ).current;
-
     const forceSwipe = (direction, isAuto = false) => {
+        isTransitioning.current = true; // block new gestures immediately
         const x = direction === 'right' ? width * 1.5 : -width * 1.5;
 
-        Animated.timing(panRef.current, {
+        Animated.timing(pan, {
             toValue: { x, y: 0 },
-            duration: isAuto ? 700 : 350,
+            duration: isAuto ? 700 : 300,
             easing: isAuto ? Easing.inOut(Easing.sin) : Easing.out(Easing.quad),
-            useNativeDriver: true,
+            useNativeDriver: false,
         }).start(() => onSwipeComplete());
     };
 
     const onSwipeComplete = () => {
-        // ✨ THE FIX IS HERE ✨
-        // Instead of instantly resetting the old card's position (which causes the snap-back flash),
-        // we create a fresh, clean Animated Value for the next card to use seamlessly!
-        panRef.current = new Animated.ValueXY();
-        setCurrentIndex((prevIndex) => (prevIndex + 1) % MOCK_MOVIES.length);
+        setPan(new Animated.ValueXY());
+        setCurrentIndex((prevIndex) => (prevIndex + 1) % (moviesLengthRef.current || 1));
     };
 
+    // Only release the lock AFTER the new pan/panResponder has actually mounted
+    useEffect(() => {
+        isTransitioning.current = false;
+    }, [pan]);
+
     const resetPosition = () => {
-        Animated.spring(panRef.current, {
+        Animated.spring(pan, {
             toValue: { x: 0, y: 0 },
             friction: 5,
-            useNativeDriver: true,
+            useNativeDriver: false,
         }).start();
     };
 
+    const panResponder = useMemo(() => PanResponder.create({
+        onMoveShouldSetPanResponderCapture: (_, gestureState) => {
+            if (isTransitioning.current) return false; // Gate the responder
+            const isHorizontal = Math.abs(gestureState.dx) > Math.abs(gestureState.dy);
+            return isHorizontal && Math.abs(gestureState.dx) > 5;
+        },
+        onMoveShouldSetPanResponder: (_, gestureState) => {
+            if (isTransitioning.current) return false; // Gate the responder
+            const isHorizontal = Math.abs(gestureState.dx) > Math.abs(gestureState.dy);
+            return isHorizontal && Math.abs(gestureState.dx) > 5;
+        },
+        onPanResponderGrant: () => {
+            isDragging.current = true;
+            pan.stopAnimation(); // cheap insurance against leftover animation
+            pan.extractOffset();
+        },
+        onPanResponderMove: Animated.event(
+            [null, { dx: pan.x }],
+            { useNativeDriver: false }
+        ),
+        onPanResponderTerminationRequest: () => false,
+        onPanResponderRelease: (_, gestureState) => {
+            isDragging.current = false;
+            pan.flattenOffset();
+
+            if (gestureState.dx > SWIPE_THRESHOLD || gestureState.vx > SWIPE_VELOCITY) {
+                forceSwipe('right', false);
+            } else if (gestureState.dx < -SWIPE_THRESHOLD || gestureState.vx < -SWIPE_VELOCITY) {
+                forceSwipe('left', false);
+            } else {
+                resetPosition();
+            }
+        },
+        onPanResponderTerminate: () => {
+            isDragging.current = false;
+            resetPosition();
+        }
+    }), [pan]);
+
     useEffect(() => {
         const timer = setInterval(() => {
-            if (!isDragging.current) {
+            if (!isDragging.current && !isTransitioning.current && trendingMovies.length > 0) {
                 forceSwipe('left', true);
             }
-        }, 3000);
+        }, 3500);
 
         return () => clearInterval(timer);
-    }, [currentIndex]);
+    }, [pan, trendingMovies.length]);
 
-    const rotate = panRef.current.x.interpolate({
+    const rotate = pan.x.interpolate({
         inputRange: [-width / 2, 0, width / 2],
         outputRange: ['-10deg', '0deg', '10deg'],
         extrapolate: 'clamp',
     });
 
-    const topCardOpacity = panRef.current.x.interpolate({
+    const topCardOpacity = pan.x.interpolate({
         inputRange: [-width / 1.5, 0, width / 1.5],
         outputRange: [0, 1, 0],
         extrapolate: 'clamp',
     });
 
-    const nextCardScale = panRef.current.x.interpolate({
+    const nextCardScale = pan.x.interpolate({
         inputRange: [-width / 2, 0, width / 2],
         outputRange: [1, 0.92, 1],
         extrapolate: 'clamp',
     });
 
     const renderCardContent = (item) => {
-        const inWatchlist = userLists.watchlist[item.id];
-        const inWatched = userLists.watched[item.id];
+        const inWatchlist = watchlist[item.id];
+        const inWatched = watched[item.id];
+
+        const posterUri = getImageUrl(item.poster_path);
+        const title = item.title || item.name;
+        const year = item.release_date ? item.release_date.substring(0, 4) : '';
+        const rating = item.vote_average ? item.vote_average.toFixed(1) : 'NR';
 
         return (
             <>
-                <Image source={{ uri: item.poster }} style={styles.mainCardImage} resizeMode="cover" />
+                <Image source={{ uri: posterUri }} style={styles.mainCardImage} resizeMode="cover" />
 
-                {item.badgeType !== 'none' && (
-                    <View style={styles.badgeContainer}>
-                        {item.badgeType === 'imdb' && (
-                            <>
-                                <Ionicons name="ticket" size={13} color="#F5C518" style={{ marginRight: 4 }} />
-                                <Text style={styles.badgeText}>{item.badgeText}</Text>
-                            </>
-                        )}
-                        {item.badgeType === 'rank' && (
-                            <>
-                                <Ionicons name="trophy" size={12} color="#F5C518" style={{ marginRight: 4 }} />
-                                <Text style={styles.badgeText}>{item.badgeText}</Text>
-                            </>
-                        )}
-                    </View>
-                )}
+                <View style={styles.badgeContainer}>
+                    <Ionicons name="ticket" size={13} color="#F5C518" style={{ marginRight: 4 }} />
+                    <Text style={styles.badgeText}>IMDb {rating}</Text>
+                </View>
 
                 <LinearGradient
                     colors={['transparent', 'rgba(10, 10, 12, 0.75)', '#0A0A0C']}
                     style={styles.gradientOverlay}
                 >
                     <View style={styles.movieDetailsContainer}>
-                        <Text style={styles.movieTitle} numberOfLines={1}>{item.title}</Text>
-                        <Text style={styles.movieSubtitle} numberOfLines={1}>{item.subtitle}</Text>
-                        <Text style={styles.metadataText}>{item.metadata}</Text>
+                        <Text style={styles.movieTitle} numberOfLines={1}>{title}</Text>
+                        <Text style={styles.movieSubtitle} numberOfLines={2}>{item.overview}</Text>
+                        <Text style={styles.metadataText}>{year}  •  TMDB</Text>
                     </View>
                 </LinearGradient>
 
@@ -443,9 +392,19 @@ const HomeScreen = () => {
     };
 
     const renderCardStack = () => {
-        if (MOCK_MOVIES.length === 0) return null;
-        const topItem = MOCK_MOVIES[currentIndex];
-        const nextItem = MOCK_MOVIES[(currentIndex + 1) % MOCK_MOVIES.length];
+        if (isLoading || trendingMovies.length === 0) {
+            return (
+                <View style={[styles.mainCardContainer, { justifyContent: 'center', alignItems: 'center' }]}>
+                    <ActivityIndicator size="large" color="#1F80E0" />
+                </View>
+            );
+        }
+
+        const safeIndex = currentIndex % trendingMovies.length;
+        const nextIndex = (currentIndex + 1) % trendingMovies.length;
+
+        const topItem = trendingMovies[safeIndex];
+        const nextItem = trendingMovies[nextIndex];
 
         return (
             <>
@@ -462,7 +421,7 @@ const HomeScreen = () => {
                         styles.mainCardContainer,
                         {
                             opacity: topCardOpacity,
-                            transform: [{ translateX: panRef.current.x }, { rotate: rotate }],
+                            transform: [{ translateX: pan.x }, { rotate: rotate }],
                             zIndex: 99,
                         },
                     ]}
@@ -499,7 +458,6 @@ const HomeScreen = () => {
                 </View>
 
                 <ScrollView
-                    ref={scrollRef}
                     showsVerticalScrollIndicator={false}
                     contentContainerStyle={styles.scrollContent}
                     overScrollMode="never"
@@ -518,9 +476,9 @@ const HomeScreen = () => {
                             <HorizontalRow
                                 key={index.toString()}
                                 title={categoryTitle}
-                                data={MOCK_ROW_POSTERS}
+                                data={index % 2 === 0 ? topRatedMovies : trendingMovies}
                                 onAuthAction={handleAuthAction}
-                                userLists={userLists}
+                                userLists={{ watchlist, watched }}
                                 toggleAction={handleToggleAction}
                             />
                         ))}
@@ -561,8 +519,8 @@ const styles = StyleSheet.create({
     gradientOverlay: { position: 'absolute', bottom: 0, left: 0, right: 0, height: '55%', justifyContent: 'flex-end', paddingHorizontal: 16, paddingBottom: 16 },
     movieDetailsContainer: { width: '72%' },
     movieTitle: { color: '#F5C518', fontSize: 26, fontWeight: '900', letterSpacing: 0.5, textShadowColor: 'rgba(0, 0, 0, 0.8)', textShadowOffset: { width: 0, height: 2 }, textShadowRadius: 6 },
-    movieSubtitle: { color: '#E0E0E0', fontSize: 10, fontWeight: '700', letterSpacing: 1.2, marginVertical: 3 },
-    metadataText: { color: '#B0B5B9', fontSize: 11, fontWeight: '500' },
+    movieSubtitle: { color: '#E0E0E0', fontSize: 10, fontWeight: '500', lineHeight: 14, marginVertical: 4 },
+    metadataText: { color: '#B0B5B9', fontSize: 11, fontWeight: 'bold' },
 
     actionButtonsWrapper: {
         position: 'absolute',
