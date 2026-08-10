@@ -137,7 +137,7 @@ export default function SearchScreen() {
     const token = await SecureStore.getItemAsync('userToken');
     if (!token) {
       Toast.show({
-        type: 'info',
+        type: 'hotstarInfo',
         text1: 'Log in for personalization',
         position: 'top',
         topOffset: insets.top > 0 ? insets.top + 10 : 50,

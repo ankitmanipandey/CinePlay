@@ -10,7 +10,7 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router'; // <-- Added useFocusEffect
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context'; 
 import axios from 'axios';
 import * as SecureStore from 'expo-secure-store';
 import Toast from 'react-native-toast-message';
@@ -33,7 +33,7 @@ const ProfileScreen = () => {
         useCallback(() => {
             const checkLoginStatus = async () => {
                 const token = await SecureStore.getItemAsync('userToken');
-                setIsLoggedIn(!!token);
+                setIsLoggedIn(!!token); 
             };
             checkLoginStatus();
         }, [])
@@ -43,11 +43,11 @@ const ProfileScreen = () => {
         try {
             await axios.post(`${process.env.EXPO_PUBLIC_API_URL}/logout`);
             await SecureStore.deleteItemAsync('userToken');
-
+            
             setIsLoggedIn(false);
 
             Toast.show({
-                type: 'hotstarSuccess',
+                type: 'hotstarSuccess', 
                 text1: 'Logged out successfully',
                 position: 'top',
                 topOffset: insets.top > 0 ? insets.top + 10 : 50,

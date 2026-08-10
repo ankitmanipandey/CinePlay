@@ -23,6 +23,20 @@ const toastConfig = {
       </LinearGradient>
     </View>
   ),
+  hotstarInfo: ({ text1 }) => (
+    <View style={styles.toastWrapper}>
+      <LinearGradient
+        colors={['#1F80E0', '#D63484']}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.toastContainer}
+      >
+        {/* Changed the icon to information-circle */}
+        <Ionicons name="information-circle" size={20} color="#FFFFFF" />
+        <Text style={styles.toastText}>{text1}</Text>
+      </LinearGradient>
+    </View>
+  )
 };
 
 export default function RootLayout() {

@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import {
     StyleSheet,
     Text,
@@ -10,7 +10,8 @@ import {
     Animated,
     PanResponder,
     ScrollView,
-    FlatList
+    FlatList,
+    Easing
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -90,7 +91,6 @@ const MOCK_GENRES = [
     { id: 'g4', title: 'Drama', image: 'https://images.unsplash.com/photo-1522869635100-9f4c5e86aa37?w=300&auto=format&fit=crop&q=60', tint: 'rgba(50, 120, 120, 0.75)' },
 ];
 
-// --- Reusable Components ---
 const HorizontalRow = ({ title, data, onAuthAction, userLists, toggleAction }) => {
     const router = useRouter();
 
@@ -221,6 +221,7 @@ const HomeScreen = () => {
     const scrollRef = useRef(null);
     const [currentIndex, setCurrentIndex] = useState(0);
     const panRef = useRef(new Animated.ValueXY());
+    const isDragging = useRef(false);
 
     const [userLists, setUserLists] = useState({
         watchlist: {},
@@ -231,7 +232,7 @@ const HomeScreen = () => {
         const token = await SecureStore.getItemAsync('userToken');
         if (!token) {
             Toast.show({
-                type: 'info',
+                type: 'hotstarInfo',
                 text1: 'Log in for personalization',
                 position: 'top',
                 topOffset: insets.top > 0 ? insets.top + 10 : 50,
@@ -269,7 +270,6 @@ const HomeScreen = () => {
 
     const panResponder = useRef(
         PanResponder.create({
-            // Capture if it is distinctly a horizontal gesture
             onMoveShouldSetPanResponderCapture: (_, gestureState) => {
                 const isHorizontal = Math.abs(gestureState.dx) > Math.abs(gestureState.dy);
                 const isSignificant = Math.abs(gestureState.dx) > 5;
@@ -281,6 +281,7 @@ const HomeScreen = () => {
                 return isHorizontal && isSignificant;
             },
             onPanResponderGrant: () => {
+                isDragging.current = true;
                 if (scrollRef.current) {
                     scrollRef.current.setNativeProps({ scrollEnabled: false });
                 }
@@ -288,22 +289,23 @@ const HomeScreen = () => {
             onPanResponderMove: (_, gestureState) => {
                 panRef.current.setValue({ x: gestureState.dx, y: 0 });
             },
-            // CRITICAL FIX: Tell the OS to NOT let the ScrollView steal this gesture once it starts
             onPanResponderTerminationRequest: () => false,
             onPanResponderRelease: (_, gestureState) => {
+                isDragging.current = false;
                 if (scrollRef.current) {
                     scrollRef.current.setNativeProps({ scrollEnabled: true });
                 }
 
                 if (gestureState.dx > SWIPE_THRESHOLD || gestureState.vx > SWIPE_VELOCITY) {
-                    forceSwipe('right');
+                    forceSwipe('right', false);
                 } else if (gestureState.dx < -SWIPE_THRESHOLD || gestureState.vx < -SWIPE_VELOCITY) {
-                    forceSwipe('left');
+                    forceSwipe('left', false);
                 } else {
                     resetPosition();
                 }
             },
             onPanResponderTerminate: () => {
+                isDragging.current = false;
                 if (scrollRef.current) {
                     scrollRef.current.setNativeProps({ scrollEnabled: true });
                 }
@@ -312,16 +314,21 @@ const HomeScreen = () => {
         })
     ).current;
 
-    const forceSwipe = (direction) => {
-        const x = direction === 'right' ? width * 2 : -width * 2;
+    const forceSwipe = (direction, isAuto = false) => {
+        const x = direction === 'right' ? width * 1.5 : -width * 1.5;
+
         Animated.timing(panRef.current, {
             toValue: { x, y: 0 },
-            duration: 250,
-            useNativeDriver: false,
+            duration: isAuto ? 700 : 350,
+            easing: isAuto ? Easing.inOut(Easing.sin) : Easing.out(Easing.quad),
+            useNativeDriver: true,
         }).start(() => onSwipeComplete());
     };
 
     const onSwipeComplete = () => {
+        // ✨ THE FIX IS HERE ✨
+        // Instead of instantly resetting the old card's position (which causes the snap-back flash),
+        // we create a fresh, clean Animated Value for the next card to use seamlessly!
         panRef.current = new Animated.ValueXY();
         setCurrentIndex((prevIndex) => (prevIndex + 1) % MOCK_MOVIES.length);
     };
@@ -330,9 +337,19 @@ const HomeScreen = () => {
         Animated.spring(panRef.current, {
             toValue: { x: 0, y: 0 },
             friction: 5,
-            useNativeDriver: false,
+            useNativeDriver: true,
         }).start();
     };
+
+    useEffect(() => {
+        const timer = setInterval(() => {
+            if (!isDragging.current) {
+                forceSwipe('left', true);
+            }
+        }, 3000);
+
+        return () => clearInterval(timer);
+    }, [currentIndex]);
 
     const rotate = panRef.current.x.interpolate({
         inputRange: [-width / 2, 0, width / 2],
@@ -485,8 +502,8 @@ const HomeScreen = () => {
                     ref={scrollRef}
                     showsVerticalScrollIndicator={false}
                     contentContainerStyle={styles.scrollContent}
-                    overScrollMode="never" // CRITICAL FIX: Disables stretching glow on Android
-                    bounces={false}        // CRITICAL FIX: Disables bouncing on iOS
+                    overScrollMode="never"
+                    bounces={false}
                 >
                     <View style={styles.sectionHeader}>
                         <Text style={styles.sectionTitle}>For You</Text>
