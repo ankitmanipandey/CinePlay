@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
     StyleSheet,
     Text,
@@ -7,7 +7,8 @@ import {
     FlatList,
     Image,
     Dimensions,
-    StatusBar
+    StatusBar,
+    ActivityIndicator
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -16,6 +17,11 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import Toast from 'react-native-toast-message';
 
+// --- API & Store Imports ---
+import { tmdbService } from '../services/tmdbService';
+import { getImageUrl } from '../constants/config';
+import { useUserListStore } from '../store/useUserListStore';
+
 const { width } = Dimensions.get('window');
 const SCREEN_PADDING = 12;
 const GAP = 8;
@@ -23,32 +29,71 @@ const AVAILABLE_WIDTH = width - (SCREEN_PADDING * 2);
 const CARD_WIDTH = (AVAILABLE_WIDTH - (GAP * 2)) / 3;
 const CARD_HEIGHT = CARD_WIDTH * 1.5;
 
-// Mock Data matching the grid style in the images, now including ratings
-const GRID_MOCK_DATA = [
-    { id: '1', poster: 'https://images.unsplash.com/photo-1474552226712-ac0f0961a954?w=400&q=80', topBadge: null, bottomBadge: 'NEW RELEASE', bottomBadgeColor: '#E6398A', rating: '8.4' },
-    { id: '2', poster: 'https://images.unsplash.com/photo-1522869635100-9f4c5e86aa37?w=400&q=80', topBadge: 'TOP\n10', bottomBadge: null, bottomText: 'हिन्दी', rating: '9.1' },
-    { id: '3', poster: 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=400&q=80', topBadge: 'TOP\n10', bottomBadge: 'NEW EPISODES FRI', bottomBadgeColor: '#8B22D4', rating: '7.8' },
-    { id: '4', poster: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=400&q=80', topBadge: null, bottomBadge: null, bottomText: 'हिन्दी', rating: '8.0' },
-    { id: '5', poster: 'https://images.unsplash.com/photo-1508614589041-895b88991e3e?w=400&q=80', topBadge: null, bottomBadge: 'NEWLY ADDED', bottomBadgeColor: '#8B22D4', rating: '6.5' },
-    { id: '6', poster: 'https://images.unsplash.com/photo-1614729939124-03290b55c9ce?w=400&q=80', topBadge: 'TOP\n10', bottomBadge: null, bottomText: 'हिन्दी', rating: '8.8' },
-    { id: '7', poster: 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=400&q=80', topBadge: null, bottomBadge: 'NEWLY ADDED', bottomBadgeColor: '#8B22D4', rating: '7.2' },
-    { id: '8', poster: 'https://images.unsplash.com/photo-1505635552518-3448ff116af3?w=400&q=80', topBadge: null, bottomBadge: null, bottomText: 'हिन्दी', rating: '7.5' },
-    { id: '9', poster: 'https://images.unsplash.com/photo-1511895426328-dc8714191300?w=400&q=80', topBadge: null, bottomBadge: null, bottomText: 'ASK ME WHAT YOU WANT', rating: '8.1' },
-    { id: '10', poster: 'https://images.unsplash.com/photo-1540747913346-19e32dc3e97e?w=400&q=80', topBadge: null, bottomBadge: null, bottomText: 'हिन्दी', rating: '6.9' },
-    { id: '11', poster: 'https://images.unsplash.com/photo-1605806616949-1e87b487cb2a?w=400&q=80', topBadge: null, bottomBadge: 'NEW SEASON', bottomBadgeColor: '#8B22D4', rating: '9.3' },
-    { id: '12', poster: 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=400&q=80', topBadge: null, bottomBadge: null, bottomText: 'Wuthering Heights', rating: '8.5' },
-];
+// Map Home Screen card titles to TMDB API values
+const TITLE_TO_API_MAP = {
+    // Languages
+    'Hindi': { type: 'language', val: 'hi' },
+    'English': { type: 'language', val: 'en' },
+    'Tamil': { type: 'language', val: 'ta' },
+    'Telugu': { type: 'language', val: 'te' },
+    'Punjabi': { type: 'language', val: 'pa' },
+    'Malayalam': { type: 'language', val: 'ml' },
+    // Genres
+    'Action': { type: 'genre', val: 28 },
+    'Comedy': { type: 'genre', val: 35 },
+    'Drama': { type: 'genre', val: 18 },
+    'Thriller': { type: 'genre', val: 53 },
+    'Sci-Fi': { type: 'genre', val: 878 },
+    'Horror': { type: 'genre', val: 27 },
+    'Romance': { type: 'genre', val: 10749 },
+};
 
 export default function CategoryScreen() {
     const router = useRouter();
     const insets = useSafeAreaInsets();
-    const { title } = useLocalSearchParams(); // Captures the title passed from HomeScreen
+    const { title } = useLocalSearchParams();
 
-    // --- Mutually Exclusive List State Tracker ---
-    const [userLists, setUserLists] = useState({
-        watchlist: {},
-        watched: {}
-    });
+    const [data, setData] = useState([]);
+    const [isLoading, setIsLoading] = useState(true);
+
+    // Global Store for personalization
+    const { watchlist, watched, toggleWatchlist, toggleWatched } = useUserListStore();
+
+    // Fetch data based on category title
+    useEffect(() => {
+        const loadData = async () => {
+            setIsLoading(true);
+            try {
+                let results = [];
+                const mapInfo = TITLE_TO_API_MAP[title];
+
+                if (mapInfo) {
+                    if (mapInfo.type === 'language') {
+                        // Fetch both movies and tv shows for a specific language
+                        results = await tmdbService.fetchSection({ type: 'all', language: mapInfo.val }, {}, {});
+                    } else if (mapInfo.type === 'genre') {
+                        // Fetch both movies and tv shows for a specific genre ID
+                        results = await tmdbService.fetchSection(
+                            { type: 'all' },
+                            { with_genres: mapInfo.val },
+                            { with_genres: mapInfo.val }
+                        );
+                    }
+                } else {
+                    // Fallback to general trending if the title doesn't match the map
+                    results = await tmdbService.getTrending?.() || [];
+                }
+
+                setData(results);
+            } catch (err) {
+                console.error('Failed to load category data:', err);
+            } finally {
+                setIsLoading(false);
+            }
+        };
+
+        if (title) loadData();
+    }, [title]);
 
     const handleAuthAction = async (actionCallback) => {
         const token = await SecureStore.getItemAsync('userToken');
@@ -66,43 +111,45 @@ export default function CategoryScreen() {
     };
 
     const handleToggleAction = (id, targetList) => {
-        setUserLists(prev => {
-            const newWatchlist = { ...prev.watchlist };
-            const newWatched = { ...prev.watched };
-
-            if (targetList === 'watchlist') {
-                if (newWatchlist[id]) {
-                    delete newWatchlist[id]; // Toggle Off
-                } else {
-                    newWatchlist[id] = true; // Toggle On
-                    delete newWatched[id];   // Ensure mutually exclusive
-                }
-            } else if (targetList === 'watched') {
-                if (newWatched[id]) {
-                    delete newWatched[id]; // Toggle Off
-                } else {
-                    newWatched[id] = true; // Toggle On
-                    delete newWatchlist[id]; // Ensure mutually exclusive
-                }
-            }
-            return { watchlist: newWatchlist, watched: newWatched };
-        });
+        if (targetList === 'watchlist') {
+            toggleWatchlist(id);
+            if (watched[id]) toggleWatched(id); // Keep mutually exclusive
+        } else if (targetList === 'watched') {
+            toggleWatched(id);
+            if (watchlist[id]) toggleWatchlist(id); // Keep mutually exclusive
+        }
     };
 
     const renderMovieCard = ({ item }) => {
-        const inWatchlist = userLists.watchlist[item.id];
-        const inWatched = userLists.watched[item.id];
+        const inWatchlist = watchlist[item.id];
+        const inWatched = watched[item.id];
+
+        // Dynamically compute badges based on real data
+        const posterUri = getImageUrl(item.poster_path || item.backdrop_path);
+        const rating = item.vote_average ? item.vote_average.toFixed(1) : null;
+        const mediaType = item.media_type || (item.first_air_date ? 'tv' : 'movie');
+
+        const isNew = item.release_date && item.release_date > '2024-01-01';
+        const bottomBadge = isNew ? 'NEW RELEASE' : null;
+        const topBadge = item.popularity > 1500 ? 'TOP\n10' : null;
+        const bottomText = mediaType === 'tv' ? 'SERIES' : null;
 
         return (
             <TouchableOpacity
                 style={styles.cardContainer}
                 activeOpacity={0.8}
-                onPress={() => router.push('/player')}
+                onPress={() => router.push({ pathname: '/player', params: { id: item.id, type: mediaType } })}
             >
-                <Image source={{ uri: item.poster }} style={styles.cardImage} resizeMode="cover" />
+                {posterUri ? (
+                    <Image source={{ uri: posterUri }} style={styles.cardImage} resizeMode="cover" />
+                ) : (
+                    <View style={[styles.cardImage, { backgroundColor: '#25252A', justifyContent: 'center', alignItems: 'center' }]}>
+                        <Ionicons name="film-outline" size={24} color="#8F98A0" />
+                    </View>
+                )}
 
                 {/* Dark gradient for text readability if there is bottom text */}
-                {item.bottomText && (
+                {bottomText && (
                     <LinearGradient
                         colors={['transparent', 'rgba(0,0,0,0.9)']}
                         style={styles.cardBottomGradient}
@@ -110,17 +157,17 @@ export default function CategoryScreen() {
                 )}
 
                 {/* IMDb Rating Badge (Top Left) */}
-                {item.rating && (
+                {rating && (
                     <View style={styles.translucentRatingBadge}>
                         <Ionicons name="star" size={10} color="#F5C518" />
-                        <Text style={styles.ratingText}>{item.rating}</Text>
+                        <Text style={styles.ratingText}>{rating}</Text>
                     </View>
                 )}
 
                 {/* Action Buttons Overlay (Top Right)
                     Dynamically shifted down if the 'TOP 10' badge is present so they don't overlap 
                 */}
-                <View style={[styles.cardActions, { top: item.topBadge ? 32 : 6 }]}>
+                <View style={[styles.cardActions, { top: topBadge ? 32 : 6 }]}>
                     <TouchableOpacity
                         style={styles.smallIconBtn}
                         activeOpacity={0.8}
@@ -147,23 +194,23 @@ export default function CategoryScreen() {
                 </View>
 
                 {/* Top 10 Badge */}
-                {item.topBadge && (
+                {topBadge && (
                     <View style={styles.topBadgeContainer}>
-                        <Text style={styles.topBadgeText}>{item.topBadge}</Text>
+                        <Text style={styles.topBadgeText}>{topBadge}</Text>
                     </View>
                 )}
 
                 {/* Bottom Solid Badge (e.g., NEW RELEASE) */}
-                {item.bottomBadge && (
-                    <View style={[styles.bottomBadgeContainer, { backgroundColor: item.bottomBadgeColor }]}>
-                        <Text style={styles.bottomBadgeText}>{item.bottomBadge}</Text>
+                {bottomBadge && (
+                    <View style={[styles.bottomBadgeContainer, { backgroundColor: '#E6398A' }]}>
+                        <Text style={styles.bottomBadgeText}>{bottomBadge}</Text>
                     </View>
                 )}
 
-                {/* Bottom Overlay Text (e.g., हिन्दी) */}
-                {item.bottomText && !item.bottomBadge && (
+                {/* Bottom Overlay Text (e.g., SERIES) */}
+                {bottomText && !bottomBadge && (
                     <View style={styles.bottomTextContainer}>
-                        <Text style={styles.bottomText} numberOfLines={2}>{item.bottomText}</Text>
+                        <Text style={styles.bottomText} numberOfLines={2}>{bottomText}</Text>
                     </View>
                 )}
             </TouchableOpacity>
@@ -184,15 +231,26 @@ export default function CategoryScreen() {
                 </View>
 
                 {/* Grid Content */}
-                <FlatList
-                    data={GRID_MOCK_DATA}
-                    keyExtractor={(item) => item.id}
-                    numColumns={3}
-                    contentContainerStyle={styles.listContent}
-                    columnWrapperStyle={styles.columnWrapper}
-                    showsVerticalScrollIndicator={false}
-                    renderItem={renderMovieCard}
-                />
+                {isLoading ? (
+                    <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+                        <ActivityIndicator size="large" color="#1F80E0" />
+                    </View>
+                ) : (
+                    <FlatList
+                        data={data}
+                        keyExtractor={(item, index) => `${item.id}-${index}`}
+                        numColumns={3}
+                        contentContainerStyle={styles.listContent}
+                        columnWrapperStyle={styles.columnWrapper}
+                        showsVerticalScrollIndicator={false}
+                        renderItem={renderMovieCard}
+                        ListEmptyComponent={
+                            <Text style={{ color: '#8F98A0', textAlign: 'center', marginTop: 40 }}>
+                                No titles found for this category.
+                            </Text>
+                        }
+                    />
+                )}
             </View>
         </LinearGradient>
     );

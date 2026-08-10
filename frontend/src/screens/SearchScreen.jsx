@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   StyleSheet,
   Text,
@@ -23,6 +23,10 @@ import { useRouter } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import Toast from 'react-native-toast-message';
 
+// --- API & Config Imports ---
+import { tmdbService } from '../services/tmdbService';
+import { getImageUrl } from '../constants/config';
+
 const { width } = Dimensions.get('window');
 
 // --- Grid Calculations ---
@@ -30,40 +34,9 @@ const SCREEN_PADDING = 12;
 const GAP = 8;
 const AVAILABLE_WIDTH = width - (SCREEN_PADDING * 2);
 const STANDARD_CARD_WIDTH = (AVAILABLE_WIDTH - (GAP * 2)) / 3;
-const DOUBLE_CARD_WIDTH = (STANDARD_CARD_WIDTH * 2) + GAP;
 const CARD_HEIGHT = STANDARD_CARD_WIDTH * 1.45;
 
-// --- Mock Data (Movies Only) ---
 const FILTER_CHIPS = ['Action', 'Comedy', 'Drama', 'Thriller', 'Sci-Fi', 'Horror'];
-
-const TRENDING_ROWS = [
-  {
-    id: 'row1',
-    type: 'standard',
-    items: [
-      { id: '1', badge: 'NEW RELEASE', rating: '8.5', image: 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=400&q=80' },
-      { id: '2', badge: 'TRENDING NOW', rating: '7.8', image: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=400&q=80' },
-      { id: '3', badge: null, rating: '6.9', image: 'https://images.unsplash.com/photo-1474552226712-ac0f0961a954?w=400&q=80' }
-    ]
-  },
-  {
-    id: 'row2',
-    type: 'standard',
-    items: [
-      { id: '4', badge: null, rating: '8.1', image: 'https://images.unsplash.com/photo-1522869635100-9f4c5e86aa37?w=400&q=80' },
-      { id: '5', badge: 'NEW RELEASE', rating: '7.4', image: 'https://images.unsplash.com/photo-1505635552518-3448ff116af3?w=400&q=80' },
-      { id: '6', badge: null, rating: '8.8', image: 'https://images.unsplash.com/photo-1614729939124-03290b55c9ce?w=400&q=80' }
-    ]
-  },
-  {
-    id: 'row3',
-    type: 'asymmetric',
-    items: [
-      { id: '7', badge: null, rating: '9.0', image: 'https://images.unsplash.com/photo-1508614589041-895b88991e3e?w=800&q=80', span: 2 },
-      { id: '8', badge: null, rating: '6.5', image: 'https://images.unsplash.com/photo-1511895426328-dc8714191300?w=400&q=80', span: 1 }
-    ]
-  }
-];
 
 export default function SearchScreen() {
   const router = useRouter();
@@ -71,6 +44,10 @@ export default function SearchScreen() {
 
   const [searchQuery, setSearchQuery] = useState('');
   const [activeChip, setActiveChip] = useState('Action');
+
+  // Search state
+  const [results, setResults] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
 
   // --- Mutually Exclusive List State Tracker ---
   const [userLists, setUserLists] = useState({
@@ -81,6 +58,63 @@ export default function SearchScreen() {
   // Voice State
   const [isListening, setIsListening] = useState(false);
 
+  // --- TMDB Genre ID Mapping ---
+  const GENRE_MAP = {
+    'Action': 28,
+    'Comedy': 35,
+    'Drama': 18,
+    'Thriller': 53,
+    'Sci-Fi': 878,
+    'Horror': 27
+  };
+
+  // --- API Fetching Effect with Debounce ---
+  useEffect(() => {
+    const delayDebounceFn = setTimeout(async () => {
+      setIsLoading(true);
+
+      try {
+        if (searchQuery.trim().length > 0) {
+          // 1. If typing in search bar, prioritize text search
+          const searchData = await tmdbService.searchMulti(searchQuery);
+          setResults(searchData);
+        } else {
+          // 2. If search bar is empty, filter by the active chip!
+          const genreId = GENRE_MAP[activeChip];
+
+          if (genreId) {
+            const genreData = await tmdbService.discoverByGenre(genreId);
+            setResults(genreData);
+          } else {
+            // Fallback (just in case a chip has no mapped ID)
+            const trendingData = await tmdbService.getTrending();
+            setResults(trendingData);
+          }
+        }
+      } catch (error) {
+        console.error("Search fetch failed", error);
+      } finally {
+        setIsLoading(false);
+      }
+    }, 500);
+
+    // IMPORTANT: activeChip is now in the dependency array
+    return () => clearTimeout(delayDebounceFn);
+  }, [searchQuery, activeChip]);
+
+  // --- Helper to convert flat array to grid rows ---
+  const getChunkedRows = (data, chunkSize = 3) => {
+    const chunked = [];
+    for (let i = 0; i < data.length; i += chunkSize) {
+      chunked.push(data.slice(i, i + chunkSize));
+    }
+    return chunked;
+  };
+
+  const gridRows = getChunkedRows(results);
+
+
+  // --- Voice Commands ---
   useSpeechRecognitionEvent('start', () => setIsListening(true));
   useSpeechRecognitionEvent('end', () => setIsListening(false));
 
@@ -172,8 +206,11 @@ export default function SearchScreen() {
     });
   };
 
-  const renderBadge = (text) => {
-    if (!text) return null;
+  const renderBadge = (item) => {
+    // Generate a contextual badge based on data
+    const badgeText = item.media_type === 'tv' ? 'SERIES' : (item.release_date > '2024-01-01' ? 'NEW' : null);
+    if (!badgeText) return null;
+
     return (
       <LinearGradient
         colors={['#8B22D4', '#E6398A']}
@@ -181,7 +218,7 @@ export default function SearchScreen() {
         end={{ x: 1, y: 0 }}
         style={styles.badgeContainer}
       >
-        <Text style={styles.badgeText}>{text}</Text>
+        <Text style={styles.badgeText}>{badgeText}</Text>
       </LinearGradient>
     );
   };
@@ -197,7 +234,7 @@ export default function SearchScreen() {
               <Ionicons name="search" size={20} color="#8F98A0" style={styles.searchIcon} />
               <TextInput
                 style={styles.searchInput}
-                placeholder={isListening ? "Listening..." : "Search for 'action movies'"}
+                placeholder={isListening ? "Listening..." : "Search movies, shows..."}
                 placeholderTextColor={isListening ? "#1F80E0" : "#8F98A0"}
                 value={searchQuery}
                 onChangeText={setSearchQuery}
@@ -223,8 +260,10 @@ export default function SearchScreen() {
 
           <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
 
-            {/* --- Trending In Header --- */}
-            <Text style={styles.sectionTitle}>Trending in</Text>
+            {/* --- Dynamic Section Header --- */}
+            <Text style={styles.sectionTitle}>
+              {searchQuery.length > 0 ? `Results for "${searchQuery}"` : 'Trending Now'}
+            </Text>
 
             {/* --- Filter Chips --- */}
             <ScrollView
@@ -253,68 +292,88 @@ export default function SearchScreen() {
             </ScrollView>
 
             {/* --- Dynamic Grid Content --- */}
-            <View style={styles.gridContainer}>
-              {TRENDING_ROWS.map((row) => (
-                <View key={row.id} style={styles.row}>
-                  {row.items.map((item) => {
-                    const inWatchlist = userLists.watchlist[item.id];
-                    const inWatched = userLists.watched[item.id];
+            {isLoading ? (
+              <ActivityIndicator size="large" color="#1F80E0" style={{ marginTop: 40 }} />
+            ) : (
+              <View style={styles.gridContainer}>
+                {gridRows.map((row, rowIndex) => (
+                  <View key={`row-${rowIndex}`} style={styles.row}>
+                    {row.map((item) => {
+                      const inWatchlist = userLists.watchlist[item.id];
+                      const inWatched = userLists.watched[item.id];
+                      const mediaType = item.media_type || 'movie';
 
-                    return (
-                      <TouchableOpacity
-                        key={item.id}
-                        activeOpacity={0.8}
-                        onPress={() => router.push('/player')}
-                        style={[
-                          styles.card,
-                          { width: item.span === 2 ? DOUBLE_CARD_WIDTH : STANDARD_CARD_WIDTH }
-                        ]}
-                      >
-                        <Image
-                          source={{ uri: item.image }}
-                          style={styles.cardImage}
-                          resizeMode="cover"
-                        />
-                        {renderBadge(item.badge)}
+                      // Fallback image if poster is missing
+                      const imageUri = getImageUrl(item.poster_path || item.backdrop_path);
 
-                        {/* IMDb Rating Badge */}
-                        <View style={styles.translucentRatingBadge}>
-                          <Ionicons name="star" size={10} color="#F5C518" />
-                          <Text style={styles.smallCardRatingText}>{item.rating}</Text>
-                        </View>
-
-                        {/* Action Buttons Overlay */}
-                        <View style={styles.cardActions}>
-                          <TouchableOpacity
-                            style={styles.smallIconBtn}
-                            activeOpacity={0.8}
-                            onPress={() => handleAuthAction(() => handleToggleAction(item.id, 'watchlist'))}
-                          >
-                            <Ionicons
-                              name={inWatchlist ? "bookmark" : "bookmark-outline"}
-                              size={14}
-                              color={inWatchlist ? "#F5C518" : "#FFFFFF"}
+                      return (
+                        <TouchableOpacity
+                          key={item.id}
+                          activeOpacity={0.8}
+                          onPress={() => router.push({ pathname: '/player', params: { id: item.id, type: mediaType } })}
+                          style={[styles.card, { width: STANDARD_CARD_WIDTH }]}
+                        >
+                          {imageUri ? (
+                            <Image
+                              source={{ uri: imageUri }}
+                              style={styles.cardImage}
+                              resizeMode="cover"
                             />
-                          </TouchableOpacity>
+                          ) : (
+                            <View style={[styles.cardImage, { backgroundColor: '#25252A', justifyContent: 'center', alignItems: 'center' }]}>
+                              <Ionicons name="film-outline" size={24} color="#8F98A0" />
+                            </View>
+                          )}
 
-                          <TouchableOpacity
-                            style={styles.smallIconBtn}
-                            activeOpacity={0.8}
-                            onPress={() => handleAuthAction(() => handleToggleAction(item.id, 'watched'))}
-                          >
-                            <Ionicons
-                              name="checkmark-done"
-                              size={14}
-                              color={inWatched ? "#1F80E0" : "#FFFFFF"}
-                            />
-                          </TouchableOpacity>
-                        </View>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-              ))}
-            </View>
+                          {renderBadge(item)}
+
+                          {/* IMDb Rating Badge */}
+                          {item.vote_average > 0 && (
+                            <View style={styles.translucentRatingBadge}>
+                              <Ionicons name="star" size={10} color="#F5C518" />
+                              <Text style={styles.smallCardRatingText}>{(item.vote_average).toFixed(1)}</Text>
+                            </View>
+                          )}
+
+                          {/* Action Buttons Overlay */}
+                          <View style={styles.cardActions}>
+                            <TouchableOpacity
+                              style={styles.smallIconBtn}
+                              activeOpacity={0.8}
+                              onPress={() => handleAuthAction(() => handleToggleAction(item.id, 'watchlist'))}
+                            >
+                              <Ionicons
+                                name={inWatchlist ? "bookmark" : "bookmark-outline"}
+                                size={14}
+                                color={inWatchlist ? "#F5C518" : "#FFFFFF"}
+                              />
+                            </TouchableOpacity>
+
+                            <TouchableOpacity
+                              style={styles.smallIconBtn}
+                              activeOpacity={0.8}
+                              onPress={() => handleAuthAction(() => handleToggleAction(item.id, 'watched'))}
+                            >
+                              <Ionicons
+                                name="checkmark-done"
+                                size={14}
+                                color={inWatched ? "#1F80E0" : "#FFFFFF"}
+                              />
+                            </TouchableOpacity>
+                          </View>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                ))}
+
+                {!isLoading && results.length === 0 && (
+                  <Text style={{ color: '#8F98A0', textAlign: 'center', marginTop: 40 }}>
+                    No results found.
+                  </Text>
+                )}
+              </View>
+            )}
 
           </ScrollView>
         </View>
@@ -435,8 +494,6 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     letterSpacing: 0.5,
   },
-
-  // Added IMDb Rating Badge
   translucentRatingBadge: {
     position: 'absolute',
     top: 6,
@@ -456,8 +513,6 @@ const styles = StyleSheet.create({
     marginLeft: 3,
     marginTop: 1,
   },
-
-  // Action Button Styles
   cardActions: {
     position: 'absolute',
     top: 6,

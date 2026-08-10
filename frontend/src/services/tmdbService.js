@@ -9,20 +9,17 @@ const getFilterParams = (filters) => {
     if (region === 'indian') {
         params.with_origin_country = 'IN';
     } else if (region === 'others') {
-        // Exclude Indian languages to force international content
         params.without_original_language = 'hi|ta|te|ml|kn|bn|pa|gu|mr';
     }
 
     // 2. Language Logic
     if (language !== 'any') {
         if (language === 'others') {
-            // Covers international languages or other regional Indian languages
             params.with_original_language = 'te|ml|kn|mr|bn|gu|fr|es|ko|ja';
         } else {
-            params.with_original_language = language; // 'hi', 'en', 'pa', 'ta'
+            params.with_original_language = language;
         }
     } else if (region === 'indian') {
-        // If Indian is selected but no specific language, default to all Indian languages
         params.with_original_language = 'hi|ta|te|ml|kn|pa|bn|mr';
     }
 
@@ -30,6 +27,35 @@ const getFilterParams = (filters) => {
 };
 
 export const tmdbService = {
+    // --- SEARCH ENGINES ---
+    searchMulti: async (query) => {
+        try {
+            if (!query) return [];
+            const response = await tmdbClient.get('/search/multi', {
+                params: { query, include_adult: false, language: 'en-US', page: 1 }
+            });
+            // Filter out "person" results, keeping only movies and TV shows
+            return response.data.results.filter(
+                item => item.media_type === 'movie' || item.media_type === 'tv'
+            );
+        } catch (error) {
+            console.error('Error fetching search results:', error);
+            return [];
+        }
+    },
+
+    getTrending: async () => {
+        try {
+            const response = await tmdbClient.get('/trending/all/day', {
+                params: { language: 'en-US' }
+            });
+            return response.data.results;
+        } catch (error) {
+            console.error('Error fetching trending:', error);
+            return [];
+        }
+    },
+
     // --- UNIFIED FILTER ENGINE ---
     fetchSection: async (filters, movieConfig, tvConfig) => {
         try {
@@ -37,7 +63,6 @@ export const tmdbService = {
             const baseParams = { sort_by: 'popularity.desc', ...getFilterParams(filters) };
             const requests = [];
 
-            // If user wants Movies (or All)
             if ((filters.type === 'all' || filters.type === 'movie') && movieConfig) {
                 requests.push(
                     tmdbClient.get('/discover/movie', { params: { ...baseParams, ...movieConfig } })
@@ -45,7 +70,6 @@ export const tmdbService = {
                 );
             }
 
-            // If user wants TV Shows (or All)
             if ((filters.type === 'all' || filters.type === 'tv') && tvConfig) {
                 requests.push(
                     tmdbClient.get('/discover/tv', { params: { ...baseParams, ...tvConfig } })
@@ -55,7 +79,6 @@ export const tmdbService = {
 
             if (requests.length === 0) return [];
 
-            // Fire requests in parallel, merge, and sort by popularity
             const responses = await Promise.all(requests);
             responses.forEach(res => { results = [...results, ...res]; });
 
@@ -66,7 +89,7 @@ export const tmdbService = {
         }
     },
 
-    // --- DETAILS ENDPOINTS (For Player/Details Screen) ---
+    // --- DETAILS ENDPOINTS ---
     getWatchProviders: async (id, type = 'movie') => {
         try {
             const response = await tmdbClient.get(`/${type}/${id}/watch/providers`);
@@ -86,7 +109,7 @@ export const tmdbService = {
             return null;
         }
     },
-    // Fetches the Trailer videos
+
     getVideos: async (id, type = 'movie') => {
         try {
             const response = await tmdbClient.get(`/${type}/${id}/videos`);
@@ -97,13 +120,30 @@ export const tmdbService = {
         }
     },
 
-    // Fetches "More Like This"
     getSimilar: async (id, type = 'movie') => {
         try {
             const response = await tmdbClient.get(`/${type}/${id}/similar`);
             return response.data.results;
         } catch (error) {
             console.error('Error fetching similar:', error);
+            return [];
+        }
+    },
+    discoverByGenre: async (genreId) => {
+        try {
+            const response = await tmdbClient.get('/discover/movie', {
+                params: {
+                    with_genres: genreId,
+                    sort_by: 'popularity.desc',
+                    include_adult: false,
+                    language: 'en-US',
+                    page: 1
+                }
+            });
+            // Force media_type so your UI badges work correctly
+            return response.data.results.map(item => ({ ...item, media_type: 'movie' }));
+        } catch (error) {
+            console.error('Error fetching genre:', error);
             return [];
         }
     }
