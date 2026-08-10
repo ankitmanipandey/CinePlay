@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect, useMemo } from 'react';
+import React, { useRef, useState, useEffect, useMemo, useCallback } from 'react';
 import {
     StyleSheet,
     Text,
@@ -12,7 +12,10 @@ import {
     ScrollView,
     FlatList,
     Easing,
-    ActivityIndicator
+    ActivityIndicator,
+    LayoutAnimation,
+    Platform,
+    UIManager
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -20,6 +23,11 @@ import MaskedView from '@react-native-masked-view/masked-view';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import Toast from 'react-native-toast-message';
+
+// Enable LayoutAnimation on Android
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+    UIManager.setLayoutAnimationEnabledExperimental(true);
+}
 
 // --- Global State & Config ---
 import { useMovieStore } from '../store/useMovieStore';
@@ -31,33 +39,61 @@ const { width } = Dimensions.get('window');
 const SWIPE_THRESHOLD = 60;
 const SWIPE_VELOCITY = 1.0;
 
-const CATEGORIES = [
-    "Trending",
-    "Top Rated",
-    "Action",
-    "Drama",
-    "Horror",
-    "Comedy",
-    "Romance"
-];
-
 const MOCK_LANGUAGES = [
-    { id: 'l1', title: 'Hindi', subtitle: 'हिन्दी', image: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=300&auto=format&fit=crop&q=60', color: '#323246' },
-    { id: 'l2', title: 'English', subtitle: '', image: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=300&auto=format&fit=crop&q=60', color: '#5A3732' },
-    { id: 'l3', title: 'Tamil', subtitle: 'தமிழ்', image: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=300&auto=format&fit=crop&q=60', color: '#4A3428' },
-    { id: 'l4', title: 'Telugu', subtitle: 'తెలుగు', image: 'https://images.unsplash.com/photo-1542909168-82c3e7fdca5c?w=300&auto=format&fit=crop&q=60', color: '#2C3E50' },
+    { id: 'l1', title: 'Hindi', subtitle: 'हिन्दी', image: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=300&q=60', color: '#323246' },
+    { id: 'l2', title: 'English', subtitle: 'Hollywood', image: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=300&q=60', color: '#5A3732' },
+    { id: 'l3', title: 'Tamil', subtitle: 'தமிழ்', image: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=300&q=60', color: '#4A3428' },
+    { id: 'l4', title: 'Telugu', subtitle: 'తెలుగు', image: 'https://images.unsplash.com/photo-1542909168-82c3e7fdca5c?w=300&q=60', color: '#2C3E50' },
+    { id: 'l5', title: 'Punjabi', subtitle: 'ਪੰਜਾਬੀ', image: 'https://images.unsplash.com/photo-1517423440428-a5a00ad493e8?w=300&q=60', color: '#4A4A28' },
+    { id: 'l6', title: 'Malayalam', subtitle: 'മലയാളം', image: 'https://images.unsplash.com/photo-1524492412937-b28074a5d7da?w=300&q=60', color: '#284A3B' },
 ];
 
 const MOCK_GENRES = [
-    { id: 'g1', title: 'Action', image: 'https://images.unsplash.com/photo-1508614589041-895b88991e3e?w=300&auto=format&fit=crop&q=60', tint: 'rgba(150, 50, 50, 0.75)' },
-    { id: 'g2', title: 'Romance', image: 'https://images.unsplash.com/photo-1474552226712-ac0f0961a954?w=300&auto=format&fit=crop&q=60', tint: 'rgba(180, 80, 80, 0.75)' },
+    { id: 'g1', title: 'Action', image: 'https://images.unsplash.com/photo-1508614589041-895b88991e3e?w=300&q=60', tint: 'rgba(150, 50, 50, 0.75)' },
+    { id: 'g2', title: 'Thriller', image: 'https://images.unsplash.com/photo-1440407876336-62333a6f010f?w=300&q=80', tint: 'rgba(50, 50, 50, 0.85)' },
     { id: 'g3', title: 'Sci-Fi', image: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=300&q=80', tint: 'rgba(50, 50, 150, 0.75)' },
-    { id: 'g4', title: 'Drama', image: 'https://images.unsplash.com/photo-1522869635100-9f4c5e86aa37?w=300&auto=format&fit=crop&q=60', tint: 'rgba(50, 120, 120, 0.75)' },
+    { id: 'g4', title: 'Drama', image: 'https://images.unsplash.com/photo-1522869635100-9f4c5e86aa37?w=300&q=60', tint: 'rgba(50, 120, 120, 0.75)' },
+    { id: 'g5', title: 'Comedy', image: 'https://images.unsplash.com/photo-1543584756-8f40a802e14f?w=300&q=60', tint: 'rgba(150, 100, 50, 0.75)' },
+    { id: 'g6', title: 'Horror', image: 'https://images.unsplash.com/photo-1505635552518-3448ff116af3?w=300&q=60', tint: 'rgba(80, 20, 20, 0.85)' },
 ];
 
-const HorizontalRow = ({ title, data, onAuthAction, userLists, toggleAction }) => {
-    const router = useRouter();
+// --- DROP-DOWN FILTER UI COMPONENTS ---
+const FilterDropdown = ({ filters, setFilter }) => {
+    const regionOptions = [{ l: 'All', v: 'all' }, { l: 'Indian', v: 'indian' }, { l: 'Others', v: 'others' }];
+    const typeOptions = [{ l: 'All', v: 'all' }, { l: 'Movies', v: 'movie' }, { l: 'TV Shows / Web Series', v: 'tv' }];
+    const langOptions = [{ l: 'Any', v: 'any' }, { l: 'Hindi', v: 'hi' }, { l: 'English', v: 'en' }, { l: 'Punjabi', v: 'pa' }, { l: 'Tamil', v: 'ta' }, { l: 'Others', v: 'others' }];
 
+    const renderGroup = (title, options, activeValue, filterKey) => (
+        <View style={styles.filterGroup}>
+            <Text style={styles.filterGroupTitle}>{title}</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterScroll}>
+                {options.map(opt => {
+                    const isActive = activeValue === opt.v;
+                    return (
+                        <TouchableOpacity
+                            key={opt.v}
+                            style={[styles.filterChip, isActive && styles.activeFilterChip]}
+                            onPress={() => setFilter(filterKey, opt.v)}
+                        >
+                            <Text style={[styles.filterText, isActive && styles.activeFilterText]}>{opt.l}</Text>
+                        </TouchableOpacity>
+                    );
+                })}
+            </ScrollView>
+        </View>
+    );
+
+    return (
+        <View style={styles.filterDropdownContainer}>
+            {renderGroup("Region", regionOptions, filters.region, 'region')}
+            {renderGroup("Type", typeOptions, filters.type, 'type')}
+            {renderGroup("Language", langOptions, filters.language, 'language')}
+        </View>
+    );
+};
+
+// --- ROWS (Wrapped in React.memo to prevent lag when opening filters) ---
+const HorizontalRow = React.memo(({ title, data, onAuthAction, watchlist, watched, toggleAction, router }) => {
     if (!data || data.length === 0) return null;
 
     return (
@@ -66,53 +102,34 @@ const HorizontalRow = ({ title, data, onAuthAction, userLists, toggleAction }) =
             <FlatList
                 horizontal
                 data={data}
-                keyExtractor={(item) => item.id.toString()}
+                keyExtractor={(item, index) => `${item.id}-${index}`}
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={styles.rowListContent}
                 renderItem={({ item }) => {
-                    const inWatchlist = userLists.watchlist[item.id];
-                    const inWatched = userLists.watched[item.id];
-
+                    const inWatchlist = watchlist[item.id];
+                    const inWatched = watched[item.id];
                     const posterUri = getImageUrl(item.poster_path);
                     const rating = item.vote_average ? item.vote_average.toFixed(1) : 'NR';
+                    const type = item.media_type || (item.first_air_date ? 'tv' : 'movie');
 
                     return (
                         <TouchableOpacity
                             style={styles.smallCard}
                             activeOpacity={0.7}
                             delayPressIn={0}
-                            onPress={() => router.push('/player')}
+                            onPress={() => router.push({ pathname: '/player', params: { id: item.id, type: type } })}
                         >
                             <Image source={{ uri: posterUri }} style={styles.smallCardImage} resizeMode="cover" />
-
                             <View style={styles.translucentRatingBadge}>
                                 <Ionicons name="star" size={10} color="#F5C518" />
                                 <Text style={styles.smallCardRatingText}>{rating}</Text>
                             </View>
-
                             <View style={styles.smallCardActions}>
-                                <TouchableOpacity
-                                    style={styles.smallIconBtn}
-                                    activeOpacity={0.8}
-                                    onPress={() => onAuthAction(() => toggleAction(item.id, 'watchlist'))}
-                                >
-                                    <Ionicons
-                                        name={inWatchlist ? "bookmark" : "bookmark-outline"}
-                                        size={14}
-                                        color={inWatchlist ? "#F5C518" : "#FFFFFF"}
-                                    />
+                                <TouchableOpacity style={styles.smallIconBtn} activeOpacity={0.8} onPress={() => onAuthAction(() => toggleAction(item.id, 'watchlist'))}>
+                                    <Ionicons name={inWatchlist ? "bookmark" : "bookmark-outline"} size={14} color={inWatchlist ? "#F5C518" : "#FFFFFF"} />
                                 </TouchableOpacity>
-
-                                <TouchableOpacity
-                                    style={styles.smallIconBtn}
-                                    activeOpacity={0.8}
-                                    onPress={() => onAuthAction(() => toggleAction(item.id, 'watched'))}
-                                >
-                                    <Ionicons
-                                        name="checkmark-done"
-                                        size={14}
-                                        color={inWatched ? "#1F80E0" : "#FFFFFF"}
-                                    />
+                                <TouchableOpacity style={styles.smallIconBtn} activeOpacity={0.8} onPress={() => onAuthAction(() => toggleAction(item.id, 'watched'))}>
+                                    <Ionicons name="checkmark-done" size={14} color={inWatched ? "#1F80E0" : "#FFFFFF"} />
                                 </TouchableOpacity>
                             </View>
                         </TouchableOpacity>
@@ -121,9 +138,9 @@ const HorizontalRow = ({ title, data, onAuthAction, userLists, toggleAction }) =
             />
         </View>
     );
-};
+});
 
-const LanguageRow = ({ router }) => (
+const LanguageRow = React.memo(({ router }) => (
     <View style={styles.rowContainer}>
         <Text style={styles.rowTitle}>Popular Languages</Text>
         <FlatList
@@ -133,21 +150,9 @@ const LanguageRow = ({ router }) => (
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.rowListContent}
             renderItem={({ item }) => (
-                <TouchableOpacity
-                    style={[styles.wideCard, { backgroundColor: item.color }]}
-                    activeOpacity={0.85}
-                    delayPressIn={0}
-                    onPress={() => router.push({ pathname: '/category', params: { title: item.title } })}
-                >
+                <TouchableOpacity style={[styles.wideCard, { backgroundColor: item.color }]} activeOpacity={0.85} onPress={() => router.push({ pathname: '/category', params: { title: item.title } })}>
                     <Image source={{ uri: item.image }} style={styles.languageImage} resizeMode="cover" />
-
-                    <LinearGradient
-                        colors={[item.color, `${item.color}E6`, `${item.color}00`]}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 0 }}
-                        style={styles.languageGradient}
-                    />
-
+                    <LinearGradient colors={[item.color, `${item.color}E6`, `${item.color}00`]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.languageGradient} />
                     <View style={styles.languageTextContainer}>
                         <Text style={styles.languageMainText}>{item.title}</Text>
                         {item.subtitle ? <Text style={styles.languageSubText}>{item.subtitle}</Text> : null}
@@ -156,9 +161,9 @@ const LanguageRow = ({ router }) => (
             )}
         />
     </View>
-);
+));
 
-const GenreRow = ({ router }) => (
+const GenreRow = React.memo(({ router }) => (
     <View style={styles.rowContainer}>
         <Text style={styles.rowTitle}>Popular Genres</Text>
         <FlatList
@@ -168,12 +173,7 @@ const GenreRow = ({ router }) => (
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.rowListContent}
             renderItem={({ item }) => (
-                <TouchableOpacity
-                    style={styles.wideCard}
-                    activeOpacity={0.85}
-                    delayPressIn={0}
-                    onPress={() => router.push({ pathname: '/category', params: { title: item.title } })}
-                >
+                <TouchableOpacity style={styles.wideCard} activeOpacity={0.85} onPress={() => router.push({ pathname: '/category', params: { title: item.title } })}>
                     <Image source={{ uri: item.image }} style={styles.genreImage} resizeMode="cover" />
                     <View style={[styles.genreTintOverlay, { backgroundColor: item.tint }]} />
                     <Text style={styles.genreTitle}>{item.title}</Text>
@@ -181,57 +181,60 @@ const GenreRow = ({ router }) => (
             )}
         />
     </View>
-);
+));
 
 const HomeScreen = () => {
     const router = useRouter();
     const insets = useSafeAreaInsets();
 
-    const { trendingMovies, topRatedMovies, fetchTrending, fetchTopRated, isLoading } = useMovieStore();
+    const {
+        filters, setFilter, fetchAllData, isLoading,
+        trendingList, topRatedList, latestList, actionList, comedyList,
+        thrillerList, horrorList, romanceList, scifiList, feelGoodList, biopicsList
+    } = useMovieStore();
+
     const { watchlist, watched, toggleWatchlist, toggleWatched } = useUserListStore();
     const { token } = useAuthStore();
 
     const [currentIndex, setCurrentIndex] = useState(0);
+    const [showFilters, setShowFilters] = useState(false);
 
     const [pan, setPan] = useState(() => new Animated.ValueXY());
     const isDragging = useRef(false);
-
-    // THE FIX: Add a transition lock
     const isTransitioning = useRef(false);
 
     const moviesLengthRef = useRef(0);
     useEffect(() => {
-        moviesLengthRef.current = trendingMovies.length;
-    }, [trendingMovies]);
+        moviesLengthRef.current = trendingList.length;
+    }, [trendingList]);
 
     useEffect(() => {
-        fetchTrending();
-        fetchTopRated();
+        fetchAllData();
     }, []);
 
-    const handleAuthAction = (actionCallback) => {
+    // Toggle Filters with a smooth animation
+    const toggleFilterMenu = () => {
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+        setShowFilters(!showFilters);
+    };
+
+    // Memoize actions so rows don't re-render
+    const handleAuthAction = useCallback((actionCallback) => {
         if (!token) {
-            Toast.show({
-                type: 'hotstarInfo',
-                text1: 'Log in for personalization',
-                position: 'top',
-                topOffset: insets.top > 0 ? insets.top + 10 : 50,
-                visibilityTime: 2500,
-            });
+            Toast.show({ type: 'hotstarInfo', text1: 'Log in for personalization', position: 'top', topOffset: insets.top > 0 ? insets.top + 10 : 50, visibilityTime: 2500 });
         } else {
             actionCallback();
         }
-    };
+    }, [token, insets.top]);
 
-    const handleToggleAction = (id, targetList) => {
+    const handleToggleAction = useCallback((id, targetList) => {
         if (targetList === 'watchlist') toggleWatchlist(id);
         if (targetList === 'watched') toggleWatched(id);
-    };
+    }, [toggleWatchlist, toggleWatched]);
 
     const forceSwipe = (direction, isAuto = false) => {
-        isTransitioning.current = true; // block new gestures immediately
+        isTransitioning.current = true;
         const x = direction === 'right' ? width * 1.5 : -width * 1.5;
-
         Animated.timing(pan, {
             toValue: { x, y: 0 },
             duration: isAuto ? 700 : 300,
@@ -245,7 +248,6 @@ const HomeScreen = () => {
         setCurrentIndex((prevIndex) => (prevIndex + 1) % (moviesLengthRef.current || 1));
     };
 
-    // Only release the lock AFTER the new pan/panResponder has actually mounted
     useEffect(() => {
         isTransitioning.current = false;
     }, [pan]);
@@ -260,29 +262,25 @@ const HomeScreen = () => {
 
     const panResponder = useMemo(() => PanResponder.create({
         onMoveShouldSetPanResponderCapture: (_, gestureState) => {
-            if (isTransitioning.current) return false; // Gate the responder
+            if (isTransitioning.current) return false;
             const isHorizontal = Math.abs(gestureState.dx) > Math.abs(gestureState.dy);
             return isHorizontal && Math.abs(gestureState.dx) > 5;
         },
         onMoveShouldSetPanResponder: (_, gestureState) => {
-            if (isTransitioning.current) return false; // Gate the responder
+            if (isTransitioning.current) return false;
             const isHorizontal = Math.abs(gestureState.dx) > Math.abs(gestureState.dy);
             return isHorizontal && Math.abs(gestureState.dx) > 5;
         },
         onPanResponderGrant: () => {
             isDragging.current = true;
-            pan.stopAnimation(); // cheap insurance against leftover animation
+            pan.stopAnimation();
             pan.extractOffset();
         },
-        onPanResponderMove: Animated.event(
-            [null, { dx: pan.x }],
-            { useNativeDriver: false }
-        ),
+        onPanResponderMove: Animated.event([null, { dx: pan.x }], { useNativeDriver: false }),
         onPanResponderTerminationRequest: () => false,
         onPanResponderRelease: (_, gestureState) => {
             isDragging.current = false;
             pan.flattenOffset();
-
             if (gestureState.dx > SWIPE_THRESHOLD || gestureState.vx > SWIPE_VELOCITY) {
                 forceSwipe('right', false);
             } else if (gestureState.dx < -SWIPE_THRESHOLD || gestureState.vx < -SWIPE_VELOCITY) {
@@ -299,91 +297,47 @@ const HomeScreen = () => {
 
     useEffect(() => {
         const timer = setInterval(() => {
-            if (!isDragging.current && !isTransitioning.current && trendingMovies.length > 0) {
+            if (!isDragging.current && !isTransitioning.current && trendingList.length > 0) {
                 forceSwipe('left', true);
             }
         }, 3500);
 
         return () => clearInterval(timer);
-    }, [pan, trendingMovies.length]);
+    }, [pan, trendingList.length]);
 
-    const rotate = pan.x.interpolate({
-        inputRange: [-width / 2, 0, width / 2],
-        outputRange: ['-10deg', '0deg', '10deg'],
-        extrapolate: 'clamp',
-    });
-
-    const topCardOpacity = pan.x.interpolate({
-        inputRange: [-width / 1.5, 0, width / 1.5],
-        outputRange: [0, 1, 0],
-        extrapolate: 'clamp',
-    });
-
-    const nextCardScale = pan.x.interpolate({
-        inputRange: [-width / 2, 0, width / 2],
-        outputRange: [1, 0.92, 1],
-        extrapolate: 'clamp',
-    });
+    const rotate = pan.x.interpolate({ inputRange: [-width / 2, 0, width / 2], outputRange: ['-10deg', '0deg', '10deg'], extrapolate: 'clamp' });
+    const topCardOpacity = pan.x.interpolate({ inputRange: [-width / 1.5, 0, width / 1.5], outputRange: [0, 1, 0], extrapolate: 'clamp' });
+    const nextCardScale = pan.x.interpolate({ inputRange: [-width / 2, 0, width / 2], outputRange: [1, 0.92, 1], extrapolate: 'clamp' });
 
     const renderCardContent = (item) => {
         const inWatchlist = watchlist[item.id];
         const inWatched = watched[item.id];
-
         const posterUri = getImageUrl(item.poster_path);
         const title = item.title || item.name;
-        const year = item.release_date ? item.release_date.substring(0, 4) : '';
+        const dateString = item.release_date || item.first_air_date;
+        const year = dateString ? dateString.substring(0, 4) : '';
         const rating = item.vote_average ? item.vote_average.toFixed(1) : 'NR';
+        const type = item.media_type || (item.first_air_date ? 'tv' : 'movie');
 
         return (
             <>
                 <Image source={{ uri: posterUri }} style={styles.mainCardImage} resizeMode="cover" />
-
-                <View style={styles.badgeContainer}>
-                    <Ionicons name="ticket" size={13} color="#F5C518" style={{ marginRight: 4 }} />
-                    <Text style={styles.badgeText}>IMDb {rating}</Text>
-                </View>
-
-                <LinearGradient
-                    colors={['transparent', 'rgba(10, 10, 12, 0.75)', '#0A0A0C']}
-                    style={styles.gradientOverlay}
-                >
+                <View style={styles.badgeContainer}><Ionicons name="ticket" size={13} color="#F5C518" style={{ marginRight: 4 }} /><Text style={styles.badgeText}>IMDb {rating}</Text></View>
+                <LinearGradient colors={['transparent', 'rgba(10, 10, 12, 0.75)', '#0A0A0C']} style={styles.gradientOverlay}>
                     <View style={styles.movieDetailsContainer}>
                         <Text style={styles.movieTitle} numberOfLines={1}>{title}</Text>
                         <Text style={styles.movieSubtitle} numberOfLines={2}>{item.overview}</Text>
                         <Text style={styles.metadataText}>{year}  •  TMDB</Text>
                     </View>
                 </LinearGradient>
-
                 <View style={styles.actionButtonsWrapper}>
-                    <TouchableOpacity
-                        style={styles.iconActionBtn}
-                        activeOpacity={0.8}
-                        onPress={() => handleAuthAction(() => handleToggleAction(item.id, 'watchlist'))}
-                    >
-                        <Ionicons
-                            name={inWatchlist ? "bookmark" : "bookmark-outline"}
-                            size={24}
-                            color={inWatchlist ? "#F5C518" : "#FFFFFF"}
-                        />
+                    <TouchableOpacity style={styles.iconActionBtn} activeOpacity={0.8} onPress={() => handleAuthAction(() => handleToggleAction(item.id, 'watchlist'))}>
+                        <Ionicons name={inWatchlist ? "bookmark" : "bookmark-outline"} size={24} color={inWatchlist ? "#F5C518" : "#FFFFFF"} />
                     </TouchableOpacity>
-
-                    <TouchableOpacity
-                        style={styles.iconActionBtn}
-                        activeOpacity={0.8}
-                        onPress={() => handleAuthAction(() => handleToggleAction(item.id, 'watched'))}
-                    >
-                        <Ionicons
-                            name="checkmark-done"
-                            size={22}
-                            color={inWatched ? "#1F80E0" : "#FFFFFF"}
-                        />
+                    <TouchableOpacity style={styles.iconActionBtn} activeOpacity={0.8} onPress={() => handleAuthAction(() => handleToggleAction(item.id, 'watched'))}>
+                        <Ionicons name="checkmark-done" size={22} color={inWatched ? "#1F80E0" : "#FFFFFF"} />
                     </TouchableOpacity>
-
-                    <TouchableOpacity
-                        style={styles.playButton}
-                        activeOpacity={0.8}
-                        onPress={() => router.push('/player')}
-                    >
+                    <TouchableOpacity style={styles.playButton} activeOpacity={0.8} onPress={() => router.push({ pathname: '/player', params: { id: item.id, type: type } })}>
                         <Ionicons name="play" size={26} color="#000000" style={{ marginLeft: 3 }} />
                     </TouchableOpacity>
                 </View>
@@ -392,46 +346,41 @@ const HomeScreen = () => {
     };
 
     const renderCardStack = () => {
-        if (isLoading || trendingMovies.length === 0) {
+        if (isLoading || trendingList.length === 0) {
             return (
                 <View style={[styles.mainCardContainer, { justifyContent: 'center', alignItems: 'center' }]}>
                     <ActivityIndicator size="large" color="#1F80E0" />
                 </View>
             );
         }
-
-        const safeIndex = currentIndex % trendingMovies.length;
-        const nextIndex = (currentIndex + 1) % trendingMovies.length;
-
-        const topItem = trendingMovies[safeIndex];
-        const nextItem = trendingMovies[nextIndex];
-
+        const safeIndex = currentIndex % trendingList.length;
+        const nextIndex = (currentIndex + 1) % trendingList.length;
         return (
             <>
-                <Animated.View
-                    key={`${nextItem.id}-next`}
-                    style={[styles.mainCardContainer, { transform: [{ scale: nextCardScale }], zIndex: 1 }]}
-                >
-                    {renderCardContent(nextItem)}
+                <Animated.View key={`${trendingList[nextIndex].id}-next`} style={[styles.mainCardContainer, { transform: [{ scale: nextCardScale }], zIndex: 1 }]}>
+                    {renderCardContent(trendingList[nextIndex])}
                 </Animated.View>
-
-                <Animated.View
-                    key={`${topItem.id}-top`}
-                    style={[
-                        styles.mainCardContainer,
-                        {
-                            opacity: topCardOpacity,
-                            transform: [{ translateX: pan.x }, { rotate: rotate }],
-                            zIndex: 99,
-                        },
-                    ]}
-                    {...panResponder.panHandlers}
-                >
-                    {renderCardContent(topItem)}
+                <Animated.View key={`${trendingList[safeIndex].id}-top`} style={[styles.mainCardContainer, { opacity: topCardOpacity, transform: [{ translateX: pan.x }, { rotate: rotate }], zIndex: 99 }]} {...panResponder.panHandlers}>
+                    {renderCardContent(trendingList[safeIndex])}
                 </Animated.View>
             </>
         );
     };
+
+    // 11 Specific Categories left
+    const categoryData = [
+        { title: "Trending", data: trendingList },
+        { title: "Top Rated", data: topRatedList },
+        { title: "Latest", data: latestList },
+        { title: "Action Blockbusters", data: actionList },
+        { title: "Comedy", data: comedyList },
+        { title: "Thriller", data: thrillerList },
+        { title: "Horror", data: horrorList },
+        { title: "Romance", data: romanceList },
+        { title: "Sci-Fi", data: scifiList },
+        { title: "Feel Good", data: feelGoodList },
+        { title: "Biopics", data: biopicsList }
+    ];
 
     return (
         <LinearGradient colors={['#170D22', '#0A0A0C']} style={styles.background}>
@@ -440,29 +389,17 @@ const HomeScreen = () => {
 
                 <View style={styles.header}>
                     <MaskedView maskElement={<Text style={styles.appName}>CinePlay</Text>}>
-                        <LinearGradient
-                            colors={['#1F80E0', '#D63484']}
-                            start={{ x: 0, y: 0 }}
-                            end={{ x: 1, y: 0 }}
-                        >
+                        <LinearGradient colors={['#1F80E0', '#D63484']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
                             <Text style={[styles.appName, { opacity: 0 }]}>CinePlay</Text>
                         </LinearGradient>
                     </MaskedView>
-
-                    <TouchableOpacity
-                        style={styles.headerRightBtn}
-                        onPress={() => handleAuthAction(() => router.push('/my-list'))}
-                    >
+                    <TouchableOpacity style={styles.headerRightBtn} onPress={() => handleAuthAction(() => router.push('/my-list'))}>
                         <Ionicons name="bookmarks" size={24} color="#E0E0E0" />
                     </TouchableOpacity>
                 </View>
 
-                <ScrollView
-                    showsVerticalScrollIndicator={false}
-                    contentContainerStyle={styles.scrollContent}
-                    overScrollMode="never"
-                    bounces={false}
-                >
+                <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent} bounces={false}>
+
                     <View style={styles.sectionHeader}>
                         <Text style={styles.sectionTitle}>For You</Text>
                     </View>
@@ -471,17 +408,35 @@ const HomeScreen = () => {
                         {renderCardStack()}
                     </View>
 
+                    <View style={styles.filterBarHeader}>
+                        <Text style={styles.filterTitle}>Explore Collections</Text>
+                        <TouchableOpacity
+                            style={[styles.funnelBtn, showFilters && styles.funnelBtnActive]}
+                            onPress={toggleFilterMenu}
+                        >
+                            <Ionicons name="funnel" size={20} color={showFilters ? "#1F80E0" : "#FFFFFF"} />
+                        </TouchableOpacity>
+                    </View>
+
+                    {showFilters && <FilterDropdown filters={filters} setFilter={setFilter} />}
+
                     <View style={styles.categoriesWrapper}>
-                        {CATEGORIES.map((categoryTitle, index) => (
-                            <HorizontalRow
-                                key={index.toString()}
-                                title={categoryTitle}
-                                data={index % 2 === 0 ? topRatedMovies : trendingMovies}
-                                onAuthAction={handleAuthAction}
-                                userLists={{ watchlist, watched }}
-                                toggleAction={handleToggleAction}
-                            />
-                        ))}
+                        {isLoading ? (
+                            <ActivityIndicator size="large" color="#1F80E0" style={{ marginTop: 40, marginBottom: 80 }} />
+                        ) : (
+                            categoryData.map((category, index) => (
+                                <HorizontalRow
+                                    key={index.toString()}
+                                    title={category.title}
+                                    data={category.data}
+                                    onAuthAction={handleAuthAction}
+                                    watchlist={watchlist} // Passed Separately for Memoization
+                                    watched={watched}     // Passed Separately for Memoization
+                                    toggleAction={handleToggleAction}
+                                    router={router}
+                                />
+                            ))
+                        )}
                     </View>
 
                     <LanguageRow router={router} />
@@ -498,20 +453,33 @@ export default HomeScreen;
 const styles = StyleSheet.create({
     background: { flex: 1 },
     container: { flex: 1 },
-    header: {
-        paddingVertical: 12,
-        paddingHorizontal: 16,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between'
-    },
+    header: { paddingVertical: 12, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
     appName: { fontSize: 26, fontWeight: '900', letterSpacing: 0.5 },
     headerRightBtn: { padding: 4 },
     scrollContent: { paddingBottom: 60 },
     sectionHeader: { paddingHorizontal: 16, marginTop: 10, marginBottom: 6 },
     sectionTitle: { color: '#FFFFFF', fontSize: 18, fontWeight: 'bold' },
+    deckArea: { height: 440, alignItems: 'center', justifyContent: 'center', marginBottom: 10 },
 
-    deckArea: { height: 440, alignItems: 'center', justifyContent: 'center', marginBottom: 24 },
+    // FILTER UI STYLES
+    filterBarHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, marginBottom: 14 },
+    filterTitle: { color: '#FFFFFF', fontSize: 18, fontWeight: 'bold' },
+    funnelBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.1)', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)' },
+    funnelBtnActive: { backgroundColor: 'rgba(31, 128, 224, 0.2)', borderColor: '#1F80E0' },
+    filterDropdownContainer: { backgroundColor: 'rgba(20, 15, 30, 0.8)', paddingVertical: 14, borderTopWidth: 1, borderBottomWidth: 1, borderColor: 'rgba(255,255,255,0.1)', marginBottom: 20 },
+    filterGroup: { marginBottom: 16 },
+    filterGroupTitle: { color: '#808085', fontSize: 11, fontWeight: 'bold', textTransform: 'uppercase', paddingHorizontal: 16, marginBottom: 8, letterSpacing: 1 },
+    filterScroll: { paddingHorizontal: 16, gap: 10 },
+    filterChip: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+    activeFilterChip: { backgroundColor: '#1F80E0', borderColor: '#1F80E0' },
+    filterText: { color: '#A0A0A5', fontSize: 13, fontWeight: '600' },
+    activeFilterText: { color: '#FFFFFF' },
+
+    categoriesWrapper: { paddingTop: 4 },
+    rowContainer: { marginBottom: 28 },
+    rowTitle: { color: '#FFFFFF', fontSize: 18, fontWeight: 'bold', paddingHorizontal: 16, marginBottom: 14, letterSpacing: 0.2 },
+    rowListContent: { paddingHorizontal: 16, gap: 10 },
+
     mainCardContainer: { width: width * 0.85, height: 430, backgroundColor: '#2A1E39', borderRadius: 22, overflow: 'hidden', position: 'absolute', elevation: 10, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.45, shadowRadius: 8 },
     mainCardImage: { width: '100%', height: '100%', position: 'absolute' },
     badgeContainer: { position: 'absolute', top: 14, left: 14, flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(15, 15, 20, 0.75)', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.12)' },
@@ -522,68 +490,23 @@ const styles = StyleSheet.create({
     movieSubtitle: { color: '#E0E0E0', fontSize: 10, fontWeight: '500', lineHeight: 14, marginVertical: 4 },
     metadataText: { color: '#B0B5B9', fontSize: 11, fontWeight: 'bold' },
 
-    actionButtonsWrapper: {
-        position: 'absolute',
-        bottom: 18,
-        right: 14,
-        alignItems: 'center',
-        gap: 12
-    },
-    iconActionBtn: {
-        width: 52,
-        height: 52,
-        borderRadius: 26,
-        backgroundColor: 'rgba(30, 30, 35, 0.65)',
-        justifyContent: 'center',
-        alignItems: 'center',
-        borderWidth: 1.2,
-        borderColor: 'rgba(255, 255, 255, 0.35)'
-    },
-    playButton: {
-        width: 54,
-        height: 54,
-        borderRadius: 27,
-        backgroundColor: '#E5E5EA',
-        justifyContent: 'center',
-        alignItems: 'center',
-        elevation: 6,
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 3 },
-        shadowOpacity: 0.35,
-        shadowRadius: 4
-    },
-
-    categoriesWrapper: { paddingTop: 4 },
-    rowContainer: { marginBottom: 28 },
-    rowTitle: { color: '#FFFFFF', fontSize: 18, fontWeight: 'bold', paddingHorizontal: 16, marginBottom: 14, letterSpacing: 0.2 },
-    rowListContent: { paddingHorizontal: 16, gap: 10 },
+    actionButtonsWrapper: { position: 'absolute', bottom: 18, right: 14, alignItems: 'center', gap: 12 },
+    iconActionBtn: { width: 52, height: 52, borderRadius: 26, backgroundColor: 'rgba(30, 30, 35, 0.65)', justifyContent: 'center', alignItems: 'center', borderWidth: 1.2, borderColor: 'rgba(255, 255, 255, 0.35)' },
+    playButton: { width: 54, height: 54, borderRadius: 27, backgroundColor: '#E5E5EA', justifyContent: 'center', alignItems: 'center', elevation: 6, shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.35, shadowRadius: 4 },
 
     smallCard: { width: 112, height: 162, backgroundColor: '#1E1428', borderRadius: 8, overflow: 'hidden', position: 'relative' },
     smallCardImage: { width: '100%', height: '100%', position: 'absolute' },
     translucentRatingBadge: { position: 'absolute', top: 6, left: 6, flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0, 0, 0, 0.6)', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 4 },
     smallCardRatingText: { color: '#FFFFFF', fontSize: 10, fontWeight: 'bold', marginLeft: 3, marginTop: 1 },
-
     smallCardActions: { position: 'absolute', top: 6, right: 6, gap: 6 },
-    smallIconBtn: {
-        width: 26,
-        height: 26,
-        borderRadius: 13,
-        backgroundColor: 'rgba(0, 0, 0, 0.65)',
-        justifyContent: 'center',
-        alignItems: 'center',
-        borderWidth: 1,
-        borderColor: 'rgba(255, 255, 255, 0.3)'
-    },
+    smallIconBtn: { width: 26, height: 26, borderRadius: 13, backgroundColor: 'rgba(0, 0, 0, 0.65)', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.3)' },
 
     wideCard: { width: 145, height: 75, borderRadius: 8, overflow: 'hidden', position: 'relative', justifyContent: 'center' },
-
     languageImage: { position: 'absolute', right: 0, top: 0, bottom: 0, width: '70%' },
     languageGradient: { ...StyleSheet.absoluteFillObject },
-
     languageTextContainer: { paddingLeft: 14, justifyContent: 'center' },
     languageMainText: { color: '#FFFFFF', fontSize: 16, fontWeight: 'bold', letterSpacing: 0.2 },
     languageSubText: { color: '#A0A0A5', fontSize: 11, marginTop: 2 },
-
     genreImage: { position: 'absolute', width: '100%', height: '100%', opacity: 0.8 },
     genreTintOverlay: { position: 'absolute', width: '100%', height: '100%' },
     genreTitle: { position: 'absolute', bottom: 10, left: 12, color: '#FFFFFF', fontSize: 15, fontWeight: 'bold', letterSpacing: 0.2 }
