@@ -26,4 +26,31 @@ const protect = async (req, res, next) => {
     }
 };
 
-module.exports = { protect };
+const optionalProtect = async (req, res, next) => {
+    let token;
+
+    // Check if the header exists and is formatted correctly
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+        token = req.headers.authorization.split(' ')[1];
+
+        // Failsafe: Frontend sometimes accidentally sends "Bearer null"
+        if (token === 'null' || token === 'undefined') {
+            return next();
+        }
+
+        try {
+            // Verify token and attach user to request
+            const decoded = jwt.verify(token, process.env.JWT_SECRET);
+            req.user = await User.findById(decoded.id).select('-password');
+        } catch (error) {
+            // Token is invalid or expired. Instead of throwing an error, 
+            // we catch it silently and let them proceed as a guest.
+            console.log("Optional Auth: Invalid token, proceeding as guest.");
+        }
+    }
+
+    // Always move to the next function, whether they have a req.user or not
+    next();
+};
+
+module.exports = { protect ,optionalProtect};

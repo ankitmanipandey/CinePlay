@@ -28,11 +28,12 @@ const getFilterParams = (filters) => {
 
 export const tmdbService = {
     // --- SEARCH ENGINES ---
-    searchMulti: async (query) => {
+    // Added page parameter for infinite scroll
+    searchMulti: async (query, page = 1) => {
         try {
             if (!query) return [];
             const response = await tmdbClient.get('/search/multi', {
-                params: { query, include_adult: false, language: 'en-US', page: 1 }
+                params: { query, include_adult: false, language: 'en-US', page: page }
             });
             // Filter out "person" results, keeping only movies and TV shows
             return response.data.results.filter(
@@ -44,10 +45,11 @@ export const tmdbService = {
         }
     },
 
-    getTrending: async () => {
+    // Added page parameter for infinite scroll
+    getTrending: async (page = 1) => {
         try {
             const response = await tmdbClient.get('/trending/all/day', {
-                params: { language: 'en-US' }
+                params: { language: 'en-US', page: page }
             });
             return response.data.results;
         } catch (error) {
@@ -129,7 +131,9 @@ export const tmdbService = {
             return [];
         }
     },
-    discoverByGenre: async (genreId) => {
+
+    // Added page parameter for infinite scroll
+    discoverByGenre: async (genreId, page = 1) => {
         try {
             const response = await tmdbClient.get('/discover/movie', {
                 params: {
@@ -137,7 +141,7 @@ export const tmdbService = {
                     sort_by: 'popularity.desc',
                     include_adult: false,
                     language: 'en-US',
-                    page: 1
+                    page: page // <-- Dynamic page
                 }
             });
             // Force media_type so your UI badges work correctly
@@ -146,5 +150,83 @@ export const tmdbService = {
             console.error('Error fetching genre:', error);
             return [];
         }
-    }
+    },
+
+    // --- SMART LOCAL NLP SEARCH ---
+    // Added page parameter for infinite scroll
+    smartSearch: async (query, page = 1) => {
+        try {
+            if (!query) return [];
+
+            const queryLower = query.toLowerCase();
+
+            // 1. Local Dictionaries to intercept keywords
+            const GENRE_MAP = {
+                'action': 28, 'comedy': 35, 'drama': 18, 'thriller': 53,
+                'sci-fi': 878, 'science fiction': 878, 'horror': 27,
+                'romance': 10749, 'animation': 16
+            };
+            const LANG_MAP = {
+                'hindi': 'hi', 'english': 'en', 'tamil': 'ta',
+                'telugu': 'te', 'malayalam': 'ml', 'punjabi': 'pa', 'korean': 'ko'
+            };
+
+            let foundGenres = [];
+            let foundLang = null;
+
+            // 2. Extract matching keywords
+            for (const [key, val] of Object.entries(GENRE_MAP)) {
+                if (queryLower.includes(key)) foundGenres.push(val);
+            }
+            for (const [key, val] of Object.entries(LANG_MAP)) {
+                if (queryLower.includes(key)) foundLang = val;
+            }
+
+            // 3. Strip keywords to see if a specific title or actor is left over
+            let cleanQuery = queryLower;
+            Object.keys(GENRE_MAP).forEach(k => cleanQuery = cleanQuery.replace(k, ''));
+            Object.keys(LANG_MAP).forEach(k => cleanQuery = cleanQuery.replace(k, ''));
+            // Remove filler words
+            cleanQuery = cleanQuery.replace(/(movies|movie|shows|show|series|web series)/g, '').trim();
+
+            // --- SCENARIO A: Pure Category Search (e.g., "Hindi Action Movies") ---
+            if (cleanQuery.length === 0 && (foundGenres.length > 0 || foundLang)) {
+                let params = { sort_by: 'popularity.desc', page: page }; // <-- Dynamic page
+                if (foundGenres.length > 0) params.with_genres = foundGenres.join(',');
+                if (foundLang) params.with_original_language = foundLang;
+
+                const res = await tmdbClient.get('/discover/movie', { params });
+                return res.data.results.map(item => ({ ...item, media_type: 'movie' }));
+            }
+
+            // --- SCENARIO B: Standard Search (Titles & Actors) ---
+            const searchTarget = cleanQuery.length > 0 ? cleanQuery : query;
+
+            const response = await tmdbClient.get('/search/multi', {
+                params: { query: searchTarget, include_adult: false, language: 'en-US', page: page } // <-- Dynamic page
+            });
+
+            const results = response.data.results;
+            if (results.length === 0) return [];
+
+            // --- SCENARIO C: They searched for an Actor (e.g., "Tom Cruise") ---
+            if (results[0].media_type === 'person') {
+                const personId = results[0].id;
+
+                let params = { with_cast: personId, sort_by: 'popularity.desc', page: page }; // <-- Dynamic page
+                if (foundGenres.length > 0) params.with_genres = foundGenres.join(',');
+                if (foundLang) params.with_original_language = foundLang;
+
+                const personWorks = await tmdbClient.get('/discover/movie', { params });
+                return personWorks.data.results.map(item => ({ ...item, media_type: 'movie' }));
+            }
+
+            // --- SCENARIO D: It's just a regular Title ---
+            return results.filter(item => item.media_type === 'movie' || item.media_type === 'tv');
+
+        } catch (error) {
+            console.error('Smart Search Error:', error);
+            return [];
+        }
+    },
 };

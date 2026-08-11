@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import { tmdbService } from '../services/tmdbService';
 
+const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL;
+
 export const useMovieStore = create((set, get) => ({
     filters: {
         region: 'all',
@@ -8,7 +10,7 @@ export const useMovieStore = create((set, get) => ({
         language: 'any'
     },
 
-    // 11 Exact Category States (Inspirational Removed)
+    // --- Standard Category States ---
     trendingList: [],
     topRatedList: [],
     latestList: [],
@@ -21,6 +23,10 @@ export const useMovieStore = create((set, get) => ({
     feelGoodList: [],
     biopicsList: [],
 
+    // --- NEW: Personalized AI State ---
+    recommendedList: [],
+    isAiLoading: false,
+
     isLoading: false,
 
     setFilter: (key, value) => {
@@ -31,6 +37,44 @@ export const useMovieStore = create((set, get) => ({
         get().fetchAllData();
     },
 
+    // --- NEW: Fetch AI Personalization ---
+    fetchPersonalizedRecommendations: async (token) => {
+        // Only run if the user is logged in
+        if (!token) return;
+
+        set({ isAiLoading: true });
+        try {
+            // Ping your secure AI backend with a generic prompt to trigger the taste profile
+            const response = await fetch(`${BACKEND_URL}/ai/recommend`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({ query: "Suggest highly acclaimed movies or shows that perfectly match my taste profile." })
+            });
+
+            if (!response.ok) throw new Error("Failed to fetch AI recommendations");
+
+            const data = await response.json();
+            const titles = data.titles;
+
+            // Fetch TMDB data for the AI's title suggestions concurrently
+            const tmdbPromises = titles.map(title => tmdbService.searchMulti(title));
+            const tmdbResultsArrays = await Promise.all(tmdbPromises);
+
+            const finalResults = tmdbResultsArrays
+                .map(results => results.find(item => item.media_type === 'movie' || item.media_type === 'tv'))
+                .filter(Boolean); // Remove empty results
+
+            set({ recommendedList: finalResults, isAiLoading: false });
+        } catch (error) {
+            console.error("Failed to load personalized recommendations:", error);
+            set({ isAiLoading: false });
+        }
+    },
+
+    // --- Standard TMDB Fetch ---
     fetchAllData: async () => {
         set({ isLoading: true });
         const f = get().filters;

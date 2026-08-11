@@ -38,6 +38,20 @@ const toastConfig = {
         <Text style={styles.toastText}>{text1}</Text>
       </LinearGradient>
     </View>
+  ),
+  // --- NEW: HOTSTAR ERROR TOAST ---
+  hotstarError: ({ text1 }) => (
+    <View style={styles.toastWrapper}>
+      <LinearGradient
+        colors={['#E53935', '#990000']} // Premium Red Gradient
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.toastContainer}
+      >
+        <Ionicons name="alert-circle" size={20} color="#FFFFFF" />
+        <Text style={styles.toastText}>{text1}</Text>
+      </LinearGradient>
+    </View>
   )
 };
 
@@ -91,7 +105,7 @@ export default function RootLayout() {
 const styles = StyleSheet.create({
   loadingContainer: {
     flex: 1,
-    justifyContent: 'center', // Fixed typo: 'justify' to 'justifyContent'
+    justifyContent: 'center',
     alignItems: 'center',
   },
   toastWrapper: {

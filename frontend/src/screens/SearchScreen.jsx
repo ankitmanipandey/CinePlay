@@ -10,7 +10,8 @@ import {
   TouchableWithoutFeedback,
   Image,
   Dimensions,
-  ActivityIndicator
+  ActivityIndicator,
+  FlatList
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -50,9 +51,12 @@ export default function SearchScreen() {
   // AI Mode State
   const [isAiMode, setIsAiMode] = useState(false);
 
-  // Search state
+  // Search & Pagination state
   const [rawResults, setRawResults] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
 
   // --- Global State Tracker ---
   const { watchlist, watched, toggleWatchlist, toggleWatched } = useUserListStore();
@@ -74,89 +78,116 @@ export default function SearchScreen() {
   // --- AI Orchestration Logic ---
   const fetchAiRecommendations = async (query) => {
     try {
-      // 1. Call your own Node.js backend!
-      // Ensure BACKEND_URL ends with /api (e.g., https://your-server.onrender.com/api)
+      const fetchHeaders = { 'Content-Type': 'application/json' };
+      if (token) {
+        fetchHeaders['Authorization'] = `Bearer ${token}`;
+      }
+
       const response = await fetch(`${BACKEND_URL}/ai/recommend`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          // Optional: 'Authorization': `Bearer ${token}` if you protected the route
-        },
+        headers: fetchHeaders,
         body: JSON.stringify({ query })
       });
 
-     if (!response.ok) {
-        // Grab the actual error message from the backend response
+      if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
         throw new Error(errorData.error || `HTTP Status: ${response.status}`);
       }
 
-      // 2. Get the array of titles back from your server
       const data = await response.json();
-      const titles = data.titles; // ["Movie 1", "Movie 2"]
+      const titles = data.titles;
 
-      // 3. Fetch TMDB data for each title concurrently
       const tmdbPromises = titles.map(title => tmdbService.searchMulti(title));
       const tmdbResultsArrays = await Promise.all(tmdbPromises);
 
-      // 4. Extract the highest-match result from each search
       const finalResults = tmdbResultsArrays
         .map(results => results.find(item => item.media_type === 'movie' || item.media_type === 'tv'))
-        .filter(Boolean); // Remove undefined/nulls
+        .filter(Boolean);
 
       return finalResults;
     } catch (error) {
       console.error("AI Search Failed:", error);
-      Toast.show({ type: 'error', text1: 'AI Search failed to process your request.' });
+      Toast.show({ type: 'hotstarError', text1: 'AI Search failed to process your request.' });
       return [];
+    }
+  };
+
+  // --- Core Fetch Logic for Pagination ---
+  const fetchResults = async (pageNumber) => {
+    try {
+      let newData = [];
+
+      if (searchQuery.trim().length > 0) {
+        if (isAiMode) {
+          // AI Search (No pagination supported by Gemini directly here)
+          if (pageNumber === 1) {
+            newData = await fetchAiRecommendations(searchQuery);
+            setHasMore(false);
+          }
+        } else {
+          // Standard Text Search
+          newData = await tmdbService.smartSearch(searchQuery, pageNumber);
+        }
+      } else {
+        // Chip search or Trending fallback
+        const genreId = GENRE_MAP[activeChip];
+        if (genreId) {
+          newData = await tmdbService.discoverByGenre(genreId, pageNumber);
+        } else {
+          newData = await tmdbService.getTrending(pageNumber);
+        }
+      }
+
+      if (newData.length === 0) {
+        setHasMore(false);
+      } else {
+        setRawResults(prev => pageNumber === 1 ? newData : [...prev, ...newData]);
+      }
+
+    } catch (error) {
+      console.error("Search fetch failed", error);
+    } finally {
+      setIsLoading(false);
+      setIsLoadingMore(false);
     }
   };
 
   // --- API Fetching Effect with Dynamic Debounce ---
   useEffect(() => {
-    // Increase debounce for AI to prevent API spam while typing
-    const debounceTime = isAiMode ? 1500 : 500;
+    // 1. Immediately reset state AND set loading to true to prevent the "Empty" text flash
+    setPage(1);
+    setHasMore(true);
+    setRawResults([]);
+    setIsLoading(true);
 
-    const delayDebounceFn = setTimeout(async () => {
-      setIsLoading(true);
+    // 2. If typing, use a delay. If just clicking chips (empty search bar), make it instant (0ms).
+    let debounceTime = 0;
+    if (searchQuery.trim().length > 0) {
+      debounceTime = isAiMode ? 1500 : 500;
+    }
 
-      try {
-        let rawData = [];
-
-        if (searchQuery.trim().length > 0) {
-          if (isAiMode) {
-            // 1. AI Gemini Search
-            rawData = await fetchAiRecommendations(searchQuery);
-          } else {
-            // 2. Standard Text Search
-            rawData = await tmdbService.searchMulti(searchQuery);
-          }
-        } else {
-          // 3. Chip search or Trending fallback
-          const genreId = GENRE_MAP[activeChip];
-          if (genreId) {
-            rawData = await tmdbService.discoverByGenre(genreId);
-          } else {
-            rawData = await tmdbService.getTrending();
-          }
-        }
-
-        setRawResults(rawData);
-
-      } catch (error) {
-        console.error("Search fetch failed", error);
-      } finally {
-        setIsLoading(false);
-      }
+    const delayDebounceFn = setTimeout(() => {
+      fetchResults(1);
     }, debounceTime);
 
     return () => clearTimeout(delayDebounceFn);
   }, [searchQuery, activeChip, isAiMode]);
 
+  // --- Infinite Scroll Trigger ---
+  const handleLoadMore = () => {
+    if (!isLoadingMore && hasMore && !isAiMode && rawResults.length > 0) {
+      setIsLoadingMore(true);
+      const nextPage = page + 1;
+      setPage(nextPage);
+      fetchResults(nextPage);
+    }
+  };
+
   const filteredResults = React.useMemo(() => {
     return rawResults.filter(item => !watched[item.id]);
   }, [rawResults, watched]);
 
+  // Helper to chunk data into rows of 3 so we keep your exact grid logic
   const getChunkedRows = (data, chunkSize = 3) => {
     const chunked = [];
     for (let i = 0; i < data.length; i += chunkSize) {
@@ -227,7 +258,7 @@ export default function SearchScreen() {
       useUserListStore.setState({ watchlist: arrayToMap(data.watchlist), watched: arrayToMap(data.watched) });
 
     } catch (error) {
-      Toast.show({ type: 'error', text1: `Failed to save to ${targetList}` });
+      Toast.show({ type: 'hotstarError', text1: `Failed to save to ${targetList}` });
       if (targetList === 'watchlist') toggleWatchlist(id, mediaType);
       if (targetList === 'watched') toggleWatched(id, mediaType);
     }
@@ -298,7 +329,8 @@ export default function SearchScreen() {
             </View>
           </View>
 
-          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+          {/* --- Main Content Area (FlatList) --- */}
+          <View style={{ flex: 1 }}>
 
             <Text style={styles.sectionTitle}>
               {searchQuery.length > 0
@@ -306,9 +338,14 @@ export default function SearchScreen() {
                 : 'Trending Now'}
             </Text>
 
-            {/* Hide Filter Chips if AI Mode is active and query exists (since AI ignores chips) */}
+            {/* Hide Filter Chips if AI Mode is active and query exists */}
             {!(isAiMode && searchQuery.length > 0) && (
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsContainer}>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                style={{ flexGrow: 0, flexShrink: 0, marginBottom: 20 }} // <-- This protects it from being crushed!
+                contentContainerStyle={styles.chipsContainer}
+              >
                 {FILTER_CHIPS.map((chip, index) => {
                   const isActive = activeChip === chip;
                   return (
@@ -320,13 +357,31 @@ export default function SearchScreen() {
               </ScrollView>
             )}
 
-            {/* --- Dynamic Grid Content --- */}
-            {isLoading ? (
+            {isLoading && page === 1 ? (
               <ActivityIndicator size="large" color={isAiMode ? "#D63484" : "#1F80E0"} style={{ marginTop: 40 }} />
             ) : (
-              <View style={styles.gridContainer}>
-                {gridRows.map((row, rowIndex) => (
-                  <View key={`row-${rowIndex}`} style={styles.row}>
+              <FlatList
+                data={gridRows}
+                keyExtractor={(item, index) => `row-${index}`}
+                contentContainerStyle={styles.gridContainer}
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
+
+                // Infinite Scroll Hooks
+                onEndReached={handleLoadMore}
+                onEndReachedThreshold={0.5}
+                ListFooterComponent={() =>
+                  isLoadingMore ? <ActivityIndicator size="small" color="#1F80E0" style={{ marginVertical: 20 }} /> : <View style={{ height: 40 }} />
+                }
+                ListEmptyComponent={
+                  <Text style={{ color: '#8F98A0', textAlign: 'center', marginTop: 40 }}>
+                    {isAiMode ? "AI couldn't find matching titles. Try a different prompt." : "No results found."}
+                  </Text>
+                }
+
+                // Render an entire row of 3 cards at a time
+                renderItem={({ item: row }) => (
+                  <View style={styles.row}>
                     {row.map((item) => {
                       const inWatchlist = watchlist[item.id];
                       const inWatched = watched[item.id];
@@ -366,17 +421,11 @@ export default function SearchScreen() {
                       );
                     })}
                   </View>
-                ))}
-
-                {!isLoading && filteredResults.length === 0 && (
-                  <Text style={{ color: '#8F98A0', textAlign: 'center', marginTop: 40 }}>
-                    {isAiMode ? "AI couldn't find matching titles. Try a different prompt." : "No results found."}
-                  </Text>
                 )}
-              </View>
+              />
             )}
+          </View>
 
-          </ScrollView>
         </View>
       </TouchableWithoutFeedback>
     </SafeAreaView>
@@ -402,15 +451,15 @@ const styles = StyleSheet.create({
   toggleText: { color: '#8F98A0', fontSize: 13, fontWeight: '600' },
   toggleTextActive: { color: '#FFFFFF' },
 
-  scrollContent: { paddingBottom: 80 },
   sectionTitle: { color: '#FFFFFF', fontSize: 20, fontWeight: 'bold', paddingHorizontal: SCREEN_PADDING, marginBottom: 16 },
-  chipsContainer: { paddingHorizontal: SCREEN_PADDING, marginBottom: 20, gap: 10 },
+  chipsContainer: { paddingHorizontal: SCREEN_PADDING, gap: 10 },
   chip: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1E1E24', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 8, borderWidth: 1, borderColor: 'transparent' },
   activeChip: { backgroundColor: '#2A2A30', borderColor: 'rgba(255, 255, 255, 0.2)' },
   chipText: { color: '#A0A0A5', fontSize: 14, fontWeight: '600' },
   activeChipText: { color: '#FFFFFF' },
-  gridContainer: { paddingHorizontal: SCREEN_PADDING, gap: GAP },
-  row: { flexDirection: 'row', gap: GAP },
+
+  gridContainer: { paddingHorizontal: SCREEN_PADDING, paddingBottom: 40 },
+  row: { gap: GAP, marginBottom: GAP, justifyContent: 'flex-start', flexDirection: 'row' },
   card: { height: CARD_HEIGHT, borderRadius: 6, overflow: 'hidden', backgroundColor: '#1E1E24', justifyContent: 'flex-end', alignItems: 'center', paddingBottom: 8, position: 'relative' },
   cardImage: { ...StyleSheet.absoluteFillObject, width: '100%', height: '100%' },
   badgeContainer: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4 },
