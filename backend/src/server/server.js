@@ -3,6 +3,7 @@ require('dotenv').config();
 const connectDB = require('../database/connectDB');
 const authRouter = require('../routes/authRouter');
 const userRouter = require('../routes/userRouter');
+const aiRouter = require('../routes/aiRouter')
 const serverAwake = require('../jobs/serverAwake');
 
 const app = express();
@@ -13,6 +14,7 @@ app.get('/', (req, res) => { res.status(200).send('Server is awake'); });
 
 app.use('/api/auth', authRouter);
 app.use('/api/user', userRouter);
+app.use('/api/ai', aiRouter);
 
 const PORT = process.env.PORT || 5000;
 
