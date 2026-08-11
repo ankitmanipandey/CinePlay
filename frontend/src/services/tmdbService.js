@@ -1,6 +1,37 @@
 import { tmdbClient } from './apiClient';
 
-// Master Filter Logic Engine
+// --- VALIDATION ENGINE ---
+// Helper to filter out items without thumbnails or YouTube trailers
+const filterValidMedia = async (items) => {
+    if (!items || !Array.isArray(items)) return [];
+
+    // Step 1: Remove items missing both poster and backdrop images
+    const itemsWithThumbnails = items.filter(
+        (item) => item && (item.poster_path || item.backdrop_path)
+    );
+
+    // Step 2: Concurrently check if each item has an available YouTube video key
+    const validationPromises = itemsWithThumbnails.map(async (item) => {
+        try {
+            const mediaType = item.media_type || (item.first_air_date ? 'tv' : 'movie');
+            const response = await tmdbClient.get(`/${mediaType}/${item.id}/videos`);
+            const videos = response.data.results || [];
+
+            const hasYoutubeVideo = videos.some(
+                (v) => v.site === 'YouTube' && v.key
+            );
+
+            return hasYoutubeVideo ? item : null;
+        } catch (error) {
+            return null; // Exclude item if video check fails
+        }
+    });
+
+    const validatedResults = await Promise.all(validationPromises);
+    return validatedResults.filter(Boolean); // Remove null entries
+};
+
+// --- MASTER FILTER LOGIC ENGINE ---
 const getFilterParams = (filters) => {
     const { region, language } = filters;
     let params = {};
@@ -28,30 +59,30 @@ const getFilterParams = (filters) => {
 
 export const tmdbService = {
     // --- SEARCH ENGINES ---
-    // Added page parameter for infinite scroll
     searchMulti: async (query, page = 1) => {
         try {
             if (!query) return [];
             const response = await tmdbClient.get('/search/multi', {
                 params: { query, include_adult: false, language: 'en-US', page: page }
             });
-            // Filter out "person" results, keeping only movies and TV shows
-            return response.data.results.filter(
+
+            const filteredDocs = response.data.results.filter(
                 item => item.media_type === 'movie' || item.media_type === 'tv'
             );
+
+            return await filterValidMedia(filteredDocs);
         } catch (error) {
             console.error('Error fetching search results:', error);
             return [];
         }
     },
 
-    // Added page parameter for infinite scroll
     getTrending: async (page = 1) => {
         try {
             const response = await tmdbClient.get('/trending/all/day', {
                 params: { language: 'en-US', page: page }
             });
-            return response.data.results;
+            return await filterValidMedia(response.data.results);
         } catch (error) {
             console.error('Error fetching trending:', error);
             return [];
@@ -84,7 +115,8 @@ export const tmdbService = {
             const responses = await Promise.all(requests);
             responses.forEach(res => { results = [...results, ...res]; });
 
-            return results.sort((a, b) => (b.popularity || 0) - (a.popularity || 0));
+            const sortedResults = results.sort((a, b) => (b.popularity || 0) - (a.popularity || 0));
+            return await filterValidMedia(sortedResults);
         } catch (error) {
             console.error('Error fetching section:', error);
             return [];
@@ -125,14 +157,13 @@ export const tmdbService = {
     getSimilar: async (id, type = 'movie') => {
         try {
             const response = await tmdbClient.get(`/${type}/${id}/similar`);
-            return response.data.results;
+            return await filterValidMedia(response.data.results);
         } catch (error) {
             console.error('Error fetching similar:', error);
             return [];
         }
     },
 
-    // Added page parameter for infinite scroll
     discoverByGenre: async (genreId, page = 1) => {
         try {
             const response = await tmdbClient.get('/discover/movie', {
@@ -141,11 +172,11 @@ export const tmdbService = {
                     sort_by: 'popularity.desc',
                     include_adult: false,
                     language: 'en-US',
-                    page: page // <-- Dynamic page
+                    page: page
                 }
             });
-            // Force media_type so your UI badges work correctly
-            return response.data.results.map(item => ({ ...item, media_type: 'movie' }));
+            const formattedResults = response.data.results.map(item => ({ ...item, media_type: 'movie' }));
+            return await filterValidMedia(formattedResults);
         } catch (error) {
             console.error('Error fetching genre:', error);
             return [];
@@ -153,7 +184,6 @@ export const tmdbService = {
     },
 
     // --- SMART LOCAL NLP SEARCH ---
-    // Added page parameter for infinite scroll
     smartSearch: async (query, page = 1) => {
         try {
             if (!query) return [];
@@ -186,43 +216,45 @@ export const tmdbService = {
             let cleanQuery = queryLower;
             Object.keys(GENRE_MAP).forEach(k => cleanQuery = cleanQuery.replace(k, ''));
             Object.keys(LANG_MAP).forEach(k => cleanQuery = cleanQuery.replace(k, ''));
-            // Remove filler words
             cleanQuery = cleanQuery.replace(/(movies|movie|shows|show|series|web series)/g, '').trim();
 
-            // --- SCENARIO A: Pure Category Search (e.g., "Hindi Action Movies") ---
+            // --- SCENARIO A: Pure Category Search ---
             if (cleanQuery.length === 0 && (foundGenres.length > 0 || foundLang)) {
-                let params = { sort_by: 'popularity.desc', page: page }; // <-- Dynamic page
+                let params = { sort_by: 'popularity.desc', page: page };
                 if (foundGenres.length > 0) params.with_genres = foundGenres.join(',');
                 if (foundLang) params.with_original_language = foundLang;
 
                 const res = await tmdbClient.get('/discover/movie', { params });
-                return res.data.results.map(item => ({ ...item, media_type: 'movie' }));
+                const formattedA = res.data.results.map(item => ({ ...item, media_type: 'movie' }));
+                return await filterValidMedia(formattedA);
             }
 
-            // --- SCENARIO B: Standard Search (Titles & Actors) ---
+            // --- SCENARIO B: Standard Search ---
             const searchTarget = cleanQuery.length > 0 ? cleanQuery : query;
 
             const response = await tmdbClient.get('/search/multi', {
-                params: { query: searchTarget, include_adult: false, language: 'en-US', page: page } // <-- Dynamic page
+                params: { query: searchTarget, include_adult: false, language: 'en-US', page: page }
             });
 
             const results = response.data.results;
             if (results.length === 0) return [];
 
-            // --- SCENARIO C: They searched for an Actor (e.g., "Tom Cruise") ---
+            // --- SCENARIO C: Actor Search ---
             if (results[0].media_type === 'person') {
                 const personId = results[0].id;
 
-                let params = { with_cast: personId, sort_by: 'popularity.desc', page: page }; // <-- Dynamic page
+                let params = { with_cast: personId, sort_by: 'popularity.desc', page: page };
                 if (foundGenres.length > 0) params.with_genres = foundGenres.join(',');
                 if (foundLang) params.with_original_language = foundLang;
 
                 const personWorks = await tmdbClient.get('/discover/movie', { params });
-                return personWorks.data.results.map(item => ({ ...item, media_type: 'movie' }));
+                const formattedC = personWorks.data.results.map(item => ({ ...item, media_type: 'movie' }));
+                return await filterValidMedia(formattedC);
             }
 
-            // --- SCENARIO D: It's just a regular Title ---
-            return results.filter(item => item.media_type === 'movie' || item.media_type === 'tv');
+            // --- SCENARIO D: Regular Title ---
+            const formattedD = results.filter(item => item.media_type === 'movie' || item.media_type === 'tv');
+            return await filterValidMedia(formattedD);
 
         } catch (error) {
             console.error('Smart Search Error:', error);

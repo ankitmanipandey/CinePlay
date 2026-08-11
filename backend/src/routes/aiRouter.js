@@ -4,25 +4,22 @@ const aiRouter = express.Router();
 const User = require('../models/User');
 const axios = require('axios');
 const { optionalProtect } = require('../middleware/authMiddleware');
-const TMDB_ACCESS_TOKEN = process.env.TMDB_ACCESS_TOKEN; // Add this to your backend .env
+const TMDB_ACCESS_TOKEN = process.env.TMDB_ACCESS_TOKEN;
 
 // Helper to convert IDs to Titles with Languages & Actors for the AI Prompt
 const resolveIdsToTitles = async (idTypeStrings) => {
-    // Safety check in case the array is empty or undefined
     if (!idTypeStrings || !Array.isArray(idTypeStrings) || idTypeStrings.length === 0) return [];
 
     const recentItems = idTypeStrings.slice(-15);
 
     const requests = recentItems.map(item => {
-        // Safety check to ensure the item is a string before splitting
         if (typeof item !== 'string') return null;
 
         const [id, type] = item.split(':');
 
-        // 🔴 NEW: We added ?append_to_response=credits to get the actors in one single API call
         return axios.get(`https://api.themoviedb.org/3/${type || 'movie'}/${id}?append_to_response=credits`, {
             headers: { Authorization: `Bearer ${TMDB_ACCESS_TOKEN}` }
-        }).catch(() => null); // Ignore failures silently
+        }).catch(() => null);
     });
 
     const responses = await Promise.all(requests);
@@ -34,13 +31,9 @@ const resolveIdsToTitles = async (idTypeStrings) => {
             const title = data.title || data.name;
             const lang = data.original_language || 'unknown';
 
-            // Grab the top 2 genres
             const genres = data.genres ? data.genres.slice(0, 2).map(g => g.name).join('/') : '';
-
-            // Grab the top 2 actors from the credits
             const cast = data.credits?.cast ? data.credits.cast.slice(0, 2).map(c => c.name).join(', ') : '';
 
-            // Format the string: "Title (Language: en, Genres: Action, Starring: Actor 1, Actor 2)"
             let enrichedString = `${title} (Language: ${lang}`;
             if (genres) enrichedString += `, Genres: ${genres}`;
             if (cast) enrichedString += `, Starring: ${cast}`;
@@ -50,8 +43,6 @@ const resolveIdsToTitles = async (idTypeStrings) => {
         });
 };
 
-// 1. Load all keys into an array
-// The .filter(Boolean) safely removes any keys you might have left blank in your .env
 const geminiKeys = [
     process.env.GEMINI_API_KEY1,
     process.env.GEMINI_API_KEY2,
@@ -64,11 +55,72 @@ const geminiKeys = [
     process.env.GEMINI_API_KEY9,
 ].filter(Boolean);
 
-const GEMINI_MODEL = "gemini-3.5-flash";
+// Using your specified model constant
+const GEMINI_MODEL = "gemini-3.5-flash"; // Updated to the standard fast model, adjust if you strictly need 3.5
 
-// 2. State variable to track the current position in the array
 let currentKeyIndex = 0;
 
+// --- Phase 4: YouTube AI Orchestration Endpoint ---
+aiRouter.post('/youtube-search', optionalProtect, async (req, res) => {
+    const { prompt } = req.body;
+
+    if (!prompt) {
+        return res.status(400).json({ error: 'Search prompt is required' });
+    }
+
+    const activeKey = geminiKeys[currentKeyIndex];
+    currentKeyIndex = (currentKeyIndex + 1) % geminiKeys.length;
+
+    try {
+        const aiPrompt = `You are an expert YouTube search optimizer. 
+        The user will give you a mood, vibe, or vague request. 
+        Your job is to convert it into a highly effective, specific YouTube search query.
+        Keep it under 6 words. 
+        Return ONLY the raw search query string, no quotes, no explanations, no markdown.
+        
+        Example 1:
+        User: "I want to learn react native really fast"
+        You: React Native crash course 2024
+        
+        Example 2:
+        User: "Something super scary and unsettling to watch"
+        You: terrifying short horror films
+
+        User: "${prompt}"
+        You:`;
+
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${activeKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ contents: [{ parts: [{ text: aiPrompt }] }] })
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            console.error("Gemini API Error (YouTube):", data.error?.message);
+            // Fallback securely to the original prompt so the app doesn't crash
+            return res.status(200).json({ optimizedQuery: prompt });
+        }
+
+        if (!data.candidates || !data.candidates[0].content) {
+            return res.status(200).json({ optimizedQuery: prompt });
+        }
+
+        const rawText = data.candidates[0].content.parts[0].text;
+        const cleanedText = rawText.replace(/[\n"']/g, '').trim();
+
+        res.status(200).json({ optimizedQuery: cleanedText });
+
+    } catch (error) {
+        console.error("Backend AI YouTube Search Error:", error.message);
+        // Fallback to the original user prompt if AI fails
+        res.status(200).json({ optimizedQuery: prompt });
+    }
+});
+
+
+// --- Existing TMDB AI Recommendation Endpoint ---
 aiRouter.post('/recommend', optionalProtect, async (req, res) => {
     const { query } = req.body;
 
@@ -84,7 +136,6 @@ aiRouter.post('/recommend', optionalProtect, async (req, res) => {
         let exclusionList = "";
 
         if (req.user) {
-            // We can use req.user directly because the middleware already fetched it!
             const watchedTitles = await resolveIdsToTitles(req.user.watched);
             const watchlistTitles = await resolveIdsToTitles(req.user.watchlist);
 
@@ -94,7 +145,7 @@ aiRouter.post('/recommend', optionalProtect, async (req, res) => {
             }
         }
 
-        const prompt = `You are an elite film and TV curator. Based on the following user prompt: "${query}", recommend exactly 30 highly-rated, real movies or TV shows.
+        const prompt = `You are an elite film and TV curator. Based on the following user prompt: "${query}", recommend exactly 9 highly-rated, real movies or TV shows.
         ${tasteProfile}
         ${exclusionList}
 

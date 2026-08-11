@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
     StyleSheet,
     Text,
@@ -11,7 +11,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import Toast from 'react-native-toast-message';
 
 // --- Global State & Config ---
@@ -26,8 +26,9 @@ const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL;
 const MyListScreen = () => {
     const router = useRouter();
     const insets = useSafeAreaInsets();
+    const params = useLocalSearchParams();
 
-    const [activeTab, setActiveTab] = useState('watchlist');
+    const [activeTab, setActiveTab] = useState(params.tab === 'watched' ? 'watched' : 'watchlist');
     const [moviesData, setMoviesData] = useState([]);
     const [isLoading, setIsLoading] = useState(true);
 
@@ -35,12 +36,19 @@ const MyListScreen = () => {
     const { watchlist, watched, toggleWatchlist, toggleWatched } = useUserListStore();
     const { token } = useAuthStore();
 
+    // Update active tab dynamically if params change while component is mounted
+    useEffect(() => {
+        if (params.tab === 'watched' || params.tab === 'watchlist') {
+            setActiveTab(params.tab);
+        }
+    }, [params.tab]);
+
     // Fetch details for all IDs currently stored in the user's lists
     useEffect(() => {
         const fetchListDetails = async () => {
-            setIsLoading(true);
+            if (moviesData.length === 0) setIsLoading(true);
+
             try {
-                // Get all unique IDs from both watchlist and watched hash maps
                 const watchlistIds = Object.keys(watchlist);
                 const watchedIds = Object.keys(watched);
                 const allIds = Array.from(new Set([...watchlistIds, ...watchedIds]));
@@ -51,9 +59,7 @@ const MyListScreen = () => {
                     return;
                 }
 
-                // Fetch details for each item in parallel from TMDB
                 const detailedItemsPromises = allIds.map(async (id) => {
-                    // Try fetching as movie first, fallback to tv if needed or use default
                     const type = watchlist[id] === 'tv' || watched[id] === 'tv' ? 'tv' : 'movie';
                     const details = await tmdbService.getDetails(id, type);
 
@@ -67,7 +73,7 @@ const MyListScreen = () => {
                         genre: details.genres?.map(g => g.name).join(', ') || 'General',
                         rating: details.vote_average ? details.vote_average.toFixed(1) : 'NR',
                         poster: getImageUrl(details.poster_path),
-                        media_type: type // <-- Pass this down so buttons know what it is
+                        media_type: type
                     };
                 });
 
@@ -80,9 +86,13 @@ const MyListScreen = () => {
             }
         };
 
-        fetchListDetails();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [token]); // <-- Only re-run when auth changes. Removes the flashing UI trap.
+        const handle = requestIdleCallback(() => {
+            fetchListDetails();
+        });
+
+        // Cleanup if the component unmounts before it fires
+        return () => cancelIdleCallback(handle);
+    }, [token, watchlist, watched]);
 
     // --- 1. Instant Auth Check ---
     const handleAuthAction = useCallback((actionCallback) => {
@@ -100,14 +110,11 @@ const MyListScreen = () => {
     }, [token, insets.top]);
 
     // --- 2. API Sync & Optimistic Update ---
-    // Added mediaType parameter to prevent the "ghost movie" bug
     const handleStatusChange = useCallback(async (id, mediaType, targetStatus) => {
-        // Optimistic UI Update (Instant Tab Swap)
         if (targetStatus === 'watchlist') toggleWatchlist(id, mediaType);
         if (targetStatus === 'watched') toggleWatched(id, mediaType);
 
         try {
-            // Construct the ID + Type payload
             const tmdbIdWithType = `${id}:${mediaType}`;
 
             const response = await fetch(`${BACKEND_URL}/user/${targetStatus}/toggle`, {
@@ -123,7 +130,6 @@ const MyListScreen = () => {
 
             const data = await response.json();
 
-            // Parse "123:tv" back into local HashMap
             const arrayToMap = (arr) => arr.reduce((acc, curr) => {
                 const [idStr, typeStr] = String(curr).split(':');
                 acc[idStr] = typeStr || 'movie';
@@ -139,21 +145,20 @@ const MyListScreen = () => {
             console.error('API Sync Error:', error);
             Toast.show({ type: 'error', text1: `Failed to move to ${targetStatus}` });
 
-            // Revert on failure
             if (targetStatus === 'watchlist') toggleWatchlist(id, mediaType);
             if (targetStatus === 'watched') toggleWatched(id, mediaType);
         }
     }, [toggleWatchlist, toggleWatched, token]);
 
-    // Filter data instantly based on Zustand global memory, NOT stale TMDB data
-    const activeData = moviesData.filter(movie => {
-        if (activeTab === 'watchlist') return !!watchlist[movie.id];
-        if (activeTab === 'watched') return !!watched[movie.id];
-        return false;
-    });
+    const activeData = useMemo(() => {
+        return moviesData.filter(movie => {
+            if (activeTab === 'watchlist') return !!watchlist[movie.id];
+            if (activeTab === 'watched') return !!watched[movie.id];
+            return false;
+        });
+    }, [moviesData, activeTab, watchlist, watched]);
 
     const renderMovieItem = ({ item }) => {
-        // Read directly from Zustand memory so buttons light up instantly
         const inWatchlist = !!watchlist[item.id];
         const inWatched = !!watched[item.id];
 
@@ -240,7 +245,7 @@ const MyListScreen = () => {
                     </TouchableOpacity>
                 </View>
 
-                {isLoading ? (
+                {isLoading && moviesData.length === 0 ? (
                     <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
                         <ActivityIndicator size="large" color="#1F80E0" />
                     </View>

@@ -10,18 +10,17 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-// Import SafeAreaView from safe-area-context for proper notch handling
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import axios from 'axios';
 import Toast from 'react-native-toast-message';
 
-// --- Global Store ---
+// --- Global Stores ---
 import { useAuthStore } from '../store/useAuthStore';
 
 const { width } = Dimensions.get('window');
 const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL;
 
-// Helper component for the settings menu rows (Kept in case you add real settings later)
+// Helper component for the settings menu rows
 const MenuRow = ({ icon, title, isDestructive = false, onPress }) => (
     <TouchableOpacity style={styles.menuRow} activeOpacity={0.7} onPress={onPress}>
         <View style={styles.menuRowLeft}>
@@ -46,6 +45,21 @@ const ProfileScreen = () => {
     const displayInitial = user?.name
         ? user.name.charAt(0).toUpperCase()
         : (user?.email ? user.email.charAt(0).toUpperCase() : '?');
+
+    // Reusable auth check for protected routes
+    const handleProtectedNavigation = (targetPath) => {
+        if (!isLoggedIn) {
+            Toast.show({
+                type: 'hotstarInfo',
+                text1: 'Log in for personalization',
+                position: 'top',
+                topOffset: insets.top > 0 ? insets.top + 10 : 50,
+                visibilityTime: 2500,
+            });
+        } else {
+            router.push(targetPath);
+        }
+    };
 
     const handleLogout = async () => {
         try {
@@ -75,9 +89,10 @@ const ProfileScreen = () => {
             />
 
             <SafeAreaView style={styles.safeArea} edges={['top']}>
-                {isLoggedIn ? (
-                    <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+                <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
 
+                    {/* --- HEADER --- */}
+                    {isLoggedIn ? (
                         <View style={styles.profileHeader}>
                             <View style={styles.avatarContainer}>
                                 <Text style={styles.avatarText}>{displayInitial}</Text>
@@ -85,9 +100,63 @@ const ProfileScreen = () => {
                             <Text style={styles.userName}>{user?.name || 'User'}</Text>
                             <Text style={styles.userEmail}>{user?.email}</Text>
                         </View>
+                    ) : (
+                        <View style={styles.loggedOutContainer}>
+                            <View style={[styles.illustrationContainer, { zIndex: -1 }]}>
+                                <Ionicons name="tv" size={110} color="#1E1E24" />
+                                <View style={styles.floatingDeviceLeft}>
+                                    <Ionicons name="phone-landscape" size={45} color="#2A2A30" />
+                                </View>
+                                <View style={styles.floatingDeviceRight}>
+                                    <Ionicons name="phone-portrait" size={35} color="#2A2A30" />
+                                </View>
+                                <View style={styles.orbitLine} />
+                                <Ionicons name="star" size={10} color="#1F80E0" style={[styles.starIcon, { top: 10, left: 30 }]} />
+                                <Ionicons name="star" size={12} color="#D63484" style={[styles.starIcon, { bottom: 20, right: 20 }]} />
+                            </View>
 
-                        {/* Only keeping the working Log Out button */}
+                            <Text style={styles.title}>Login to CinePlay</Text>
+                            <Text style={styles.subtitle}>
+                                Start watching from where you left off, personalise for kids and more
+                            </Text>
+
+                            <TouchableOpacity activeOpacity={0.8} onPress={() => router.push('/login')}>
+                                <LinearGradient
+                                    colors={['#1F80E0', '#D63484']}
+                                    start={{ x: 0, y: 0 }}
+                                    end={{ x: 1, y: 0 }}
+                                    style={styles.loginButton}
+                                >
+                                    <Text style={styles.loginButtonText}>Log In</Text>
+                                </LinearGradient>
+                            </TouchableOpacity>
+                        </View>
+                    )}
+
+                    {/* --- MY LISTS (Visible to Everyone, but Protected by handleProtectedNavigation) --- */}
+                    <View style={styles.menuSection}>
+                        <Text style={styles.sectionTitle}>My Lists</Text>
+                        <View style={styles.menuCard}>
+                            <MenuRow
+                                icon="bookmark-outline"
+                                title="Watchlist"
+                                // We pass ?tab=watchlist so MyListScreen knows which tab to highlight
+                                onPress={() => handleProtectedNavigation('/my-list?tab=watchlist')}
+                            />
+                            <View style={styles.divider} />
+                            <MenuRow
+                                icon="checkmark-done-circle-outline"
+                                title="Watch History"
+                                // We pass ?tab=watched so MyListScreen knows which tab to highlight
+                                onPress={() => handleProtectedNavigation('/my-list?tab=watched')}
+                            />
+                        </View>
+                    </View>
+
+                    {/* --- ACCOUNT (Only visible if Logged In) --- */}
+                    {isLoggedIn && (
                         <View style={[styles.menuSection, { marginBottom: 40 }]}>
+                            <Text style={styles.sectionTitle}>Account</Text>
                             <View style={styles.menuCard}>
                                 <MenuRow
                                     icon="log-out-outline"
@@ -97,40 +166,9 @@ const ProfileScreen = () => {
                                 />
                             </View>
                         </View>
+                    )}
 
-                    </ScrollView>
-                ) : (
-                    <View style={styles.loggedOutContainer}>
-                        <View style={styles.illustrationContainer}>
-                            <Ionicons name="tv" size={110} color="#1E1E24" />
-                            <View style={styles.floatingDeviceLeft}>
-                                <Ionicons name="phone-landscape" size={45} color="#2A2A30" />
-                            </View>
-                            <View style={styles.floatingDeviceRight}>
-                                <Ionicons name="phone-portrait" size={35} color="#2A2A30" />
-                            </View>
-                            <View style={styles.orbitLine} />
-                            <Ionicons name="star" size={10} color="#1F80E0" style={[styles.starIcon, { top: 10, left: 30 }]} />
-                            <Ionicons name="star" size={12} color="#D63484" style={[styles.starIcon, { bottom: 20, right: 20 }]} />
-                        </View>
-
-                        <Text style={styles.title}>Login to CinePlay</Text>
-                        <Text style={styles.subtitle}>
-                            Start watching from where you left off, personalise for kids and more
-                        </Text>
-
-                        <TouchableOpacity activeOpacity={0.8} onPress={() => router.push('/login')}>
-                            <LinearGradient
-                                colors={['#1F80E0', '#D63484']}
-                                start={{ x: 0, y: 0 }}
-                                end={{ x: 1, y: 0 }}
-                                style={styles.loginButton}
-                            >
-                                <Text style={styles.loginButtonText}>Log In</Text>
-                            </LinearGradient>
-                        </TouchableOpacity>
-                    </View>
-                )}
+                </ScrollView>
             </SafeAreaView>
         </View>
     );
@@ -140,11 +178,13 @@ export default ProfileScreen;
 
 const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#0A0A0C' },
-    backgroundGlow: { position: 'absolute', top: 0, left: 0, right: 0, height: 300 },
+    backgroundGlow: { position: 'absolute', top: 0, left: 0, right: 0, height: 300, zIndex: -2 }, // Ensures glow is also in background
     safeArea: { flex: 1 },
 
-    // --- LOGGED IN UI ---
-    scrollContent: { paddingBottom: 40 },
+    // --- SHARED UI ---
+    scrollContent: { paddingBottom: 100 },
+
+    // --- LOGGED IN HEADER ---
     profileHeader: {
         alignItems: 'center',
         paddingVertical: 32,
@@ -168,7 +208,56 @@ const styles = StyleSheet.create({
     userName: { color: '#FFFFFF', fontSize: 24, fontWeight: 'bold', marginBottom: 4, letterSpacing: 0.3 },
     userEmail: { color: '#8F98A0', fontSize: 14, fontWeight: '500' },
 
+    // --- LOGGED OUT HEADER ---
+    loggedOutContainer: {
+        alignItems: 'center',
+        paddingHorizontal: 24,
+        paddingTop: 40,
+        paddingBottom: 20,
+    },
+    illustrationContainer: {
+        width: 220,
+        height: 140,
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginBottom: 30,
+        position: 'relative',
+    },
+    floatingDeviceLeft: { position: 'absolute', left: 10, top: 30, transform: [{ rotate: '-15deg' }] },
+    floatingDeviceRight: { position: 'absolute', right: 15, bottom: 25, transform: [{ rotate: '15deg' }] },
+    orbitLine: {
+        position: 'absolute',
+        width: '110%',
+        height: 40,
+        borderWidth: 1,
+        borderColor: 'rgba(31, 128, 224, 0.3)',
+        borderRadius: 50,
+        top: '50%',
+        transform: [{ translateY: -10 }],
+    },
+    starIcon: { position: 'absolute', opacity: 0.8 },
+    title: { color: '#FFFFFF', fontSize: 22, fontWeight: 'bold', marginBottom: 12, letterSpacing: 0.3 },
+    subtitle: {
+        color: '#8F98A0',
+        fontSize: 14,
+        textAlign: 'center',
+        lineHeight: 20,
+        marginBottom: 32,
+        paddingHorizontal: 10,
+    },
+    loginButton: {
+        width: width * 0.85,
+        height: 52,
+        borderRadius: 8,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    loginButtonText: { color: '#FFFFFF', fontSize: 16, fontWeight: 'bold' },
+
+    // --- MENU SECTIONS ---
     menuSection: { paddingHorizontal: 20, marginTop: 24 },
+    sectionTitle: { color: '#FFFFFF', fontSize: 16, fontWeight: 'bold', marginBottom: 12, marginLeft: 4, letterSpacing: 0.3 },
+
     menuCard: {
         backgroundColor: '#17171C',
         borderRadius: 16,
@@ -194,52 +283,5 @@ const styles = StyleSheet.create({
         marginRight: 14,
     },
     menuRowTitle: { color: '#E0E0E0', fontSize: 15, fontWeight: '500' },
-
-    // --- LOGGED OUT UI ---
-    loggedOutContainer: {
-        flex: 1,
-        alignItems: 'center',
-        justifyContent: 'center',
-        paddingHorizontal: 24,
-        paddingBottom: 40,
-    },
-    illustrationContainer: {
-        width: 220,
-        height: 140,
-        justifyContent: 'center',
-        alignItems: 'center',
-        marginBottom: 30,
-        position: 'relative',
-    },
-    floatingDeviceLeft: { position: 'absolute', left: 10, top: 30, transform: [{ rotate: '-15deg' }] },
-    floatingDeviceRight: { position: 'absolute', right: 15, bottom: 25, transform: [{ rotate: '15deg' }] },
-    orbitLine: {
-        position: 'absolute',
-        width: '110%',
-        height: 40,
-        borderWidth: 1,
-        borderColor: 'rgba(31, 128, 224, 0.3)',
-        borderRadius: 50,
-        top: '50%',
-        transform: [{ translateY: -10 }],
-        zIndex: -1,
-    },
-    starIcon: { position: 'absolute', opacity: 0.8 },
-    title: { color: '#FFFFFF', fontSize: 22, fontWeight: 'bold', marginBottom: 12, letterSpacing: 0.3 },
-    subtitle: {
-        color: '#8F98A0',
-        fontSize: 14,
-        textAlign: 'center',
-        lineHeight: 20,
-        marginBottom: 32,
-        paddingHorizontal: 10,
-    },
-    loginButton: {
-        width: width * 0.85,
-        height: 52,
-        borderRadius: 8,
-        justifyContent: 'center',
-        alignItems: 'center',
-    },
-    loginButtonText: { color: '#FFFFFF', fontSize: 16, fontWeight: 'bold' },
+    divider: { height: 1, backgroundColor: 'rgba(255,255,255,0.05)', marginHorizontal: 16 },
 });

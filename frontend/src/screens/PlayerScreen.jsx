@@ -26,18 +26,22 @@ import { useUserListStore } from '../store/useUserListStore';
 import { useAuthStore } from '../store/useAuthStore';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL;
+const YOUTUBE_API_KEY = process.env.EXPO_PUBLIC_YOUTUBE_API_KEY;
 
 export default function PlayerScreen() {
     const router = useRouter();
     const insets = useSafeAreaInsets();
     const { width, height } = useWindowDimensions();
-    const { id, type } = useLocalSearchParams(); // <-- TYPE is already here!
+
+    // Extract both TMDB params (id, type) and YouTube param (ytId)
+    const { id, type, ytId } = useLocalSearchParams();
 
     const [isLoading, setIsLoading] = useState(true);
     const [mediaDetails, setMediaDetails] = useState(null);
     const [trailerKey, setTrailerKey] = useState(null);
     const [similarMedia, setSimilarMedia] = useState([]);
     const [watchProviders, setWatchProviders] = useState(null);
+    const [relatedYtClips, setRelatedYtClips] = useState([]);
 
     const [hasStarted, setHasStarted] = useState(false);
     const [isPlaying, setIsPlaying] = useState(false);
@@ -53,25 +57,86 @@ export default function PlayerScreen() {
     }, []);
 
     useEffect(() => {
-        if (!id || !type) return;
+        // If neither TMDB id nor ytId exists, abort
+        if (!id && !ytId) return;
 
         const fetchAllData = async () => {
             setIsLoading(true);
             try {
-                const [details, videos, similar, providers] = await Promise.all([
-                    tmdbService.getDetails(id, type),
-                    tmdbService.getVideos(id, type),
-                    tmdbService.getSimilar(id, type),
-                    tmdbService.getWatchProviders(id, type)
-                ]);
+                let videoTitle = "";
 
-                const trailer = videos.find(v => v.type === 'Trailer' && v.site === 'YouTube')
-                    || videos.find(v => v.site === 'YouTube');
+                // --- FLOW 1: Direct YouTube Click from Search (ytId) ---
+                if (ytId) {
+                    setTrailerKey(ytId);
+                    setHasStarted(true);
+                    setIsPlaying(true);
 
-                setTrailerKey(trailer ? trailer.key : null);
-                setMediaDetails(details);
-                setSimilarMedia(similar);
-                setWatchProviders(providers);
+                    if (YOUTUBE_API_KEY) {
+                        try {
+                            const videoRes = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${ytId}&key=${YOUTUBE_API_KEY}`);
+                            const videoData = await videoRes.json();
+                            const snippet = videoData.items?.[0]?.snippet;
+
+                            if (snippet) {
+                                videoTitle = snippet.title;
+                                setMediaDetails({
+                                    title: snippet.title,
+                                    overview: "", // Hides description for YT videos
+                                    vote_average: 0,
+                                    spoken_languages: [{ english_name: snippet.channelTitle }]
+                                });
+                            }
+                        } catch (e) {
+                            console.error("Failed to fetch YT video details:", e);
+                        }
+                    }
+
+                    if (!videoTitle) {
+                        setMediaDetails({ title: "YouTube Video", overview: "", vote_average: 0 });
+                    }
+                }
+
+                // --- FLOW 2: TMDB Movie/Show Click (id & type) ---
+                if (id && type) {
+                    const [details, videos, similar, providers] = await Promise.all([
+                        tmdbService.getDetails(id, type),
+                        tmdbService.getVideos(id, type),
+                        tmdbService.getSimilar(id, type),
+                        tmdbService.getWatchProviders(id, type)
+                    ]);
+
+                    const trailer = videos.find(v => v.type === 'Trailer' && v.site === 'YouTube')
+                        || videos.find(v => v.site === 'YouTube');
+
+                    setTrailerKey(trailer ? trailer.key : null);
+
+                    // 🔴 AUTOPLAY LOGIC: Instantly start video if a trailer is found!
+                    if (trailer) {
+                        setHasStarted(true);
+                        setIsPlaying(true);
+                    }
+
+                    setMediaDetails(details);
+                    setSimilarMedia(similar);
+                    setWatchProviders(providers);
+
+                    videoTitle = details.title || details.name;
+                }
+
+                // --- FETCH RELATED YOUTUBE CLIPS (Restricted to TMDB items, prevents double-fetching for direct YT clicks) ---
+                if (id && type && !ytId && videoTitle && YOUTUBE_API_KEY) {
+                    try {
+                        const searchQuery = encodeURIComponent(`${videoTitle} official clip OR soundtrack OR song`);
+                        const ytRes = await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&q=${searchQuery}&type=video&maxResults=10&key=${YOUTUBE_API_KEY}`);
+                        const ytData = await ytRes.json();
+                        if (ytData.items) {
+                            setRelatedYtClips(ytData.items);
+                        }
+                    } catch (ytError) {
+                        console.error("Failed to fetch YT clips:", ytError);
+                    }
+                }
+
             } catch (error) {
                 console.error("Failed to load player data:", error);
             } finally {
@@ -80,7 +145,7 @@ export default function PlayerScreen() {
         };
 
         fetchAllData();
-    }, [id, type]);
+    }, [id, type, ytId]);
 
     const handleAuthAction = (actionCallback) => {
         if (!token) {
@@ -97,13 +162,12 @@ export default function PlayerScreen() {
     };
 
     const handleToggleAction = async (mediaId, mediaType, targetList) => {
-        // 1. Optimistic UI Update passing mediaType
+        if (!mediaId || !mediaType) return;
         if (targetList === 'watchlist') toggleWatchlist(mediaId, mediaType);
         if (targetList === 'watched') toggleWatched(mediaId, mediaType);
 
         try {
             const tmdbIdWithType = `${mediaId}:${mediaType}`;
-
             const response = await fetch(`${BACKEND_URL}/user/${targetList}/toggle`, {
                 method: 'POST',
                 headers: {
@@ -224,10 +288,12 @@ export default function PlayerScreen() {
 
                         {!hasStarted && (
                             <View style={[StyleSheet.absoluteFill, { zIndex: 10 }]}>
-                                <Image
-                                    source={{ uri: getImageUrl(mediaDetails.backdrop_path, 'original') }}
-                                    style={styles.videoThumbnail}
-                                />
+                                {mediaDetails.backdrop_path && (
+                                    <Image
+                                        source={{ uri: getImageUrl(mediaDetails.backdrop_path, 'original') }}
+                                        style={styles.videoThumbnail}
+                                    />
+                                )}
                                 <View style={styles.playerOverlay}>
                                     {trailerKey ? (
                                         <TouchableOpacity
@@ -241,7 +307,7 @@ export default function PlayerScreen() {
                                             <Ionicons name="play" size={38} color="#FFFFFF" style={{ marginLeft: 4 }} />
                                         </TouchableOpacity>
                                     ) : (
-                                        <Text style={styles.noTrailerText}>No Trailer Available</Text>
+                                        <Text style={styles.noTrailerText}>No Video Available</Text>
                                     )}
                                 </View>
                             </View>
@@ -270,29 +336,35 @@ export default function PlayerScreen() {
                             </TouchableOpacity>
                         </View>
 
-                        <View style={styles.externalRightControls}>
-                            <TouchableOpacity onPress={() => handleAuthAction(() => handleToggleAction(id, type, 'watchlist'))} style={styles.externalBtn}>
-                                <Ionicons name={isCurrentInWatchlist ? "bookmark" : "bookmark-outline"} size={22} color={isCurrentInWatchlist ? "#F5C518" : "#FFFFFF"} />
-                                <Text style={[styles.externalBtnText, isCurrentInWatchlist && { color: '#F5C518' }]}>Save</Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity onPress={() => handleAuthAction(() => handleToggleAction(id, type, 'watched'))} style={styles.externalBtn}>
-                                <Ionicons name="checkmark-done" size={22} color={isCurrentInWatched ? "#1F80E0" : "#FFFFFF"} />
-                                <Text style={[styles.externalBtnText, isCurrentInWatched && { color: '#1F80E0' }]}>Watched</Text>
-                            </TouchableOpacity>
-                        </View>
+                        {id && (
+                            <View style={styles.externalRightControls}>
+                                <TouchableOpacity onPress={() => handleAuthAction(() => handleToggleAction(id, type, 'watchlist'))} style={styles.externalBtn}>
+                                    <Ionicons name={isCurrentInWatchlist ? "bookmark" : "bookmark-outline"} size={22} color={isCurrentInWatchlist ? "#F5C518" : "#FFFFFF"} />
+                                    <Text style={[styles.externalBtnText, isCurrentInWatchlist && { color: '#F5C518' }]}>Save</Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity onPress={() => handleAuthAction(() => handleToggleAction(id, type, 'watched'))} style={styles.externalBtn}>
+                                    <Ionicons name="checkmark-done" size={22} color={isCurrentInWatched ? "#1F80E0" : "#FFFFFF"} />
+                                    <Text style={[styles.externalBtnText, isCurrentInWatched && { color: '#1F80E0' }]}>Watched</Text>
+                                </TouchableOpacity>
+                            </View>
+                        )}
                     </View>
 
                     <View style={styles.detailsContainer}>
                         <Text style={styles.mediaTitle}>{title}</Text>
                         <View style={styles.metaRow}>
-                            <Text style={styles.metaText}>{year}</Text>
-                            <Text style={styles.metaDot}>•</Text>
+                            {year ? <Text style={styles.metaText}>{year}</Text> : null}
+                            {year && languages ? <Text style={styles.metaDot}>•</Text> : null}
                             <Text style={styles.metaText}>{languages}</Text>
-                            <Text style={styles.metaDot}>•</Text>
-                            <View style={styles.ratingBadge}>
-                                <Ionicons name="star" size={12} color="#F5C518" />
-                                <Text style={styles.ratingText}>{mediaDetails.vote_average?.toFixed(1)}</Text>
-                            </View>
+                            {mediaDetails.vote_average > 0 && (
+                                <>
+                                    <Text style={styles.metaDot}>•</Text>
+                                    <View style={styles.ratingBadge}>
+                                        <Ionicons name="star" size={12} color="#F5C518" />
+                                        <Text style={styles.ratingText}>{mediaDetails.vote_average?.toFixed(1)}</Text>
+                                    </View>
+                                </>
+                            )}
                         </View>
 
                         {streamingPlatforms.length > 0 && (
@@ -310,9 +382,43 @@ export default function PlayerScreen() {
                             </View>
                         )}
 
-                        <Text style={styles.overviewText}>{mediaDetails.overview}</Text>
+                        {mediaDetails.overview ? (
+                            <Text style={styles.overviewText}>{mediaDetails.overview}</Text>
+                        ) : null}
                     </View>
 
+                    {/* Only shows when NOT a direct YT Search (!ytId) */}
+                    {!ytId && relatedYtClips.length > 0 && (
+                        <View style={styles.sectionContainer}>
+                            <Text style={styles.sectionTitle}>Related on YouTube</Text>
+                            <FlatList
+                                horizontal
+                                showsHorizontalScrollIndicator={false}
+                                data={relatedYtClips}
+                                keyExtractor={(item, index) => item.id?.videoId || index.toString()}
+                                contentContainerStyle={styles.listContent}
+                                renderItem={({ item }) => (
+                                    <TouchableOpacity
+                                        style={styles.ytCard}
+                                        activeOpacity={0.7}
+                                        onPress={() => {
+                                            setTrailerKey(item.id.videoId);
+                                            setHasStarted(true);
+                                            setIsPlaying(true);
+                                        }}
+                                    >
+                                        <Image source={{ uri: item.snippet?.thumbnails?.medium?.url }} style={styles.ytCardImage} />
+                                        <View style={styles.ytPlayIconOverlay}>
+                                            <Ionicons name="play-circle" size={32} color="rgba(255,255,255,0.8)" />
+                                        </View>
+                                        <Text style={styles.ytCardTitle} numberOfLines={2}>{item.snippet?.title}</Text>
+                                    </TouchableOpacity>
+                                )}
+                            />
+                        </View>
+                    )}
+
+                    {/* TMDB More Like This Section (Only shows for TMDB clicks) */}
                     {similarMedia.length > 0 && (
                         <View style={styles.sectionContainer}>
                             <Text style={styles.sectionTitle}>More Like This</Text>
@@ -365,24 +471,20 @@ const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#0A0A0C' },
     scrollContent: { paddingBottom: 40 },
 
-    /* --- Player Section --- */
     playerContainer: { backgroundColor: '#000', position: 'relative' },
     videoThumbnail: { width: '100%', height: '100%', position: 'absolute' },
     playerOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'center', alignItems: 'center', zIndex: 5 },
     centerPlayButton: { width: 64, height: 64, borderRadius: 32, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center' },
     noTrailerText: { color: '#FFFFFF', fontSize: 16, fontWeight: 'bold', backgroundColor: 'rgba(0,0,0,0.5)', padding: 10, borderRadius: 8 },
 
-    /* --- Floating Exit Fullscreen Button --- */
     fullscreenExitBtn: { position: 'absolute', top: 15, left: 20, zIndex: 99999, backgroundColor: 'rgba(0,0,0,0.7)', padding: 8, borderRadius: 20 },
 
-    /* --- External Controls Bar Below Video --- */
     externalControlBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#14141A', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.08)' },
     externalLeftControls: { flexDirection: 'row', gap: 12 },
     externalBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(255,255,255,0.08)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
     externalRightControls: { flexDirection: 'row', gap: 10 },
     externalBtnText: { color: '#FFFFFF', fontSize: 13, fontWeight: '600' },
 
-    /* --- Media Details --- */
     detailsContainer: { paddingHorizontal: 16, paddingTop: 20 },
     mediaTitle: { color: '#FFFFFF', fontSize: 26, fontWeight: 'bold', marginBottom: 8 },
     metaRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
@@ -392,18 +494,15 @@ const styles = StyleSheet.create({
     ratingText: { color: '#F5C518', fontSize: 13, fontWeight: 'bold', marginLeft: 4 },
     overviewText: { color: '#D0D0D5', fontSize: 15, lineHeight: 22, marginTop: 8 },
 
-    /* --- Providers Section --- */
     providersContainer: { marginBottom: 16, backgroundColor: 'rgba(255,255,255,0.05)', padding: 12, borderRadius: 8 },
     providersTitle: { color: '#FFFFFF', fontSize: 14, fontWeight: 'bold', marginBottom: 8 },
     providerIconsRow: { flexDirection: 'row', gap: 10 },
     providerLogo: { width: 36, height: 36, borderRadius: 8 },
 
-    /* --- Sections --- */
     sectionContainer: { marginTop: 30 },
     sectionTitle: { color: '#FFFFFF', fontSize: 20, fontWeight: 'bold', paddingHorizontal: 16, marginBottom: 16, letterSpacing: 0.2 },
     listContent: { paddingHorizontal: 16, gap: 12 },
 
-    /* --- More Like This Cards --- */
     standardCard: { width: 125, height: 175, borderRadius: 8, overflow: 'hidden', backgroundColor: '#1E1428', position: 'relative' },
     cardImage: { width: '100%', height: '100%', position: 'absolute' },
     cardBottomGradient: { position: 'absolute', bottom: 0, left: 0, right: 0, height: '40%' },
@@ -411,4 +510,9 @@ const styles = StyleSheet.create({
     smallCardRatingText: { color: '#FFFFFF', fontSize: 10, fontWeight: 'bold', marginLeft: 3, marginTop: 1 },
     smallCardActions: { position: 'absolute', top: 6, right: 6, gap: 6 },
     smallIconBtn: { width: 26, height: 26, borderRadius: 13, backgroundColor: 'rgba(0, 0, 0, 0.65)', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.3)' },
+
+    ytCard: { width: 180, marginRight: 12 },
+    ytCardImage: { width: '100%', height: 101, borderRadius: 8, backgroundColor: '#1E1428' },
+    ytPlayIconOverlay: { position: 'absolute', top: 35, left: 74, zIndex: 2 },
+    ytCardTitle: { color: '#D0D0D5', fontSize: 13, marginTop: 8, fontWeight: '500' }
 });

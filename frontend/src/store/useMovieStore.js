@@ -23,7 +23,7 @@ export const useMovieStore = create((set, get) => ({
     feelGoodList: [],
     biopicsList: [],
 
-    // --- NEW: Personalized AI State ---
+    // --- Personalized AI State ---
     recommendedList: [],
     isAiLoading: false,
 
@@ -37,7 +37,7 @@ export const useMovieStore = create((set, get) => ({
         get().fetchAllData();
     },
 
-    // --- NEW: Fetch AI Personalization ---
+    // --- Fetch AI Personalization ---
     fetchPersonalizedRecommendations: async (token) => {
         // Only run if the user is logged in
         if (!token) return;
