@@ -1,0 +1,34 @@
+# Dependencies (Expo installs these fresh on their server)
+node_modules/
+.npm/
+
+# Expo and Build folders
+.expo/
+dist/
+web-build/
+
+# Native folders (EAS generates these automatically in Managed workflow)
+android/
+ios/
+
+# Log files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Heavy design and media files not needed for the build
+*.psd
+*.ai
+*.sketch
+*.fig
+*.mp4
+*.mov
