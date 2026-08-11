@@ -1,12 +1,12 @@
 const cron = require('node-cron');
 const https = require('https');
-const SERVER_URL = process.env.SERVER_URL
+const SERVER_URL = process.env.SERVER_URL;
 
 const serverAwake = () => {
-    cron.schedule('* * * * *', () => {
+    cron.schedule('*/14 * * * *', () => {
         console.log(`[Keep-Awake] Pinging ${SERVER_URL} to prevent sleep...`);
 
-        https.get(SERVER_URL, (res) => {
+        https.get(process.env.SERVER_URL, (res) => {
             if (res.statusCode === 200) {
                 console.log(`[Keep-Awake] Success. Status Code: ${res.statusCode}`);
             } else {
