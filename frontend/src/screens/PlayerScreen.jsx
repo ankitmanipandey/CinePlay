@@ -26,7 +26,37 @@ import { useUserListStore } from '../store/useUserListStore';
 import { useAuthStore } from '../store/useAuthStore';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL;
-const YOUTUBE_API_KEY = process.env.EXPO_PUBLIC_YOUTUBE_API_KEY;
+
+// --- MULTI-KEY ROUND ROBIN SETUP ---
+const RAW_KEYS = process.env.EXPO_PUBLIC_YOUTUBE_API_KEYS || process.env.EXPO_PUBLIC_YOUTUBE_API_KEY || '';
+let ACTIVE_YT_KEYS = RAW_KEYS.split(',').map(k => k.trim()).filter(Boolean);
+
+const fetchYouTubeWithRetry = async (urlTemplate) => {
+    while (ACTIVE_YT_KEYS.length > 0) {
+        const currentKey = ACTIVE_YT_KEYS[0];
+
+        const url = urlTemplate.replace('__API_KEY__', currentKey);
+
+        try {
+            const res = await fetch(url);
+            const data = await res.json();
+
+            // Check for Quota Exceeded (429) or Access Forbidden (403)
+            if (data.error && (data.error.code === 403 || data.error.code === 429)) {
+                console.warn(`[PlayerScreen YT Quota Error] Key failed: ${currentKey}. Removing from rotation...`);
+                ACTIVE_YT_KEYS.shift(); // Permanently deletes dead key for this session
+                continue; // Immediately try the next key
+            }
+
+            return data; // Request was successful
+        } catch (err) {
+            console.error("[PlayerScreen YT Fetch Error]", err);
+            return { error: { code: 500, message: "Network error occurred." } };
+        }
+    }
+
+    return { error: { code: 429, message: 'All YouTube API keys have exhausted their daily quota.' } };
+};
 
 export default function PlayerScreen() {
     const router = useRouter();
@@ -71,20 +101,22 @@ export default function PlayerScreen() {
                     setHasStarted(true);
                     setIsPlaying(true);
 
-                    if (YOUTUBE_API_KEY) {
+                    if (ACTIVE_YT_KEYS.length > 0) {
                         try {
-                            const videoRes = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${ytId}&key=${YOUTUBE_API_KEY}`);
-                            const videoData = await videoRes.json();
-                            const snippet = videoData.items?.[0]?.snippet;
+                            const urlTemplate = `https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${ytId}&key=__API_KEY__`;
+                            const videoData = await fetchYouTubeWithRetry(urlTemplate);
 
-                            if (snippet) {
-                                videoTitle = snippet.title;
-                                setMediaDetails({
-                                    title: snippet.title,
-                                    overview: "", // Hides description for YT videos
-                                    vote_average: 0,
-                                    spoken_languages: [{ english_name: snippet.channelTitle }]
-                                });
+                            if (!videoData.error) {
+                                const snippet = videoData.items?.[0]?.snippet;
+                                if (snippet) {
+                                    videoTitle = snippet.title;
+                                    setMediaDetails({
+                                        title: snippet.title,
+                                        overview: "", // Hides description for YT videos
+                                        vote_average: 0,
+                                        spoken_languages: [{ english_name: snippet.channelTitle }]
+                                    });
+                                }
                             }
                         } catch (e) {
                             console.error("Failed to fetch YT video details:", e);
@@ -124,12 +156,14 @@ export default function PlayerScreen() {
                 }
 
                 // --- FETCH RELATED YOUTUBE CLIPS (Restricted to TMDB items, prevents double-fetching for direct YT clicks) ---
-                if (id && type && !ytId && videoTitle && YOUTUBE_API_KEY) {
+                if (id && type && !ytId && videoTitle && ACTIVE_YT_KEYS.length > 0) {
                     try {
                         const searchQuery = encodeURIComponent(`${videoTitle} official clip OR soundtrack OR song`);
-                        const ytRes = await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&q=${searchQuery}&type=video&maxResults=10&key=${YOUTUBE_API_KEY}`);
-                        const ytData = await ytRes.json();
-                        if (ytData.items) {
+                        const urlTemplate = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${searchQuery}&type=video&maxResults=10&key=__API_KEY__`;
+
+                        const ytData = await fetchYouTubeWithRetry(urlTemplate);
+
+                        if (!ytData.error && ytData.items) {
                             setRelatedYtClips(ytData.items);
                         }
                     } catch (ytError) {

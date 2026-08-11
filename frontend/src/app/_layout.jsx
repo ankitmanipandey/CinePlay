@@ -1,57 +1,59 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator } from 'react-native';
+import React, { useEffect, useState, useRef } from 'react';
+import { View, Text, StyleSheet, ActivityIndicator, Animated, Dimensions } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import Toast from 'react-native-toast-message';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import * as SecureStore from 'expo-secure-store';
 
-// ✅ FIXED IMPORT FOR EXPO SDK
 import { ThemeProvider, DarkTheme } from 'expo-router/react-navigation';
 
 // --- GLOBAL AUTH STORE ---
 import { useAuthStore } from '../store/useAuthStore';
 
+// Get screen width to calculate the starting position off-screen to the right
+const { width } = Dimensions.get('window');
+
+// --- NEW: REUSABLE ANIMATED TOAST COMPONENT ---
+const AnimatedToast = ({ text1, colors, iconName }) => {
+  // Start the toast completely off-screen to the right
+  const slideAnim = useRef(new Animated.Value(width)).current;
+
+  useEffect(() => {
+    // Spring animation slides it in from Right to Left
+    Animated.spring(slideAnim, {
+      toValue: 0, // Target position (original position)
+      useNativeDriver: true,
+      friction: 8,  // Adjust for bounciness
+      tension: 60,  // Adjust for speed
+    }).start();
+  }, [slideAnim]);
+
+  return (
+    <Animated.View style={[styles.toastWrapper, { transform: [{ translateX: slideAnim }] }]}>
+      <LinearGradient
+        colors={colors}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.toastContainer}
+      >
+        <Ionicons name={iconName} size={20} color="#FFFFFF" />
+        <Text style={styles.toastText}>{text1}</Text>
+      </LinearGradient>
+    </Animated.View>
+  );
+};
+
+// --- TOAST CONFIG ---
 const toastConfig = {
   hotstarSuccess: ({ text1 }) => (
-    <View style={styles.toastWrapper}>
-      <LinearGradient
-        colors={['#1F80E0', '#D63484']}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={styles.toastContainer}
-      >
-        <Ionicons name="checkmark-circle" size={20} color="#FFFFFF" />
-        <Text style={styles.toastText}>{text1}</Text>
-      </LinearGradient>
-    </View>
+    <AnimatedToast text1={text1} colors={['#1F80E0', '#D63484']} iconName="checkmark-circle" />
   ),
   hotstarInfo: ({ text1 }) => (
-    <View style={styles.toastWrapper}>
-      <LinearGradient
-        colors={['#1F80E0', '#D63484']}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={styles.toastContainer}
-      >
-        <Ionicons name="information-circle" size={20} color="#FFFFFF" />
-        <Text style={styles.toastText}>{text1}</Text>
-      </LinearGradient>
-    </View>
+    <AnimatedToast text1={text1} colors={['#1F80E0', '#D63484']} iconName="information-circle" />
   ),
-  // --- NEW: HOTSTAR ERROR TOAST ---
   hotstarError: ({ text1 }) => (
-    <View style={styles.toastWrapper}>
-      <LinearGradient
-        colors={['#E53935', '#990000']} // Premium Red Gradient
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={styles.toastContainer}
-      >
-        <Ionicons name="alert-circle" size={20} color="#FFFFFF" />
-        <Text style={styles.toastText}>{text1}</Text>
-      </LinearGradient>
-    </View>
+    <AnimatedToast text1={text1} colors={['#E53935', '#990000']} iconName="alert-circle" />
   )
 };
 
@@ -66,9 +68,13 @@ export default function RootLayout() {
     const checkUserAuth = async () => {
       try {
         const token = await SecureStore.getItemAsync('userToken');
+        const userDataString = await SecureStore.getItemAsync('userData'); // <-- Fetch saved user data
+
         if (token) {
-          // ✅ CRITICAL FIX: Populate global store with token so the whole app knows you're logged in
-          restoreSession(token, { email: 'User' });
+          // Parse the saved data, or fallback if it somehow doesn't exist
+          const userData = userDataString ? JSON.parse(userDataString) : { email: 'User', name: 'User' };
+
+          restoreSession(token, userData);
           router.replace('/tabs/home');
         }
       } catch (error) {
@@ -97,7 +103,8 @@ export default function RootLayout() {
           contentStyle: { backgroundColor: '#0A0A0C' },
         }}
       />
-      <Toast config={toastConfig} />
+      {/* Set topOffset so it clears the status bar cleanly on the top right */}
+      <Toast config={toastConfig} position="top" topOffset={50} />
     </ThemeProvider>
   );
 }
@@ -110,7 +117,7 @@ const styles = StyleSheet.create({
   },
   toastWrapper: {
     width: '100%',
-    alignItems: 'flex-end',
+    alignItems: 'flex-end', // This ensures it hugs the right side of the screen
     paddingRight: 20,
   },
   toastContainer: {

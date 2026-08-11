@@ -18,16 +18,7 @@ import {
     UIManager
 } from 'react-native';
 
-import Svg, {
-    Defs,
-    RadialGradient,
-    LinearGradient as SvgLinearGradient,
-    Stop,
-    Rect,
-    G,
-    Circle,
-    Path
-} from 'react-native-svg';
+import Svg, { Defs, LinearGradient as SvgLinearGradient, Stop, Circle, Path } from 'react-native-svg';
 
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -77,10 +68,24 @@ const FilterDropdown = ({ filters, setFilter }) => {
                     return (
                         <TouchableOpacity
                             key={opt.v}
-                            style={[styles.filterChip, isActive && styles.activeFilterChip]}
+                            style={styles.filterChipContainer}
                             onPress={() => setFilter(filterKey, opt.v)}
+                            activeOpacity={0.8}
                         >
-                            <Text style={[styles.filterText, isActive && styles.activeFilterText]}>{opt.l}</Text>
+                            {isActive ? (
+                                <LinearGradient
+                                    colors={['#00E5FF', '#9B51E0', '#FF007A']}
+                                    start={{ x: 0, y: 0 }}
+                                    end={{ x: 1, y: 0 }}
+                                    style={styles.filterChipActive}
+                                >
+                                    <Text style={styles.activeFilterText}>{opt.l}</Text>
+                                </LinearGradient>
+                            ) : (
+                                <View style={styles.filterChipInactive}>
+                                    <Text style={styles.filterText}>{opt.l}</Text>
+                                </View>
+                            )}
                         </TouchableOpacity>
                     );
                 })}
@@ -117,10 +122,10 @@ const MovieCard = React.memo(({ item, inWatchlist, inWatched, onToggleAction, ro
             </View>
             <View style={styles.smallCardActions}>
                 <TouchableOpacity style={styles.smallIconBtn} activeOpacity={0.8} onPress={() => onToggleAction(item.id, mediaType, 'watchlist')}>
-                    <Ionicons name={inWatchlist ? "bookmark" : "bookmark-outline"} size={14} color={inWatchlist ? "#F5C518" : "#FFFFFF"} />
+                    <Ionicons name={inWatchlist ? "bookmark" : "bookmark-outline"} size={14} color={inWatchlist ? "#FF007A" : "#FFFFFF"} />
                 </TouchableOpacity>
                 <TouchableOpacity style={styles.smallIconBtn} activeOpacity={0.8} onPress={() => onToggleAction(item.id, mediaType, 'watched')}>
-                    <Ionicons name="checkmark-done" size={14} color={inWatched ? "#1F80E0" : "#FFFFFF"} />
+                    <Ionicons name="checkmark-done" size={14} color={inWatched ? "#00E5FF" : "#FFFFFF"} />
                 </TouchableOpacity>
             </View>
         </TouchableOpacity>
@@ -274,54 +279,29 @@ const GenreRow = React.memo(({ router, lists }) => {
         </View>
     );
 });
+
 const CinePlayLogo = ({ size = 38 }) => (
     <Svg viewBox="0 0 500 500" width={size} height={size}>
         <Defs>
-            <RadialGradient id="bgGrad" cx="50%" cy="50%" rx="75%" ry="75%">
-                {/* Slightly lightened the center to provide better contrast for the rings */}
-                <Stop offset="0%" stopColor="#251b36" />
-                <Stop offset="100%" stopColor="#100c17" />
-            </RadialGradient>
-
-            <SvgLinearGradient id="playGrad" x1="0%" y1="10%" x2="100%" y2="90%">
+            {/* The vibrant gradient background */}
+            <SvgLinearGradient id="playGrad" x1="0%" y1="0%" x2="100%" y2="100%">
                 <Stop offset="0%" stopColor="#00E5FF" />
-                <Stop offset="45%" stopColor="#9B51E0" />
+                <Stop offset="50%" stopColor="#9B51E0" />
                 <Stop offset="100%" stopColor="#FF007A" />
             </SvgLinearGradient>
         </Defs>
 
-        {/* Circular Background */}
-        <Rect width="100%" height="100%" fill="url(#bgGrad)" rx="250" ry="250" />
+        {/* Full Edge-to-Edge Gradient Disk */}
+        <Circle cx="250" cy="250" r="250" fill="url(#playGrad)" />
 
-        {/* Outer Groove */}
-        <G>
-            {/* Thicker shadow */}
-            <Circle cx="250" cy="250" r="215" fill="none" stroke="#000000" strokeWidth="12" opacity="0.7" />
-            <Circle cx="250" cy="250" r="200" fill="none" stroke="#0d0a14" strokeWidth="18" />
-            {/* White highlight for 3D depth at small scales */}
-            <Circle cx="250" cy="250" r="190" fill="none" stroke="#ffffff" strokeWidth="8" opacity="0.15" />
-        </G>
-
-        {/* Middle Groove */}
-        <G>
-            <Circle cx="250" cy="250" r="165" fill="none" stroke="#000000" strokeWidth="10" opacity="0.7" />
-            <Circle cx="250" cy="250" r="152" fill="none" stroke="#0d0a14" strokeWidth="16" />
-            <Circle cx="250" cy="250" r="144" fill="none" stroke="#ffffff" strokeWidth="6" opacity="0.15" />
-        </G>
-
-        {/* Inner Groove */}
-        <G>
-            <Circle cx="250" cy="250" r="118" fill="none" stroke="#000000" strokeWidth="8" opacity="0.7" />
-            <Circle cx="250" cy="250" r="108" fill="none" stroke="#0d0a14" strokeWidth="12" />
-            <Circle cx="250" cy="250" r="102" fill="none" stroke="#ffffff" strokeWidth="5" opacity="0.15" />
-        </G>
-
-        {/* Faked Glow Layers */}
-        <Path d="M 210 170 L 330 250 L 210 330 Z" fill="url(#playGrad)" opacity="0.2" transform="scale(1.2) translate(-40, -40)" />
-        <Path d="M 210 170 L 330 250 L 210 330 Z" fill="url(#playGrad)" opacity="0.4" transform="scale(1.1) translate(-20, -20)" />
-
-        {/* Main Play Shape */}
-        <Path d="M 210 170 L 330 250 L 210 330 Z" fill="url(#playGrad)" />
+        {/* Large Clean White Play Button */}
+        <Path
+            d="M 190 145 L 365 250 L 190 355 Z"
+            fill="#FFFFFF"
+            stroke="#FFFFFF"
+            strokeWidth="25"
+            strokeLinejoin="round"
+        />
     </Svg>
 );
 
@@ -548,13 +528,21 @@ const HomeScreen = () => {
                 </LinearGradient>
                 <View style={styles.actionButtonsWrapper}>
                     <TouchableOpacity style={styles.iconActionBtn} activeOpacity={0.8} onPress={() => handleAuthAction(() => handleToggleAction(item.id, mediaType, 'watchlist'))}>
-                        <Ionicons name={inWatchlist ? "bookmark" : "bookmark-outline"} size={24} color={inWatchlist ? "#F5C518" : "#FFFFFF"} />
+                        <Ionicons name={inWatchlist ? "bookmark" : "bookmark-outline"} size={24} color={inWatchlist ? "#FF007A" : "#FFFFFF"} />
                     </TouchableOpacity>
                     <TouchableOpacity style={styles.iconActionBtn} activeOpacity={0.8} onPress={() => handleAuthAction(() => handleToggleAction(item.id, mediaType, 'watched'))}>
-                        <Ionicons name="checkmark-done" size={22} color={inWatched ? "#1F80E0" : "#FFFFFF"} />
+                        <Ionicons name="checkmark-done" size={22} color={inWatched ? "#00E5FF" : "#FFFFFF"} />
                     </TouchableOpacity>
-                    <TouchableOpacity style={styles.playButton} activeOpacity={0.8} onPress={() => router.push({ pathname: '/player', params: { id: item.id, type: mediaType } })}>
-                        <Ionicons name="play" size={26} color="#000000" style={{ marginLeft: 3 }} />
+                    {/* Themed Carousel Play Button */}
+                    <TouchableOpacity style={styles.playButtonWrapper} activeOpacity={0.8} onPress={() => router.push({ pathname: '/player', params: { id: item.id, type: mediaType } })}>
+                        <LinearGradient
+                            colors={['#00E5FF', '#9B51E0', '#FF007A']}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 1 }}
+                            style={styles.playButtonGradient}
+                        >
+                            <Ionicons name="play" size={26} color="#FFFFFF" style={{ marginLeft: 3 }} />
+                        </LinearGradient>
                     </TouchableOpacity>
                 </View>
             </>
@@ -565,7 +553,7 @@ const HomeScreen = () => {
         if (isLoading || trendingList.length === 0) {
             return (
                 <View style={[styles.mainCardContainer, { justifyContent: 'center', alignItems: 'center' }]}>
-                    <ActivityIndicator size="large" color="#1F80E0" />
+                    <ActivityIndicator size="large" color="#00E5FF" />
                 </View>
             );
         }
@@ -609,7 +597,7 @@ const HomeScreen = () => {
                             style={styles.maskedView}
                             maskElement={<Text style={styles.appName}>CinePlay</Text>}
                         >
-                            <LinearGradient colors={['#1F80E0', '#D63484']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
+                            <LinearGradient colors={['#00E5FF', '#9B51E0', '#FF007A']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
                                 <Text style={[styles.appName, { opacity: 0 }]}>CinePlay</Text>
                             </LinearGradient>
                         </MaskedView>
@@ -635,7 +623,8 @@ const HomeScreen = () => {
                             style={[styles.funnelBtn, showFilters && styles.funnelBtnActive]}
                             onPress={toggleFilterMenu}
                         >
-                            <Ionicons name="funnel" size={20} color={showFilters ? "#1F80E0" : "#FFFFFF"} />
+                            {/* Uses Theme Cyan when active */}
+                            <Ionicons name="funnel" size={20} color={showFilters ? "#00E5FF" : "#FFFFFF"} />
                         </TouchableOpacity>
                     </View>
 
@@ -643,7 +632,7 @@ const HomeScreen = () => {
 
                     <View style={styles.categoriesWrapper}>
                         {isLoading ? (
-                            <ActivityIndicator size="large" color="#1F80E0" style={{ marginTop: 40, marginBottom: 80 }} />
+                            <ActivityIndicator size="large" color="#00E5FF" style={{ marginTop: 40, marginBottom: 80 }} />
                         ) : (
                             categoryData.map((category, index) => (
                                 <HorizontalRow
@@ -694,15 +683,18 @@ const styles = StyleSheet.create({
     filterBarHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, marginBottom: 14 },
     filterTitle: { color: '#FFFFFF', fontSize: 18, fontWeight: 'bold' },
     funnelBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.1)', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)' },
-    funnelBtnActive: { backgroundColor: 'rgba(31, 128, 224, 0.2)', borderColor: '#1F80E0' },
+    funnelBtnActive: { backgroundColor: 'rgba(0, 229, 255, 0.15)', borderColor: '#00E5FF' }, // Glowing Cyan border
     filterDropdownContainer: { backgroundColor: 'rgba(20, 15, 30, 0.8)', paddingVertical: 14, borderTopWidth: 1, borderBottomWidth: 1, borderColor: 'rgba(255,255,255,0.1)', marginBottom: 20 },
     filterGroup: { marginBottom: 16 },
     filterGroupTitle: { color: '#808085', fontSize: 11, fontWeight: 'bold', textTransform: 'uppercase', paddingHorizontal: 16, marginBottom: 8, letterSpacing: 1 },
     filterScroll: { paddingHorizontal: 16, gap: 10 },
-    filterChip: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
-    activeFilterChip: { backgroundColor: '#1F80E0', borderColor: '#1F80E0' },
+
+    // NEW Filter Chip Gradient Styles
+    filterChipContainer: { borderRadius: 20, overflow: 'hidden' },
+    filterChipActive: { paddingHorizontal: 16, paddingVertical: 8, justifyContent: 'center', alignItems: 'center' },
+    filterChipInactive: { paddingHorizontal: 16, paddingVertical: 8, backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)', borderRadius: 20 },
     filterText: { color: '#A0A0A5', fontSize: 13, fontWeight: '600' },
-    activeFilterText: { color: '#FFFFFF' },
+    activeFilterText: { color: '#FFFFFF', fontSize: 13, fontWeight: 'bold' },
 
     categoriesWrapper: { paddingTop: 4 },
     rowContainer: { marginBottom: 28 },
@@ -721,7 +713,10 @@ const styles = StyleSheet.create({
 
     actionButtonsWrapper: { position: 'absolute', bottom: 18, right: 14, alignItems: 'center', gap: 12 },
     iconActionBtn: { width: 52, height: 52, borderRadius: 26, backgroundColor: 'rgba(30, 30, 35, 0.65)', justifyContent: 'center', alignItems: 'center', borderWidth: 1.2, borderColor: 'rgba(255, 255, 255, 0.35)' },
-    playButton: { width: 54, height: 54, borderRadius: 27, backgroundColor: '#E5E5EA', justifyContent: 'center', alignItems: 'center', elevation: 6, shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.35, shadowRadius: 4 },
+
+    // NEW Themed Play Button
+    playButtonWrapper: { width: 54, height: 54, borderRadius: 27, overflow: 'hidden', elevation: 6, shadowColor: '#FF007A', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.35, shadowRadius: 4 },
+    playButtonGradient: { flex: 1, justifyContent: 'center', alignItems: 'center' },
 
     smallCard: { width: 112, height: 162, backgroundColor: '#1E1428', borderRadius: 8, overflow: 'hidden', position: 'relative' },
     smallCardImage: { width: '100%', height: '100%', position: 'absolute' },

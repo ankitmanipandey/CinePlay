@@ -19,11 +19,8 @@ import { LinearGradient } from 'expo-linear-gradient';
 import MaskedView from '@react-native-masked-view/masked-view';
 import Svg, {
     Defs,
-    RadialGradient,
     LinearGradient as SvgLinearGradient,
     Stop,
-    Rect,
-    G,
     Circle,
     Path
 } from 'react-native-svg';
@@ -41,51 +38,37 @@ const API_URL = process.env.EXPO_PUBLIC_API_URL;
 const CinePlayLogo = ({ size = 38 }) => (
     <Svg viewBox="0 0 500 500" width={size} height={size}>
         <Defs>
-            <RadialGradient id="bgGrad" cx="50%" cy="50%" rx="75%" ry="75%">
-                <Stop offset="0%" stopColor="#251b36" />
-                <Stop offset="100%" stopColor="#100c17" />
-            </RadialGradient>
-
-            <SvgLinearGradient id="playGrad" x1="0%" y1="10%" x2="100%" y2="90%">
+            {/* The vibrant gradient background */}
+            <SvgLinearGradient id="playGrad" x1="0%" y1="0%" x2="100%" y2="100%">
                 <Stop offset="0%" stopColor="#00E5FF" />
-                <Stop offset="45%" stopColor="#9B51E0" />
+                <Stop offset="50%" stopColor="#9B51E0" />
                 <Stop offset="100%" stopColor="#FF007A" />
             </SvgLinearGradient>
         </Defs>
 
-        <Rect width="100%" height="100%" fill="url(#bgGrad)" rx="250" ry="250" />
+        {/* Full Edge-to-Edge Gradient Disk */}
+        <Circle cx="250" cy="250" r="250" fill="url(#playGrad)" />
 
-        <G>
-            <Circle cx="250" cy="250" r="215" fill="none" stroke="#000000" strokeWidth="12" opacity="0.7" />
-            <Circle cx="250" cy="250" r="200" fill="none" stroke="#0d0a14" strokeWidth="18" />
-            <Circle cx="250" cy="250" r="190" fill="none" stroke="#ffffff" strokeWidth="8" opacity="0.15" />
-        </G>
-
-        <G>
-            <Circle cx="250" cy="250" r="165" fill="none" stroke="#000000" strokeWidth="10" opacity="0.7" />
-            <Circle cx="250" cy="250" r="152" fill="none" stroke="#0d0a14" strokeWidth="16" />
-            <Circle cx="250" cy="250" r="144" fill="none" stroke="#ffffff" strokeWidth="6" opacity="0.15" />
-        </G>
-
-        <G>
-            <Circle cx="250" cy="250" r="118" fill="none" stroke="#000000" strokeWidth="8" opacity="0.7" />
-            <Circle cx="250" cy="250" r="108" fill="none" stroke="#0d0a14" strokeWidth="12" />
-            <Circle cx="250" cy="250" r="102" fill="none" stroke="#ffffff" strokeWidth="5" opacity="0.15" />
-        </G>
-
-        <Path d="M 210 170 L 330 250 L 210 330 Z" fill="url(#playGrad)" opacity="0.2" transform="scale(1.2) translate(-40, -40)" />
-        <Path d="M 210 170 L 330 250 L 210 330 Z" fill="url(#playGrad)" opacity="0.4" transform="scale(1.1) translate(-20, -20)" />
-        <Path d="M 210 170 L 330 250 L 210 330 Z" fill="url(#playGrad)" />
+        {/* Large Clean White Play Button */}
+        <Path
+            d="M 190 145 L 365 250 L 190 355 Z"
+            fill="#FFFFFF"
+            stroke="#FFFFFF"
+            strokeWidth="25"
+            strokeLinejoin="round"
+        />
     </Svg>
 );
 
 const LoginScreen = () => {
+    const [name, setName] = useState(''); // New State for Name
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [isSignUp, setIsSignUp] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
 
     // Error States
+    const [nameError, setNameError] = useState(''); // New Error State
     const [emailError, setEmailError] = useState('');
     const [passwordError, setPasswordError] = useState('');
 
@@ -96,6 +79,7 @@ const LoginScreen = () => {
 
     // Animations
     const fadeAnim = useRef(new Animated.Value(1)).current;
+    const nameShake = useRef(new Animated.Value(0)).current; // New Shake Animation
     const emailShake = useRef(new Animated.Value(0)).current;
     const passwordShake = useRef(new Animated.Value(0)).current;
 
@@ -111,6 +95,13 @@ const LoginScreen = () => {
     const validateFields = () => {
         let isValid = true;
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+        // Check Name only if it's Sign Up
+        if (isSignUp && !name.trim()) {
+            setNameError('Name is required');
+            triggerShake(nameShake);
+            isValid = false;
+        }
 
         if (!email.trim()) {
             setEmailError('Email is required');
@@ -152,8 +143,8 @@ const LoginScreen = () => {
         }
     };
 
-    const handleAuthSuccess = async (token, userEmail, successMessage) => {
-        await setSession(token, userEmail);
+    const handleAuthSuccess = async (token, userEmail, userName, successMessage) => {
+        await setSession(token, userEmail, userName); // <-- Passed userName here!
         router.replace('/tabs/home');
         setTimeout(() => {
             Toast.show({
@@ -169,7 +160,6 @@ const LoginScreen = () => {
     const handleLogin = async () => {
         setEmailError('');
         setPasswordError('');
-
         if (!validateFields()) return;
 
         Keyboard.dismiss();
@@ -178,7 +168,8 @@ const LoginScreen = () => {
         try {
             const response = await axios.post(`${API_URL}/auth/login`, { email, password });
             if (response.data.token) {
-                await handleAuthSuccess(response.data.token, email, 'Login Successful');
+                // Pass the actual name from your backend response
+                await handleAuthSuccess(response.data.token, response.data.email, response.data.name, 'Login Successful');
             }
         } catch (error) {
             const errorMessage = error.response?.data?.message || "Network error occurred";
@@ -189,18 +180,19 @@ const LoginScreen = () => {
     };
 
     const handleSignup = async () => {
+        setNameError('');
         setEmailError('');
         setPasswordError('');
-
         if (!validateFields()) return;
 
         Keyboard.dismiss();
         setIsLoading(true);
 
         try {
-            const response = await axios.post(`${API_URL}/auth/register`, { email, password });
+            const response = await axios.post(`${API_URL}/auth/register`, { name, email, password });
             if (response.data.token) {
-                await handleAuthSuccess(response.data.token, email, 'Signup Successful');
+                // Pass the actual name from your backend response
+                await handleAuthSuccess(response.data.token, response.data.email, response.data.name, 'Signup Successful');
             }
         } catch (error) {
             const errorMessage = error.response?.data?.message || "Network error occurred";
@@ -211,6 +203,7 @@ const LoginScreen = () => {
     };
 
     const handleSignUpNavigation = () => {
+        setNameError('');
         setEmailError('');
         setPasswordError('');
 
@@ -257,7 +250,8 @@ const LoginScreen = () => {
                                     style={styles.logoMaskedView}
                                     maskElement={<Text style={styles.logoText}>CinePlay</Text>}
                                 >
-                                    <LinearGradient colors={['#1F80E0', '#D63484']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
+                                    {/* MATCHED GRADIENT THEME HERE TOO */}
+                                    <LinearGradient colors={['#00E5FF', '#9B51E0', '#FF007A']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
                                         <Text style={[styles.logoText, { opacity: 0 }]}>CinePlay</Text>
                                     </LinearGradient>
                                 </MaskedView>
@@ -269,6 +263,31 @@ const LoginScreen = () => {
                                 {isSignUp ? 'Sign Up' : 'Login'} to watch for free
                             </Animated.Text>
 
+                            {/* Name Input (Only visible during Sign Up) */}
+                            {isSignUp && (
+                                <View style={styles.inputWrapper}>
+                                    <Animated.View style={[
+                                        styles.inputContainer,
+                                        nameError ? styles.inputErrorBorder : null,
+                                        { transform: [{ translateX: nameShake }], opacity: fadeAnim }
+                                    ]}>
+                                        <Text style={[styles.floatingLabel, nameError ? styles.errorLabel : null]}>Name</Text>
+                                        <TextInput
+                                            style={styles.input}
+                                            selectionColor="#9B51E0" // Updated selection color to match theme
+                                            value={name}
+                                            onChangeText={(text) => {
+                                                setName(text);
+                                                setNameError('');
+                                            }}
+                                            autoCapitalize="words"
+                                            placeholderTextColor="#8F98A0"
+                                        />
+                                    </Animated.View>
+                                    {nameError.trim() !== '' && <Text style={styles.errorText}>{nameError}</Text>}
+                                </View>
+                            )}
+
                             {/* Email Input */}
                             <View style={styles.inputWrapper}>
                                 <Animated.View style={[
@@ -279,7 +298,7 @@ const LoginScreen = () => {
                                     <Text style={[styles.floatingLabel, emailError ? styles.errorLabel : null]}>Email address</Text>
                                     <TextInput
                                         style={styles.input}
-                                        selectionColor="#1F80E0"
+                                        selectionColor="#9B51E0"
                                         value={email}
                                         onChangeText={(text) => {
                                             setEmail(text);
@@ -303,7 +322,7 @@ const LoginScreen = () => {
                                     <Text style={[styles.floatingLabel, passwordError ? styles.errorLabel : null]}>Password</Text>
                                     <TextInput
                                         style={styles.input}
-                                        selectionColor="#1F80E0"
+                                        selectionColor="#9B51E0"
                                         value={password}
                                         onChangeText={(text) => {
                                             setPassword(text);
@@ -316,19 +335,26 @@ const LoginScreen = () => {
                                 {passwordError.trim() !== '' && <Text style={styles.errorText}>{passwordError}</Text>}
                             </View>
 
-                            {/* Login Button with Loader */}
+                            {/* Login/Signup Button with Loader - NOW WITH GRADIENT */}
                             <Pressable
-                                style={[styles.loginButton, isLoading && styles.loginButtonDisabled]}
+                                style={[styles.loginButtonContainer, isLoading && styles.loginButtonDisabled]}
                                 onPress={isSignUp ? handleSignup : handleLogin}
                                 disabled={isLoading}
                             >
-                                {isLoading ? (
-                                    <ActivityIndicator color="#FFFFFF" />
-                                ) : (
-                                    <Animated.Text style={[styles.loginButtonText, { opacity: fadeAnim }]}>
-                                        {isSignUp ? 'Sign Up' : 'Login'}
-                                    </Animated.Text>
-                                )}
+                                <LinearGradient
+                                    colors={['#00E5FF', '#9B51E0', '#FF007A']}
+                                    start={{ x: 0, y: 0 }}
+                                    end={{ x: 1, y: 0 }}
+                                    style={styles.loginButtonGradient}
+                                >
+                                    {isLoading ? (
+                                        <ActivityIndicator color="#FFFFFF" />
+                                    ) : (
+                                        <Animated.Text style={[styles.loginButtonText, { opacity: fadeAnim }]}>
+                                            {isSignUp ? 'Sign Up' : 'Login'}
+                                        </Animated.Text>
+                                    )}
+                                </LinearGradient>
                             </Pressable>
 
                             {/* Footer Text */}
@@ -387,19 +413,25 @@ const styles = StyleSheet.create({
     errorLabel: { color: '#E53935' },
     input: { color: '#FFFFFF', fontSize: 16, height: '100%' },
     errorText: { color: '#E53935', fontSize: 12, marginTop: 6, marginLeft: 4 },
-    loginButton: {
-        backgroundColor: '#1F80E0',
+
+    // Updated Button Styles for Gradient
+    loginButtonContainer: {
+        marginTop: 8,
         borderRadius: 8,
+        overflow: 'hidden', // Ensures the gradient respects the border radius
+    },
+    loginButtonGradient: {
         height: 52,
         justifyContent: 'center',
         alignItems: 'center',
-        marginTop: 8,
+        paddingHorizontal: 16,
     },
     loginButtonDisabled: {
         opacity: 0.7,
     },
     loginButtonText: { color: '#FFFFFF', fontSize: 16, fontWeight: 'bold' },
+
     footerContainer: { alignItems: 'center', marginTop: 20 },
     footerText: { color: '#8F98A0', fontSize: 14 },
-    linkText: { color: '#1F80E0', fontWeight: 'bold' },
+    linkText: { color: '#9B51E0', fontWeight: 'bold' }, // Updated link text to match theme purple
 });

@@ -11,41 +11,45 @@ const authRouter = express.Router();
 // ==========================================
 authRouter.post('/register', async (req, res) => {
     try {
-        const { email, password } = req.body;
+        // 1. Extract name, email, and password from the request body
+        const { name, email, password } = req.body;
 
-        if (!email || !password) {
+        // 2. Ensure all fields are provided (added 'name' check)
+        if (!name || !email || !password) {
             return res.status(400).json({ message: 'Please provide all required fields' });
         }
 
-        // 1. Validate Email format
+        // 3. Validate Email format
         if (!validator.isEmail(email)) {
             return res.status(400).json({ message: 'Invalid email format' });
         }
 
-        // 2. Validate Password strength
+        // 4. Validate Password strength
         if (!validator.isLength(password, { min: 6 })) {
             return res.status(400).json({ message: 'Password must be at least 6 characters long' });
         }
 
-        // Check if user already exists
+        // 5. Check if user already exists
         const existingUser = await User.findOne({ email });
         if (existingUser) {
             return res.status(400).json({ message: 'User already exists with this email' });
         }
 
-        // Proceed with hashing and creation
+        // 6. Proceed with hashing
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
 
+        // 7. Create the user using the actual name provided
         const user = await User.create({
-            name: email.split('@')[0], // Defaults name to email prefix
+            name: name.trim(), // <-- Uses the actual name from the frontend
             email,
             password: hashedPassword,
         });
 
+        // 8. Send back user data and token
         res.status(201).json({
             _id: user._id,
-            name: user.name, // <-- ADDED THIS
+            name: user.name,
             email: user.email,
             profilePicture: user.profilePicture,
             token: generateToken(user._id),

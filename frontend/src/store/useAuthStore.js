@@ -9,11 +9,11 @@ export const useAuthStore = create((set) => ({
     setSession: async (token, email, providedName = null) => {
         // Fallback to email prefix if name is not provided
         const displayName = providedName || email.split('@')[0];
-
         const userData = { email, name: displayName };
 
-        // Save token to secure storage
+        // Save token AND user data to secure storage
         await SecureStore.setItemAsync('userToken', token);
+        await SecureStore.setItemAsync('userData', JSON.stringify(userData));
 
         set({
             token: token,
@@ -28,6 +28,7 @@ export const useAuthStore = create((set) => ({
 
     logout: async () => {
         await SecureStore.deleteItemAsync('userToken');
+        await SecureStore.deleteItemAsync('userData'); // Clear user data on logout
         set({ user: null, token: null });
     }
 }));

@@ -186,7 +186,8 @@ const MyListScreen = () => {
                             <Ionicons
                                 name={inWatchlist ? "bookmark" : "bookmark-outline"}
                                 size={16}
-                                color={inWatchlist ? "#F5C518" : "#FFFFFF"}
+                                // Theme Pink for active Watchlist
+                                color={inWatchlist ? "#FF007A" : "#FFFFFF"}
                             />
                         </TouchableOpacity>
 
@@ -198,18 +199,27 @@ const MyListScreen = () => {
                             <Ionicons
                                 name="checkmark-done"
                                 size={14}
-                                color={inWatched ? "#1F80E0" : "#FFFFFF"}
+                                // Theme Cyan for active Watched
+                                color={inWatched ? "#00E5FF" : "#FFFFFF"}
                             />
                         </TouchableOpacity>
                     </View>
                 </View>
 
+                {/* Gradient Play Button */}
                 <TouchableOpacity
-                    style={styles.playIcon}
+                    style={styles.playIconBtn}
                     activeOpacity={0.7}
                     onPress={() => router.push({ pathname: '/player', params: { id: item.id, type: item.media_type } })}
                 >
-                    <Ionicons name="play-circle" size={42} color="#E5E5EA" />
+                    <LinearGradient
+                        colors={['#00E5FF', '#9B51E0', '#FF007A']}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 1 }}
+                        style={styles.playGradient}
+                    >
+                        <Ionicons name="play" size={20} color="#FFFFFF" style={{ marginLeft: 2 }} />
+                    </LinearGradient>
                 </TouchableOpacity>
             </View>
         );
@@ -229,25 +239,44 @@ const MyListScreen = () => {
 
                 <View style={styles.tabContainer}>
                     <TouchableOpacity
-                        style={[styles.tab, activeTab === 'watchlist' && styles.activeTab]}
+                        style={styles.tab}
                         onPress={() => setActiveTab('watchlist')}
                         activeOpacity={0.8}
                     >
                         <Text style={[styles.tabText, activeTab === 'watchlist' && styles.activeTabText]}>Watchlist</Text>
+                        {/* Gradient Indicator for Watchlist */}
+                        {activeTab === 'watchlist' && (
+                            <LinearGradient
+                                colors={['#00E5FF', '#9B51E0', '#FF007A']}
+                                start={{ x: 0, y: 0 }}
+                                end={{ x: 1, y: 0 }}
+                                style={styles.activeTabIndicator}
+                            />
+                        )}
                     </TouchableOpacity>
 
                     <TouchableOpacity
-                        style={[styles.tab, activeTab === 'watched' && styles.activeTab]}
+                        style={styles.tab}
                         onPress={() => setActiveTab('watched')}
                         activeOpacity={0.8}
                     >
                         <Text style={[styles.tabText, activeTab === 'watched' && styles.activeTabText]}>Watched</Text>
+                        {/* Gradient Indicator for Watched */}
+                        {activeTab === 'watched' && (
+                            <LinearGradient
+                                colors={['#00E5FF', '#9B51E0', '#FF007A']}
+                                start={{ x: 0, y: 0 }}
+                                end={{ x: 1, y: 0 }}
+                                style={styles.activeTabIndicator}
+                            />
+                        )}
                     </TouchableOpacity>
                 </View>
 
                 {isLoading && moviesData.length === 0 ? (
                     <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-                        <ActivityIndicator size="large" color="#1F80E0" />
+                        {/* Theme Cyan Loader */}
+                        <ActivityIndicator size="large" color="#00E5FF" />
                     </View>
                 ) : (
                     <FlatList
@@ -296,9 +325,18 @@ const styles = StyleSheet.create({
     tab: {
         flex: 1,
         paddingVertical: 16,
-        alignItems: 'center'
+        alignItems: 'center',
+        position: 'relative', // Allows absolute positioning of the gradient bar
     },
-    activeTab: { borderBottomWidth: 2, borderBottomColor: '#1F80E0' },
+    activeTabIndicator: {
+        position: 'absolute',
+        bottom: -1, // Sits exactly over the container's bottom border
+        left: 0,
+        right: 0,
+        height: 3,
+        borderTopLeftRadius: 3,
+        borderTopRightRadius: 3,
+    },
     tabText: { color: '#8F98A0', fontSize: 15, fontWeight: '600' },
     activeTabText: { color: '#FFFFFF', fontWeight: 'bold' },
 
@@ -363,7 +401,19 @@ const styles = StyleSheet.create({
         borderColor: 'rgba(255, 255, 255, 0.2)',
     },
 
-    playIcon: { padding: 14 },
+    // Gradient Play Button Styles
+    playIconBtn: {
+        width: 44,
+        height: 44,
+        borderRadius: 22,
+        overflow: 'hidden',
+        marginRight: 14,
+    },
+    playGradient: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
 
     emptyContainer: { alignItems: 'center', marginTop: '40%' },
     emptyIcon: { marginBottom: 16 },
