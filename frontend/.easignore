@@ -1,0 +1,16 @@
+# Ignore local dependencies (Expo installs these fresh on their server)
+node_modules/
+
+# Ignore local build folders (Expo generates these on the server)
+android/
+ios/
+.expo/
+
+# Ignore Git history
+.git/
+
+# Ignore heavy design files you might have saved locally
+*.psd
+*.ai
+*.sketch
+*.fig

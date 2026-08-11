@@ -4,16 +4,28 @@
     "slug": "cineplay",
     "version": "1.0.0",
     "orientation": "portrait",
+    "icon": "./assets/icon.png",
     "scheme": "cineplay",
     "userInterfaceStyle": "automatic",
     "backgroundColor": "#0A0A0C",
-    "ios": {},
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.ankitpandey.cineplay",
+      "infoPlist": {
+        "NSSpeechRecognitionUsageDescription": "Allow CinePlay to securely transcribe your voice into text for search.",
+        "NSMicrophoneUsageDescription": "Allow CinePlay to access your microphone to search for movies and shows."
+      }
+    },
     "android": {
       "predictiveBackGestureEnabled": false,
+      "package": "com.ankitpandey.cineplay",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/icon.png",
+        "backgroundColor": "#170D22"
+      },
       "permissions": [
         "android.permission.RECORD_AUDIO"
-      ],
-      "package": "com.anonymous.cineplay"
+      ]
     },
     "web": {
       "output": "static"
@@ -42,6 +54,12 @@
     "experiments": {
       "typedRoutes": false,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "3bfb20e0-6dd2-4c96-9f25-40a7430c15c7"
+      }
     }
   }
 }

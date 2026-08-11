@@ -17,6 +17,18 @@ import {
     Platform,
     UIManager
 } from 'react-native';
+
+import Svg, {
+    Defs,
+    RadialGradient,
+    LinearGradient as SvgLinearGradient,
+    Stop,
+    Rect,
+    G,
+    Circle,
+    Path
+} from 'react-native-svg';
+
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import MaskedView from '@react-native-masked-view/masked-view';
@@ -262,6 +274,56 @@ const GenreRow = React.memo(({ router, lists }) => {
         </View>
     );
 });
+const CinePlayLogo = ({ size = 38 }) => (
+    <Svg viewBox="0 0 500 500" width={size} height={size}>
+        <Defs>
+            <RadialGradient id="bgGrad" cx="50%" cy="50%" rx="75%" ry="75%">
+                {/* Slightly lightened the center to provide better contrast for the rings */}
+                <Stop offset="0%" stopColor="#251b36" />
+                <Stop offset="100%" stopColor="#100c17" />
+            </RadialGradient>
+
+            <SvgLinearGradient id="playGrad" x1="0%" y1="10%" x2="100%" y2="90%">
+                <Stop offset="0%" stopColor="#00E5FF" />
+                <Stop offset="45%" stopColor="#9B51E0" />
+                <Stop offset="100%" stopColor="#FF007A" />
+            </SvgLinearGradient>
+        </Defs>
+
+        {/* Circular Background */}
+        <Rect width="100%" height="100%" fill="url(#bgGrad)" rx="250" ry="250" />
+
+        {/* Outer Groove */}
+        <G>
+            {/* Thicker shadow */}
+            <Circle cx="250" cy="250" r="215" fill="none" stroke="#000000" strokeWidth="12" opacity="0.7" />
+            <Circle cx="250" cy="250" r="200" fill="none" stroke="#0d0a14" strokeWidth="18" />
+            {/* White highlight for 3D depth at small scales */}
+            <Circle cx="250" cy="250" r="190" fill="none" stroke="#ffffff" strokeWidth="8" opacity="0.15" />
+        </G>
+
+        {/* Middle Groove */}
+        <G>
+            <Circle cx="250" cy="250" r="165" fill="none" stroke="#000000" strokeWidth="10" opacity="0.7" />
+            <Circle cx="250" cy="250" r="152" fill="none" stroke="#0d0a14" strokeWidth="16" />
+            <Circle cx="250" cy="250" r="144" fill="none" stroke="#ffffff" strokeWidth="6" opacity="0.15" />
+        </G>
+
+        {/* Inner Groove */}
+        <G>
+            <Circle cx="250" cy="250" r="118" fill="none" stroke="#000000" strokeWidth="8" opacity="0.7" />
+            <Circle cx="250" cy="250" r="108" fill="none" stroke="#0d0a14" strokeWidth="12" />
+            <Circle cx="250" cy="250" r="102" fill="none" stroke="#ffffff" strokeWidth="5" opacity="0.15" />
+        </G>
+
+        {/* Faked Glow Layers */}
+        <Path d="M 210 170 L 330 250 L 210 330 Z" fill="url(#playGrad)" opacity="0.2" transform="scale(1.2) translate(-40, -40)" />
+        <Path d="M 210 170 L 330 250 L 210 330 Z" fill="url(#playGrad)" opacity="0.4" transform="scale(1.1) translate(-20, -20)" />
+
+        {/* Main Play Shape */}
+        <Path d="M 210 170 L 330 250 L 210 330 Z" fill="url(#playGrad)" />
+    </Svg>
+);
 
 const HomeScreen = () => {
     const router = useRouter();
@@ -541,11 +603,17 @@ const HomeScreen = () => {
                 <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
 
                 <View style={styles.header}>
-                    <MaskedView maskElement={<Text style={styles.appName}>CinePlay</Text>}>
-                        <LinearGradient colors={['#1F80E0', '#D63484']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
-                            <Text style={[styles.appName, { opacity: 0 }]}>CinePlay</Text>
-                        </LinearGradient>
-                    </MaskedView>
+                    <View style={styles.logoContainer}>
+                        <CinePlayLogo size={34} />
+                        <MaskedView
+                            style={styles.maskedView}
+                            maskElement={<Text style={styles.appName}>CinePlay</Text>}
+                        >
+                            <LinearGradient colors={['#1F80E0', '#D63484']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
+                                <Text style={[styles.appName, { opacity: 0 }]}>CinePlay</Text>
+                            </LinearGradient>
+                        </MaskedView>
+                    </View>
                     <TouchableOpacity style={styles.headerRightBtn} onPress={() => handleAuthAction(() => router.push('/my-list'))}>
                         <Ionicons name="bookmarks" size={24} color="#E0E0E0" />
                     </TouchableOpacity>
@@ -607,7 +675,15 @@ const styles = StyleSheet.create({
     background: { flex: 1 },
     container: { flex: 1 },
     header: { paddingVertical: 12, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-    appName: { fontSize: 26, fontWeight: '900', letterSpacing: 0.5 },
+    logoContainer: { flexDirection: 'row', alignItems: 'center', gap: 6 }, // Reduced gap from 10 to 6
+    maskedView: { height: 32, flexDirection: 'row', alignItems: 'center' }, // Bounds the mask to fix alignment
+    appName: {
+        fontSize: 26,
+        fontWeight: '900',
+        letterSpacing: 0.5,
+        lineHeight: 32,
+        includeFontPadding: false // Fixes Android vertical alignment offset
+    },
     headerRightBtn: { padding: 4 },
     scrollContent: { paddingBottom: 60 },
     sectionHeader: { paddingHorizontal: 16, marginTop: 10, marginBottom: 6 },
