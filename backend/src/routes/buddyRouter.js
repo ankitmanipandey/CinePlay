@@ -403,4 +403,31 @@ buddyRouter.get('/discover', protect, async (req, res) => {
         res.status(500).json({ message: 'Error fetching discover data' });
     }
 });
+
+// 10. MARK ALL NOTIFICATIONS AS READ
+buddyRouter.put('/notifications/read', protect, async (req, res) => {
+    try {
+        await User.updateOne(
+            { _id: req.user._id },
+            { $set: { "notifications.$[].isRead": true } }
+        );
+        res.status(200).json({ message: 'Notifications marked as read' });
+    } catch (error) {
+        res.status(500).json({ message: 'Error updating notifications' });
+    }
+});
+
+// 11. CLEAR ALL NOTIFICATIONS
+buddyRouter.delete('/notifications/clear', protect, async (req, res) => {
+    try {
+        await User.updateOne(
+            { _id: req.user._id },
+            { $set: { notifications: [] } }
+        );
+        res.status(200).json({ message: 'Notifications cleared' });
+    } catch (error) {
+        res.status(500).json({ message: 'Error clearing notifications' });
+    }
+});
+
 module.exports = buddyRouter;

@@ -1,11 +1,33 @@
 import { create } from 'zustand';
 import { io } from 'socket.io-client';
+import * as Notifications from 'expo-notifications'; // <-- IMPORT ADDED
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL;
 
 export const useGlobalSocket = create((set, get) => ({
     globalSocket: null,
     activeChatId: null,
+
+    // Global Notification Count State
+    unreadNotifsCount: 0,
+
+    // --- UPDATED: These now sync with the Device App Icon Badge ---
+    setUnreadNotifsCount: (count) => {
+        set({ unreadNotifsCount: count });
+        Notifications.setBadgeCountAsync(count); // Sync with OS App Icon
+    },
+    incrementNotifs: () => {
+        set((state) => {
+            const newCount = state.unreadNotifsCount + 1;
+            Notifications.setBadgeCountAsync(newCount); // Sync with OS App Icon
+            return { unreadNotifsCount: newCount };
+        });
+    },
+    clearNotifs: () => {
+        set({ unreadNotifsCount: 0 });
+        Notifications.setBadgeCountAsync(0); // Clear OS App Icon Badge
+    },
+    // --------------------------------------------------------------
 
     setActiveChat: (id) => set({ activeChatId: id }),
 
@@ -21,6 +43,7 @@ export const useGlobalSocket = create((set, get) => ({
 
         // 1. Listen for rejections
         socket.on('request_rejected', (alert) => {
+            get().incrementNotifs();
             import('react-native-toast-message').then(({ default: Toast }) => {
                 Toast.show({
                     type: 'hotstarError',
@@ -34,6 +57,7 @@ export const useGlobalSocket = create((set, get) => ({
 
         // 2. Listen for Invites, Requests, and Acceptances
         socket.on('new_notification', (notification) => {
+            get().incrementNotifs();
             import('react-native-toast-message').then(({ default: Toast }) => {
                 let title = '👋 New Notification!';
                 let toastType = 'hotstarInfo';
@@ -42,7 +66,7 @@ export const useGlobalSocket = create((set, get) => ({
                     title = '🎬 Theatre Invite!';
                 } else if (notification.type === 'CINEREQUEST') {
                     title = '👋 New Cinerequest!';
-                } else if (notification.type === 'CINEREQUEST_ACCEPTED') {
+                } else if (notification.type === 'ACCEPTED_ALERT') {
                     title = '🎉 Cinerequest Accepted!';
                     toastType = 'hotstarSuccess';
                 }
@@ -57,7 +81,7 @@ export const useGlobalSocket = create((set, get) => ({
             });
         });
 
-        // 3. Direct Message Toasts (if not actively in that chat)
+        // 3. Direct Message Toasts
         socket.on('receive_direct_message', (msg) => {
             if (get().activeChatId !== msg.sender) {
                 import('react-native-toast-message').then(({ default: Toast }) => {
@@ -79,7 +103,8 @@ export const useGlobalSocket = create((set, get) => ({
         const { globalSocket } = get();
         if (globalSocket) {
             globalSocket.disconnect();
-            set({ globalSocket: null, activeChatId: null });
+            set({ globalSocket: null, activeChatId: null, unreadNotifsCount: 0 });
+            Notifications.setBadgeCountAsync(0); // Clear badge on logout
         }
     }
 }));

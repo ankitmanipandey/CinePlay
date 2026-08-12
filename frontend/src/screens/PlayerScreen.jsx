@@ -355,11 +355,8 @@ export default function PlayerScreen() {
                     </View>
                 </View>
 
-                <ScrollView
-                    style={{ display: isFullScreen ? 'none' : 'flex' }}
-                    showsVerticalScrollIndicator={false}
-                    contentContainerStyle={styles.scrollContent}
-                >
+                {/* STICKY CONTROL BAR MOVED OUTSIDE OF SCROLLVIEW */}
+                {!isFullScreen && (
                     <View style={styles.externalControlBar}>
                         <View style={styles.externalLeftControls}>
                             <TouchableOpacity onPress={handleBackPress} style={styles.externalBtn}>
@@ -383,7 +380,13 @@ export default function PlayerScreen() {
                             </View>
                         )}
                     </View>
+                )}
 
+                <ScrollView
+                    style={{ display: isFullScreen ? 'none' : 'flex' }}
+                    showsVerticalScrollIndicator={false}
+                    contentContainerStyle={styles.scrollContent}
+                >
                     <View style={styles.detailsContainer}>
                         <Text style={styles.mediaTitle}>{title}</Text>
                         <View style={styles.metaRow}>
@@ -503,7 +506,7 @@ export default function PlayerScreen() {
 const styles = StyleSheet.create({
     safeArea: { flex: 1, backgroundColor: '#000' },
     container: { flex: 1, backgroundColor: '#0A0A0C' },
-    scrollContent: { paddingBottom: 40 },
+    scrollContent: { paddingBottom: 50 },
 
     playerContainer: { backgroundColor: '#000', position: 'relative' },
     videoThumbnail: { width: '100%', height: '100%', position: 'absolute' },

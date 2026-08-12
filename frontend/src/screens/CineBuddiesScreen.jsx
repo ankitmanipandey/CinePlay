@@ -60,20 +60,17 @@ export default function CineBuddiesScreen() {
         // 2. Discover Real-Time Sync
         const handleNewNotification = (notification) => {
             if (notification.type === 'CINEREQUEST') {
-                // Someone sent us a request
                 setDiscoverData(prev => ({
                     ...prev,
                     received: [{ _id: notification.senderId, name: 'New Request' }, ...prev.received]
                 }));
-                if (activeTab === 'discover') fetchDiscoverData(); // Fetch to get actual name/avatar
+                if (activeTab === 'discover') fetchDiscoverData();
             } else if (notification.type === 'ACCEPTED_ALERT') {
-                // Someone accepted our request
                 if (activeTab === 'discover') fetchDiscoverData();
             }
         };
 
         const handleRequestRejected = (alert) => {
-            // Someone rejected our request (remove from sent)
             setDiscoverData(prev => ({
                 ...prev,
                 sent: prev.sent.filter(user => user._id !== alert.senderId)
@@ -131,9 +128,22 @@ export default function CineBuddiesScreen() {
         }
     };
 
-    const handleSearch = async () => {
-        if (!searchQuery.trim()) return;
-        Keyboard.dismiss();
+    // --- DEBOUNCED SEARCH LOGIC (300ms delay) ---
+    useEffect(() => {
+        const delayDebounceFn = setTimeout(() => {
+            if (searchQuery.trim()) {
+                executeSearch();
+            } else {
+                // Instantly clear results if user deletes their input
+                setSearchResults([]);
+                setIsSearching(false);
+            }
+        }, 300);
+
+        return () => clearTimeout(delayDebounceFn);
+    }, [searchQuery]);
+
+    const executeSearch = async () => {
         setIsSearching(true);
         try {
             const res = await axios.get(`${BACKEND_URL}/buddies/search?query=${encodeURIComponent(searchQuery)}`, {
@@ -147,12 +157,17 @@ export default function CineBuddiesScreen() {
         }
     };
 
+    // Allows the user to still press the return/search key to dismiss keyboard
+    const handleManualSubmit = () => {
+        Keyboard.dismiss();
+        if (searchQuery.trim()) {
+            executeSearch();
+        }
+    };
+
     // --- OPTIMISTIC ACTIONS ---
-
     const sendRequest = async (user) => {
-        // Optimistic UI Update
         setDiscoverData(prev => ({ ...prev, sent: [...prev.sent, user] }));
-
         try {
             await axios.post(`${BACKEND_URL}/buddies/request`,
                 { receiverId: user._id },
@@ -160,7 +175,6 @@ export default function CineBuddiesScreen() {
             );
             Toast.show({ type: 'hotstarSuccess', text1: 'Cinerequest Sent!' });
         } catch (error) {
-            // Revert on failure
             setDiscoverData(prev => ({ ...prev, sent: prev.sent.filter(u => u._id !== user._id) }));
             const msg = error.response?.data?.message || 'Failed to send request';
             Toast.show({ type: 'hotstarError', text1: msg });
@@ -168,10 +182,8 @@ export default function CineBuddiesScreen() {
     };
 
     const unfriendUser = async (user) => {
-        // Optimistic UI Update
         setDiscoverData(prev => ({ ...prev, friends: prev.friends.filter(f => f._id !== user._id) }));
         setFriends(prev => prev.filter(f => f._id !== user._id));
-
         try {
             await axios.post(`${BACKEND_URL}/buddies/unfriend`,
                 { friendId: user._id },
@@ -179,13 +191,12 @@ export default function CineBuddiesScreen() {
             );
             Toast.show({ type: 'hotstarSuccess', text1: 'Removed from CineBuddies' });
         } catch (error) {
-            fetchDiscoverData(); // Revert on fail
+            fetchDiscoverData();
             Toast.show({ type: 'hotstarError', text1: 'Failed to unfriend' });
         }
     };
 
     const handleRequestAction = async (action, user) => {
-        // Optimistic UI Update
         if (action === 'accept') {
             setDiscoverData(prev => ({
                 ...prev,
@@ -198,7 +209,6 @@ export default function CineBuddiesScreen() {
                 received: prev.received.filter(u => u._id !== user._id)
             }));
         }
-
         try {
             await axios.post(`${BACKEND_URL}/buddies/${action}`,
                 { senderId: user._id },
@@ -206,7 +216,7 @@ export default function CineBuddiesScreen() {
             );
             Toast.show({ type: 'hotstarSuccess', text1: `Request ${action === 'accept' ? 'Accepted' : 'Rejected'}` });
         } catch (error) {
-            fetchDiscoverData(); // Revert on fail
+            fetchDiscoverData();
             Toast.show({ type: 'hotstarError', text1: 'Action failed' });
         }
     };
@@ -217,7 +227,6 @@ export default function CineBuddiesScreen() {
     };
 
     // --- RENDER HELPERS ---
-
     const getUserStatus = (id) => {
         if (discoverData.friends.some(f => f._id === id)) return 'friend';
         if (discoverData.received.some(r => r._id === id)) return 'received';
@@ -347,7 +356,7 @@ export default function CineBuddiesScreen() {
                             placeholderTextColor="#8F98A0"
                             value={searchQuery}
                             onChangeText={setSearchQuery}
-                            onSubmitEditing={handleSearch}
+                            onSubmitEditing={handleManualSubmit}
                             returnKeyType="search"
                             autoCapitalize="none"
                         />

@@ -4,8 +4,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { StyleSheet, Platform, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 
-// Custom Icon Component to handle the Hotstar-style Top Bar Gradient
-const TabIcon = ({ name, focused, color, size }) => (
+import { useGlobalSocket } from '../../store/useGlobalSocket';
+
+// Custom Icon Component to handle the Hotstar-style Top Bar Gradient & Red Dot Badge
+const TabIcon = ({ name, focused, color, size, showBadge = false }) => (
     <View style={styles.iconContainer}>
         {/* The JioHotstar Style Gradient Top Bar */}
         {focused && (
@@ -23,10 +25,15 @@ const TabIcon = ({ name, focused, color, size }) => (
             color={focused ? '#FFFFFF' : color}
             style={{ marginTop: focused ? 2 : 0 }} // Slight nudge when the top bar is active
         />
+
+        {/* Real-time Unread Badge Red Dot */}
+        {showBadge && <View style={styles.badgeDot} />}
     </View>
 );
 
 export default function TabLayout() {
+    const unreadNotifsCount = useGlobalSocket((state) => state.unreadNotifsCount);
+
     return (
         <Tabs
             screenOptions={{
@@ -64,7 +71,13 @@ export default function TabLayout() {
                 options={{
                     title: 'My Space',
                     tabBarIcon: ({ color, focused }) => (
-                        <TabIcon name={focused ? 'happy' : 'happy-outline'} focused={focused} color={color} size={24} />
+                        <TabIcon
+                            name={focused ? 'happy' : 'happy-outline'}
+                            focused={focused}
+                            color={color}
+                            size={24}
+                            showBadge={unreadNotifsCount > 0}
+                        />
                     ),
                 }}
             />
@@ -93,10 +106,10 @@ const styles = StyleSheet.create({
     },
     iconContainer: {
         alignItems: 'center',
-        justifyContent: 'center',
+        justify: 'center',
         width: '100%',
         height: '100%',
-        position: 'relative'
+        position: 'relative',
     },
     activeTopBar: {
         position: 'absolute',
@@ -112,5 +125,16 @@ const styles = StyleSheet.create({
         shadowOpacity: 0.6,
         shadowRadius: 6,
         elevation: 6,
-    }
+    },
+    badgeDot: {
+        position: 'absolute',
+        top: 2,
+        right: '32%',
+        width: 8,
+        height: 8,
+        borderRadius: 4,
+        backgroundColor: '#FF007A',
+        borderWidth: 1.5,
+        borderColor: '#0A0A0C',
+    },
 });

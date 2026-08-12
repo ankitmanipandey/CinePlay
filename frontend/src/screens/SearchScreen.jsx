@@ -369,16 +369,12 @@ export default function SearchScreen() {
           <TouchableOpacity key={uniqueKey} activeOpacity={0.8} onPress={() => router.push({ pathname: '/player', params: { id: safeId, type: mediaType } })} style={[styles.card, { width: STANDARD_CARD_WIDTH, height: CARD_HEIGHT }]}>
             {imageUri ? <Image source={{ uri: imageUri }} style={styles.cardImage} resizeMode="cover" /> : <View style={[styles.cardImage, { backgroundColor: '#25252A', justifyContent: 'center', alignItems: 'center' }]}><Ionicons name="film-outline" size={24} color="#8F98A0" /></View>}
 
-            {/* Removed the 'renderBadge' logic completely so the poster fills 100% cleanly */}
-
             {item.vote_average > 0 && (<View style={styles.translucentRatingBadge}><Ionicons name="star" size={10} color="#F5C518" /><Text style={styles.smallCardRatingText}>{(item.vote_average).toFixed(1)}</Text></View>)}
             <View style={styles.cardActions}>
               <TouchableOpacity style={styles.smallIconBtn} activeOpacity={0.8} onPress={() => handleAuthAction(() => handleToggleAction(safeId, mediaType, 'watchlist'))}>
-                {/* Theme Pink for Watchlist */}
                 <Ionicons name={inWatchlist ? "bookmark" : "bookmark-outline"} size={14} color={inWatchlist ? "#FF007A" : "#FFFFFF"} />
               </TouchableOpacity>
               <TouchableOpacity style={styles.smallIconBtn} activeOpacity={0.8} onPress={() => handleAuthAction(() => handleToggleAction(safeId, mediaType, 'watched'))}>
-                {/* Theme Cyan for Watched */}
                 <Ionicons name="checkmark-done" size={14} color={inWatched ? "#00E5FF" : "#FFFFFF"} />
               </TouchableOpacity>
             </View>
@@ -398,7 +394,6 @@ export default function SearchScreen() {
               <Ionicons
                 name={isAiMode ? "sparkles" : (isYtMode ? "logo-youtube" : "search")}
                 size={20}
-                // Dynamic theme color for the search icon
                 color={isAiMode ? "#9B51E0" : (isYtMode ? "#FF007A" : "#8F98A0")}
                 style={styles.searchIcon}
               />
@@ -442,7 +437,12 @@ export default function SearchScreen() {
             </Text>
 
             {!(isAiMode && searchQuery.length > 0) && !isYtMode && (
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexGrow: 0, flexShrink: 0, marginBottom: 20 }} contentContainerStyle={styles.chipsContainer}>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                style={styles.chipsScrollView}
+                contentContainerStyle={styles.chipsContainer}
+              >
                 {FILTER_CHIPS.map((c, i) => {
                   const isActive = activeChip === c;
                   return (
@@ -479,7 +479,7 @@ export default function SearchScreen() {
                 key={`${searchMode}-${numColumns}`}
                 data={gridRows}
                 keyExtractor={(item, index) => `row-${index}`}
-                contentContainerStyle={isYtMode ? styles.ytFeedContainer : styles.gridContainer}
+                contentContainerStyle={[isYtMode ? styles.ytFeedContainer : styles.gridContainer, { paddingTop: 8 }]}
                 showsVerticalScrollIndicator={false}
                 keyboardShouldPersistTaps="handled"
                 onEndReached={handleLoadMore}
@@ -502,8 +502,8 @@ const styles = StyleSheet.create({
   innerContainer: { flex: 1 },
   searchHeader: { paddingHorizontal: 12, paddingTop: 8, paddingBottom: 16 },
   searchBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#25252A', borderRadius: 24, height: 52, paddingHorizontal: 16, borderWidth: 1, borderColor: 'transparent' },
-  searchBoxActive: { borderColor: '#00E5FF', backgroundColor: '#1C2533' }, // Theme Cyan
-  searchBoxAi: { borderColor: 'rgba(155, 81, 224, 0.4)', backgroundColor: '#1A1423' }, // Theme Purple
+  searchBoxActive: { borderColor: '#00E5FF', backgroundColor: '#1C2533' },
+  searchBoxAi: { borderColor: 'rgba(155, 81, 224, 0.4)', backgroundColor: '#1A1423' },
   searchIcon: { marginRight: 10 },
   searchInput: { flex: 1, color: '#FFFFFF', fontSize: 16, height: '100%' },
   rightIcon: { paddingLeft: 10, height: 40, justifyContent: 'center' },
@@ -511,17 +511,26 @@ const styles = StyleSheet.create({
   aiToggleContainer: { flexDirection: 'row', backgroundColor: '#1C1C22', borderRadius: 20, padding: 4, marginTop: 12, alignSelf: 'flex-start' },
   toggleBtn: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 16, gap: 6, borderWidth: 1, borderColor: 'transparent' },
 
-  // Dynamic Themed active states
   toggleBtnActiveStandard: { backgroundColor: 'rgba(0, 229, 255, 0.15)', borderColor: '#00E5FF' },
   toggleBtnActiveAI: { backgroundColor: 'rgba(155, 81, 224, 0.15)', borderColor: '#9B51E0' },
   toggleBtnActiveYT: { backgroundColor: 'rgba(255, 0, 122, 0.15)', borderColor: '#FF007A' },
 
   toggleText: { color: '#8F98A0', fontSize: 13, fontWeight: '600' },
 
-  sectionTitle: { color: '#FFFFFF', fontSize: 20, fontWeight: 'bold', paddingHorizontal: 12, marginBottom: 16 },
-  chipsContainer: { paddingHorizontal: 12, gap: 10 },
+  sectionTitle: { color: '#FFFFFF', fontSize: 20, fontWeight: 'bold', paddingHorizontal: 12, marginBottom: 12 },
+  chipsScrollView: {
+    flexGrow: 0,
+    flexShrink: 0,
+    height: 48,        // explicit height ≥ chip's real height
+    marginBottom: 24,
+    marginTop: 4
+  },
+  chipsContainer: {
+    paddingHorizontal: 12,
+    gap: 10,
+    alignItems: 'center'   // vertically center chips within the 48px row
+  },
 
-  // Dynamic Themed Chips
   chipWrapper: { borderRadius: 20, overflow: 'hidden' },
   chipActive: { paddingHorizontal: 16, paddingVertical: 10, justifyContent: 'center', alignItems: 'center' },
   chipInactive: { paddingHorizontal: 16, paddingVertical: 10, backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)', borderRadius: 20 },
@@ -531,7 +540,6 @@ const styles = StyleSheet.create({
   gridContainer: { paddingHorizontal: 12, paddingBottom: 40 },
   row: { gap: 8, marginBottom: 8, justifyContent: 'flex-start', flexDirection: 'row' },
 
-  // Cleaned up card to perfectly fill poster
   card: { borderRadius: 6, overflow: 'hidden', backgroundColor: '#1E1E24', position: 'relative' },
   cardImage: { ...StyleSheet.absoluteFillObject, width: '100%', height: '100%' },
 

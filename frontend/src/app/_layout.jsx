@@ -61,49 +61,30 @@ Notifications.setNotificationHandler({
 // Helper function to ask permissions and generate the token
 
 async function registerForPushNotificationsAsync() {
-
-  console.log('[Push] 1. Function called. Platform:', Platform.OS, 'Version:', Platform.Version);
-
   let token;
 
 
 
   if (Platform.OS === 'android') {
-
-    console.log('[Push] 2. Is Android');
-
     if (Platform.Version >= 33) {
-
-      console.log('[Push] 3. Version >= 33, checking permission');
-
       const currentStatus = await PermissionsAndroid.check(
 
         PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS
 
       );
 
-      console.log('[Push] 4. currentStatus:', currentStatus);
-
 
 
       if (!currentStatus) {
-
-        console.log('[Push] 5. Requesting permission NOW - dialog should appear');
-
         const granted = await PermissionsAndroid.request(
 
           PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS
 
         );
 
-        console.log('[Push] 6. User responded:', granted);
-
 
 
         if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
-
-          console.log('[Push] 7. Not granted, returning null');
-
           Toast.show({
 
             type: 'hotstarInfo',
@@ -122,10 +103,6 @@ async function registerForPushNotificationsAsync() {
 
       }
 
-    } else {
-
-      console.log('[Push] 3b. Version < 33, skipping runtime permission');
-
     }
 
 
@@ -142,13 +119,9 @@ async function registerForPushNotificationsAsync() {
 
     });
 
-    console.log('[Push] 8. Channel set up');
-
   }
 
 
-
-  console.log('[Push] 9. Device.isDevice:', Device.isDevice);
 
   if (Device.isDevice) {
 
@@ -170,8 +143,6 @@ async function registerForPushNotificationsAsync() {
 
     if (finalStatus !== 'granted') {
 
-      console.log('Failed to get push token for push notification!');
-
       return null;
 
     }
@@ -181,12 +152,6 @@ async function registerForPushNotificationsAsync() {
     const projectId = Constants.expoConfig?.extra?.eas?.projectId ?? Constants.easConfig?.projectId;
 
     token = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
-
-    console.log('[Push] 10. Token generated successfully:', token);
-
-  } else {
-
-    console.log('Must use physical device for Push Notifications');
 
   }
 
@@ -308,6 +273,8 @@ export default function RootLayout() {
 
   const disconnectGlobalSocket = useGlobalSocket((state) => state.disconnectGlobalSocket);
 
+  const setUnreadNotifsCount = useGlobalSocket((state) => state.setUnreadNotifsCount);
+
 
 
   const lastNotificationResponse = Notifications.useLastNotificationResponse();
@@ -364,13 +331,27 @@ export default function RootLayout() {
 
   useEffect(() => {
 
-    console.log('[Push] Effect check — token:', !!token, 'user._id:', user?._id);
-
     if (token && user?._id) {
 
-      console.log('[Push] Effect firing connectGlobalSocket');
-
       connectGlobalSocket(user._id);
+
+
+
+      axios.get(`${process.env.EXPO_PUBLIC_API_URL}/buddies/notifications`, {
+
+        headers: { Authorization: `Bearer ${token}` }
+
+      })
+
+        .then(res => {
+
+          const unread = res.data.filter(n => !n.isRead).length;
+
+          setUnreadNotifsCount(unread);
+
+        })
+
+        .catch(err => { });
 
 
 
@@ -378,11 +359,7 @@ export default function RootLayout() {
 
       const timer = setTimeout(() => {
 
-        console.log('[Push] Timer finished, requesting push notifications now...');
-
         registerForPushNotificationsAsync().then(async (pushToken) => {
-
-          console.log('[Push] Final pushToken result:', pushToken);
 
           if (pushToken) {
 
@@ -396,13 +373,7 @@ export default function RootLayout() {
 
               );
 
-              console.log('[Push] Token successfully saved to backend!');
-
-            } catch (err) {
-
-              console.log("Failed to save push token to backend", err);
-
-            }
+            } catch (err) { }
 
           }
 
@@ -417,8 +388,6 @@ export default function RootLayout() {
 
 
     } else {
-
-      console.log('[Push] Effect skipped because token or user._id is missing');
 
       disconnectGlobalSocket();
 

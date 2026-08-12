@@ -53,7 +53,8 @@ const ProfileScreen = () => {
     const [joinCode, setJoinCode] = useState('');
     const [isLoggingOut, setIsLoggingOut] = useState(false);
 
-    const [unreadNotifsCount, setUnreadNotifsCount] = useState(0);
+    const unreadNotifsCount = useGlobalSocket(state => state.unreadNotifsCount);
+    const setUnreadNotifsCount = useGlobalSocket(state => state.setUnreadNotifsCount);
     const [unreadChatCount, setUnreadChatCount] = useState(0);
 
     const exactName = user?.name || (user?.email ? user.email.split('@')[0] : 'User');
@@ -69,7 +70,10 @@ const ProfileScreen = () => {
                             axios.get(`${BACKEND_URL}/buddies/notifications`, { headers: { Authorization: `Bearer ${token}` } }),
                             axios.get(`${BACKEND_URL}/chat/unread-count`, { headers: { Authorization: `Bearer ${token}` } })
                         ]);
-                        setUnreadNotifsCount(notifRes.data.length);
+                        // Calculate strictly unread notifications
+                        const unread = notifRes.data.filter(n => !n.isRead).length;
+                        setUnreadNotifsCount(unread);
+
                         setUnreadChatCount(chatRes.data.count);
                     } catch (error) {
                         console.log('Failed to fetch counts');

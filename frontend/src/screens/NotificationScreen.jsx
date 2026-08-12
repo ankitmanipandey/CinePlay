@@ -1,9 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, FlatList, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { StyleSheet, Text, View, FlatList, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { LinearGradient } from 'expo-linear-gradient';
 import axios from 'axios';
 import Toast from 'react-native-toast-message';
 import { useGlobalSocket } from '../store/useGlobalSocket';
@@ -14,19 +13,19 @@ const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL;
 export default function NotificationsScreen() {
     const router = useRouter();
     const { token, user } = useAuthStore();
-    const { globalSocket } = useGlobalSocket();
+    const { globalSocket, clearNotifs } = useGlobalSocket();
 
     const [notifications, setNotifications] = useState([]);
     const [isLoading, setIsLoading] = useState(true);
 
     useEffect(() => {
         fetchNotifications();
+        markAsRead(); // Auto-read instantly when screen opens
 
-        // Listen for new notifications in real-time
         if (globalSocket) {
             const handleNewNotification = (newNotif) => {
-                // Prepend the new notification to the top of the list
-                setNotifications(prev => [newNotif, ...prev]);
+                setNotifications(prev => [{ ...newNotif, isRead: true }, ...prev]); // Force visually read if staring at screen
+                clearNotifs(); // Keep badge at 0 while actively viewing screen
             };
 
             globalSocket.on('new_notification', handleNewNotification);
@@ -52,49 +51,78 @@ export default function NotificationsScreen() {
         }
     };
 
+    // Auto mark as read
+    const markAsRead = async () => {
+        try {
+            await axios.put(`${BACKEND_URL}/buddies/notifications/read`, {}, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            clearNotifs(); // Reset global dot/badge to 0
+        } catch (e) {
+            console.log("Failed to mark as read", e);
+        }
+    };
+
+    // Clear all from DB
+    const handleClearAll = () => {
+        Alert.alert(
+            "Clear Notifications",
+            "Are you sure you want to delete all notifications? This cannot be undone.",
+            [
+                { text: "Cancel", style: "cancel" },
+                {
+                    text: "Clear All",
+                    style: "destructive",
+                    onPress: async () => {
+                        try {
+                            await axios.delete(`${BACKEND_URL}/buddies/notifications/clear`, {
+                                headers: { Authorization: `Bearer ${token}` }
+                            });
+                            setNotifications([]);
+                            clearNotifs();
+                        } catch (error) {
+                            Toast.show({ type: 'hotstarError', text1: 'Failed to clear notifications' });
+                        }
+                    }
+                }
+            ]
+        );
+    };
+
     const handleAction = async (action, notificationId, senderId) => {
         try {
             await axios.post(`${BACKEND_URL}/buddies/${action}`,
                 { notificationId, senderId },
                 { headers: { Authorization: `Bearer ${token}` } }
             );
-
-            Toast.show({
-                type: 'hotstarSuccess',
-                text1: `Request ${action === 'accept' ? 'Accepted' : 'Rejected'}`
-            });
-
-            // Remove from UI
+            Toast.show({ type: 'hotstarSuccess', text1: `Request ${action === 'accept' ? 'Accepted' : 'Rejected'}` });
             setNotifications(prev => prev.filter(n => n._id !== notificationId));
         } catch (error) {
             Toast.show({ type: 'hotstarError', text1: 'Action failed. Try again.' });
         }
     };
 
-
     const joinTheatreRoom = async (roomId, notificationId) => {
-        // Clear the notification from DB (optional, keeps UI clean)
         try {
             await axios.post(`${BACKEND_URL}/buddies/reject`,
-                { notificationId, senderId: user._id }, // Using reject logic just to delete it silently
+                { notificationId, senderId: user._id },
                 { headers: { Authorization: `Bearer ${token}` } }
             );
         } catch (e) { }
-
-        // Go to the room!
         router.push(`/theatre?roomId=${roomId}&isHost=false`);
     };
 
     const renderNotification = ({ item }) => {
         const isRequest = item.type === 'CINEREQUEST';
         const isInvite = item.type === 'THEATRE_INVITE';
-        const senderName = item.senderId?.name || 'Someone';
-
-        // 🚨 FAULT TOLERANCE: Safely extract ID even if population failed
         const safeSenderId = typeof item.senderId === 'object' ? item.senderId._id : item.senderId;
 
+        // Visual distinction for unread vs read (subtle background change)
+        const bgColor = item.isRead ? '#17171C' : 'rgba(0, 229, 255, 0.05)';
+        const borderColor = item.isRead ? 'rgba(255,255,255,0.05)' : 'rgba(0, 229, 255, 0.2)';
+
         return (
-            <View style={styles.notificationCard}>
+            <View style={[styles.notificationCard, { backgroundColor: bgColor, borderColor: borderColor }]}>
                 <View style={styles.iconContainer}>
                     <Ionicons
                         name={isRequest ? "person-add" : (isInvite ? "play-circle" : "information-circle")}
@@ -105,9 +133,7 @@ export default function NotificationsScreen() {
 
                 <View style={styles.contentContainer}>
                     <Text style={styles.messageText}>{item.message}</Text>
-                    <Text style={styles.timeText}>
-                        {new Date(item.createdAt).toLocaleDateString()}
-                    </Text>
+                    <Text style={styles.timeText}>{new Date(item.createdAt).toLocaleDateString()}</Text>
 
                     {isRequest && (
                         <View style={styles.actionButtons}>
@@ -128,6 +154,7 @@ export default function NotificationsScreen() {
                         </View>
                     )}
                 </View>
+                {!item.isRead && <View style={styles.unreadDot} />}
             </View>
         );
     };
@@ -135,10 +162,17 @@ export default function NotificationsScreen() {
     return (
         <SafeAreaView style={styles.container}>
             <View style={styles.header}>
-                <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-                    <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
-                </TouchableOpacity>
-                <Text style={styles.headerTitle}>Notifications</Text>
+                <View style={styles.headerLeft}>
+                    <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+                        <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
+                    </TouchableOpacity>
+                    <Text style={styles.headerTitle}>Notifications</Text>
+                </View>
+                {notifications.length > 0 && (
+                    <TouchableOpacity onPress={handleClearAll} style={styles.clearBtn}>
+                        <Ionicons name="trash-outline" size={22} color="#E53935" />
+                    </TouchableOpacity>
+                )}
             </View>
 
             {isLoading ? (
@@ -149,9 +183,7 @@ export default function NotificationsScreen() {
                     keyExtractor={item => item._id}
                     renderItem={renderNotification}
                     contentContainerStyle={styles.listContent}
-                    ListEmptyComponent={
-                        <Text style={styles.emptyText}>No new notifications.</Text>
-                    }
+                    ListEmptyComponent={<Text style={styles.emptyText}>No new notifications.</Text>}
                 />
             )}
         </SafeAreaView>
@@ -160,13 +192,16 @@ export default function NotificationsScreen() {
 
 const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#0A0A0C' },
-    header: { flexDirection: 'row', alignItems: 'center', padding: 16, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.05)' },
+    header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 16, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.05)' },
+    headerLeft: { flexDirection: 'row', alignItems: 'center' },
     backButton: { marginRight: 16 },
     headerTitle: { color: '#FFFFFF', fontSize: 20, fontWeight: 'bold' },
+    clearBtn: { padding: 4 },
     listContent: { padding: 16 },
-    notificationCard: { flexDirection: 'row', backgroundColor: '#17171C', padding: 16, borderRadius: 12, marginBottom: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
+    notificationCard: { flexDirection: 'row', padding: 16, borderRadius: 12, marginBottom: 12, borderWidth: 1, position: 'relative' },
+    unreadDot: { position: 'absolute', top: 16, right: 16, width: 8, height: 8, borderRadius: 4, backgroundColor: '#00E5FF' },
     iconContainer: { marginRight: 16, justifyContent: 'center' },
-    contentContainer: { flex: 1 },
+    contentContainer: { flex: 1, paddingRight: 10 },
     messageText: { color: '#FFFFFF', fontSize: 15, fontWeight: '500', marginBottom: 4 },
     timeText: { color: '#8F98A0', fontSize: 12, marginBottom: 12 },
     actionButtons: { flexDirection: 'row', gap: 10 },
