@@ -29,27 +29,20 @@ import { useRouter, Stack } from 'expo-router';
 import Toast from 'react-native-toast-message';
 import axios from 'axios';
 
-// --- IMPORT YOUR GLOBAL STORE ---
 import { useAuthStore } from '../store/useAuthStore';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL;
 
-// --- CINEPLAY LOGO COMPONENT ---
 const CinePlayLogo = ({ size = 38 }) => (
     <Svg viewBox="0 0 500 500" width={size} height={size}>
         <Defs>
-            {/* The vibrant gradient background */}
             <SvgLinearGradient id="playGrad" x1="0%" y1="0%" x2="100%" y2="100%">
                 <Stop offset="0%" stopColor="#00E5FF" />
                 <Stop offset="50%" stopColor="#9B51E0" />
                 <Stop offset="100%" stopColor="#FF007A" />
             </SvgLinearGradient>
         </Defs>
-
-        {/* Full Edge-to-Edge Gradient Disk */}
         <Circle cx="250" cy="250" r="250" fill="url(#playGrad)" />
-
-        {/* Large Clean White Play Button */}
         <Path
             d="M 190 145 L 365 250 L 190 355 Z"
             fill="#FFFFFF"
@@ -61,25 +54,28 @@ const CinePlayLogo = ({ size = 38 }) => (
 );
 
 const LoginScreen = () => {
-    const [name, setName] = useState(''); // New State for Name
+    const [name, setName] = useState('');
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
+
+    // View States
     const [isSignUp, setIsSignUp] = useState(false);
+    const [isForgotPassword, setIsForgotPassword] = useState(false);
+    const [isEmailVerified, setIsEmailVerified] = useState(false); // NEW STATE
     const [isLoading, setIsLoading] = useState(false);
 
     // Error States
-    const [nameError, setNameError] = useState(''); // New Error State
+    const [nameError, setNameError] = useState('');
     const [emailError, setEmailError] = useState('');
     const [passwordError, setPasswordError] = useState('');
 
     const router = useRouter();
     const insets = useSafeAreaInsets();
-
     const setSession = useAuthStore((state) => state.setSession);
 
     // Animations
     const fadeAnim = useRef(new Animated.Value(1)).current;
-    const nameShake = useRef(new Animated.Value(0)).current; // New Shake Animation
+    const nameShake = useRef(new Animated.Value(0)).current;
     const emailShake = useRef(new Animated.Value(0)).current;
     const passwordShake = useRef(new Animated.Value(0)).current;
 
@@ -96,8 +92,7 @@ const LoginScreen = () => {
         let isValid = true;
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-        // Check Name only if it's Sign Up
-        if (isSignUp && !name.trim()) {
+        if (isSignUp && !isForgotPassword && !name.trim()) {
             setNameError('Name is required');
             triggerShake(nameShake);
             isValid = false;
@@ -113,7 +108,7 @@ const LoginScreen = () => {
             isValid = false;
         }
 
-        if (!password) {
+        if (!isForgotPassword && !password) {
             setPasswordError('Password is required');
             triggerShake(passwordShake);
             isValid = false;
@@ -130,7 +125,7 @@ const LoginScreen = () => {
             setPasswordError(message);
             triggerShake(emailShake);
             triggerShake(passwordShake);
-        } else if (lowerMsg.includes('user already exists') || lowerMsg.includes('email format')) {
+        } else if (lowerMsg.includes('already exists') || lowerMsg.includes('format') || lowerMsg.includes('no account found')) {
             setEmailError(message);
             triggerShake(emailShake);
         } else if (lowerMsg.includes('password')) {
@@ -144,7 +139,6 @@ const LoginScreen = () => {
     };
 
     const handleAuthSuccess = async (responseObj, successMessage) => {
-        // Pass the token and the entire response object containing {_id, name, email, profilePicture}
         await setSession(responseObj.token, responseObj);
         router.replace('/tabs/home');
         setTimeout(() => {
@@ -153,7 +147,6 @@ const LoginScreen = () => {
                 text1: successMessage,
                 position: 'top',
                 topOffset: insets.top > 0 ? insets.top + 10 : 50,
-                visibilityTime: 3000,
             });
         }, 400);
     };
@@ -168,13 +161,9 @@ const LoginScreen = () => {
 
         try {
             const response = await axios.post(`${API_URL}/auth/login`, { email, password });
-            if (response.data.token) {
-                // Pass the entire response data object
-                await handleAuthSuccess(response.data, 'Login Successful');
-            }
+            if (response.data.token) await handleAuthSuccess(response.data, 'Login Successful');
         } catch (error) {
-            const errorMessage = error.response?.data?.message || "Network error occurred";
-            handleBackendError(errorMessage);
+            handleBackendError(error.response?.data?.message || "Network error occurred");
         } finally {
             setIsLoading(false);
         }
@@ -191,67 +180,118 @@ const LoginScreen = () => {
 
         try {
             const response = await axios.post(`${API_URL}/auth/register`, { name, email, password });
-            if (response.data.token) {
-                // Pass the entire response data object
-                await handleAuthSuccess(response.data, 'Signup Successful');
-            }
+            if (response.data.token) await handleAuthSuccess(response.data, 'Signup Successful');
         } catch (error) {
-            const errorMessage = error.response?.data?.message || "Network error occurred";
-            handleBackendError(errorMessage);
+            handleBackendError(error.response?.data?.message || "Network error occurred");
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    // --- STEP 1: VERIFY EMAIL ---
+    const handleVerifyEmail = async () => {
+        setEmailError('');
+        if (!email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+            setEmailError('Please enter a valid email');
+            triggerShake(emailShake);
+            return;
+        }
+
+        Keyboard.dismiss();
+        setIsLoading(true);
+
+        try {
+            await axios.post(`${API_URL}/auth/verify-email`, { email });
+            // Email exists! Transition to New Password input
+            Animated.timing(fadeAnim, { toValue: 0, duration: 150, useNativeDriver: true }).start(() => {
+                setIsEmailVerified(true);
+                Animated.timing(fadeAnim, { toValue: 1, duration: 150, useNativeDriver: true }).start();
+            });
+        } catch (error) {
+            handleBackendError(error.response?.data?.message || "Error verifying email");
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    // --- STEP 2: SUBMIT NEW PASSWORD ---
+    const handleDirectPasswordReset = async () => {
+        setPasswordError('');
+        if (!password || password.length < 6) {
+            setPasswordError('Password must be at least 6 characters');
+            triggerShake(passwordShake);
+            return;
+        }
+
+        Keyboard.dismiss();
+        setIsLoading(true);
+
+        try {
+            await axios.post(`${API_URL}/auth/reset-password-direct`, { email, newPassword: password });
+            Toast.show({
+                type: 'hotstarSuccess',
+                text1: 'Password changed successfully',
+                position: 'top',
+                topOffset: insets.top > 0 ? insets.top + 10 : 50,
+            });
+            // Switch back to login view smoothly
+            setPassword('');
+            setTimeout(() => {
+                handleForgotPasswordNavigation();
+            }, 1000);
+        } catch (error) {
+            handleBackendError(error.response?.data?.message || "Error resetting password");
         } finally {
             setIsLoading(false);
         }
     };
 
     const handleSignUpNavigation = () => {
-        setNameError('');
-        setEmailError('');
-        setPasswordError('');
-
-        Animated.timing(fadeAnim, {
-            toValue: 0,
-            duration: 150,
-            useNativeDriver: true,
-        }).start(() => {
+        setNameError(''); setEmailError(''); setPasswordError('');
+        Animated.timing(fadeAnim, { toValue: 0, duration: 150, useNativeDriver: true }).start(() => {
             setIsSignUp(!isSignUp);
-            Animated.timing(fadeAnim, {
-                toValue: 1,
-                duration: 150,
-                useNativeDriver: true,
-            }).start();
+            setIsForgotPassword(false);
+            setIsEmailVerified(false);
+            Animated.timing(fadeAnim, { toValue: 1, duration: 150, useNativeDriver: true }).start();
+        });
+    };
+
+    const handleForgotPasswordNavigation = () => {
+        setNameError(''); setEmailError(''); setPasswordError('');
+        Animated.timing(fadeAnim, { toValue: 0, duration: 150, useNativeDriver: true }).start(() => {
+            setIsForgotPassword(!isForgotPassword);
+            setIsSignUp(false);
+            setIsEmailVerified(false); // Always reset email verification on toggle
+            Animated.timing(fadeAnim, { toValue: 1, duration: 150, useNativeDriver: true }).start();
         });
     };
 
     return (
         <LinearGradient colors={['#170D22', '#0A0A0C']} style={styles.background}>
             <Stack.Screen options={{ animation: 'slide_from_right' }} />
-
             <SafeAreaView style={styles.safeArea}>
                 <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
+                <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+                    <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} bounces={false}>
 
-                <KeyboardAvoidingView
-                    style={styles.container}
-                    behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-                >
-                    <ScrollView
-                        contentContainerStyle={styles.scrollContent}
-                        keyboardShouldPersistTaps="handled"
-                        showsVerticalScrollIndicator={false}
-                        bounces={false}
-                    >
-                        <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
+                        <TouchableOpacity style={styles.backButton} onPress={() => {
+                            // If deep in forgot password, back arrow resets to email verification, otherwise goes back in nav
+                            if (isForgotPassword && isEmailVerified) {
+                                Animated.timing(fadeAnim, { toValue: 0, duration: 150, useNativeDriver: true }).start(() => {
+                                    setIsEmailVerified(false); setPassword(''); setPasswordError('');
+                                    Animated.timing(fadeAnim, { toValue: 1, duration: 150, useNativeDriver: true }).start();
+                                });
+                            } else {
+                                router.back();
+                            }
+                        }}>
                             <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
                         </TouchableOpacity>
 
-                        {/* LOGO IN THE EMPTY SPACE */}
                         <View style={styles.spacer}>
                             <View style={styles.logoCenterContainer}>
                                 <CinePlayLogo size={70} />
-                                <MaskedView
-                                    style={styles.logoMaskedView}
-                                    maskElement={<Text style={styles.logoText}>CinePlay</Text>}
-                                >
-                                    {/* MATCHED GRADIENT THEME HERE TOO */}
+                                <MaskedView style={styles.logoMaskedView} maskElement={<Text style={styles.logoText}>CinePlay</Text>}>
                                     <LinearGradient colors={['#00E5FF', '#9B51E0', '#FF007A']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
                                         <Text style={[styles.logoText, { opacity: 0 }]}>CinePlay</Text>
                                     </LinearGradient>
@@ -261,111 +301,99 @@ const LoginScreen = () => {
 
                         <View style={styles.content}>
                             <Animated.Text style={[styles.title, { opacity: fadeAnim }]}>
-                                {isSignUp ? 'Sign Up' : 'Login'} to watch for free
+                                {isForgotPassword
+                                    ? (isEmailVerified ? 'Create New Password' : 'Verify your Email')
+                                    : (isSignUp ? 'Sign Up to watch for free' : 'Login to watch for free')
+                                }
                             </Animated.Text>
 
-                            {/* Name Input (Only visible during Sign Up) */}
-                            {isSignUp && (
+                            {/* Name Input */}
+                            {isSignUp && !isForgotPassword && (
                                 <View style={styles.inputWrapper}>
-                                    <Animated.View style={[
-                                        styles.inputContainer,
-                                        nameError ? styles.inputErrorBorder : null,
-                                        { transform: [{ translateX: nameShake }], opacity: fadeAnim }
-                                    ]}>
+                                    <Animated.View style={[styles.inputContainer, nameError ? styles.inputErrorBorder : null, { transform: [{ translateX: nameShake }], opacity: fadeAnim }]}>
                                         <Text style={[styles.floatingLabel, nameError ? styles.errorLabel : null]}>Name</Text>
                                         <TextInput
-                                            style={styles.input}
-                                            selectionColor="#9B51E0" // Updated selection color to match theme
-                                            value={name}
-                                            onChangeText={(text) => {
-                                                setName(text);
-                                                setNameError('');
-                                            }}
-                                            autoCapitalize="words"
-                                            placeholderTextColor="#8F98A0"
+                                            style={styles.input} selectionColor="#9B51E0" value={name}
+                                            onChangeText={(text) => { setName(text); setNameError(''); }}
+                                            autoCapitalize="words" placeholderTextColor="#8F98A0"
                                         />
                                     </Animated.View>
                                     {nameError.trim() !== '' && <Text style={styles.errorText}>{nameError}</Text>}
                                 </View>
                             )}
 
-                            {/* Email Input */}
-                            <View style={styles.inputWrapper}>
-                                <Animated.View style={[
-                                    styles.inputContainer,
-                                    emailError ? styles.inputErrorBorder : null,
-                                    { transform: [{ translateX: emailShake }] }
-                                ]}>
-                                    <Text style={[styles.floatingLabel, emailError ? styles.errorLabel : null]}>Email address</Text>
-                                    <TextInput
-                                        style={styles.input}
-                                        selectionColor="#9B51E0"
-                                        value={email}
-                                        onChangeText={(text) => {
-                                            setEmail(text);
-                                            setEmailError('');
-                                            if (passwordError.toLowerCase().includes('invalid')) setPasswordError('');
-                                        }}
-                                        keyboardType="email-address"
-                                        autoCapitalize="none"
-                                    />
-                                </Animated.View>
-                                {emailError.trim() !== '' && <Text style={styles.errorText}>{emailError}</Text>}
-                            </View>
+                            {/* Email Input (Hidden during Step 2 of Reset) */}
+                            {(!isForgotPassword || (isForgotPassword && !isEmailVerified)) && (
+                                <View style={styles.inputWrapper}>
+                                    <Animated.View style={[styles.inputContainer, emailError ? styles.inputErrorBorder : null, { transform: [{ translateX: emailShake }], opacity: fadeAnim }]}>
+                                        <Text style={[styles.floatingLabel, emailError ? styles.errorLabel : null]}>Email address</Text>
+                                        <TextInput
+                                            style={styles.input} selectionColor="#9B51E0" value={email}
+                                            onChangeText={(text) => { setEmail(text); setEmailError(''); if (passwordError.toLowerCase().includes('invalid')) setPasswordError(''); }}
+                                            keyboardType="email-address" autoCapitalize="none"
+                                            editable={!isEmailVerified} // Lock it just in case
+                                        />
+                                    </Animated.View>
+                                    {emailError.trim() !== '' && <Text style={styles.errorText}>{emailError}</Text>}
+                                </View>
+                            )}
 
-                            {/* Password Input */}
-                            <View style={styles.inputWrapper}>
-                                <Animated.View style={[
-                                    styles.inputContainer,
-                                    passwordError ? styles.inputErrorBorder : null,
-                                    { transform: [{ translateX: passwordShake }] }
-                                ]}>
-                                    <Text style={[styles.floatingLabel, passwordError ? styles.errorLabel : null]}>Password</Text>
-                                    <TextInput
-                                        style={styles.input}
-                                        selectionColor="#9B51E0"
-                                        value={password}
-                                        onChangeText={(text) => {
-                                            setPassword(text);
-                                            setPasswordError('');
-                                            if (emailError === ' ') setEmailError('');
-                                        }}
-                                        secureTextEntry={true}
-                                    />
-                                </Animated.View>
-                                {passwordError.trim() !== '' && <Text style={styles.errorText}>{passwordError}</Text>}
-                            </View>
+                            {/* Password Input (Hidden during Step 1 of Reset) */}
+                            {(!isForgotPassword || (isForgotPassword && isEmailVerified)) && (
+                                <View style={styles.inputWrapper}>
+                                    <Animated.View style={[styles.inputContainer, passwordError ? styles.inputErrorBorder : null, { transform: [{ translateX: passwordShake }], opacity: fadeAnim }]}>
+                                        <Text style={[styles.floatingLabel, passwordError ? styles.errorLabel : null]}>{isForgotPassword ? 'New Password' : 'Password'}</Text>
+                                        <TextInput
+                                            style={styles.input} selectionColor="#9B51E0" value={password}
+                                            onChangeText={(text) => { setPassword(text); setPasswordError(''); if (emailError === ' ') setEmailError(''); }}
+                                            secureTextEntry={true}
+                                        />
+                                    </Animated.View>
+                                    {passwordError.trim() !== '' && <Text style={styles.errorText}>{passwordError}</Text>}
+                                </View>
+                            )}
 
-                            {/* Login/Signup Button with Loader - NOW WITH GRADIENT */}
+                            {/* Forgot Password Link */}
+                            {!isSignUp && !isForgotPassword && (
+                                <Animated.View style={{ opacity: fadeAnim }}>
+                                    <TouchableOpacity style={styles.forgotPasswordContainer} onPress={handleForgotPasswordNavigation} activeOpacity={0.7}>
+                                        <Text style={styles.forgotPasswordText}>Forgot Password?</Text>
+                                    </TouchableOpacity>
+                                </Animated.View>
+                            )}
+
+                            {/* Dynamic Submit Button */}
                             <Pressable
                                 style={[styles.loginButtonContainer, isLoading && styles.loginButtonDisabled]}
-                                onPress={isSignUp ? handleSignup : handleLogin}
+                                onPress={isForgotPassword ? (isEmailVerified ? handleDirectPasswordReset : handleVerifyEmail) : (isSignUp ? handleSignup : handleLogin)}
                                 disabled={isLoading}
                             >
-                                <LinearGradient
-                                    colors={['#00E5FF', '#9B51E0', '#FF007A']}
-                                    start={{ x: 0, y: 0 }}
-                                    end={{ x: 1, y: 0 }}
-                                    style={styles.loginButtonGradient}
-                                >
+                                <LinearGradient colors={['#00E5FF', '#9B51E0', '#FF007A']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.loginButtonGradient}>
                                     {isLoading ? (
                                         <ActivityIndicator color="#FFFFFF" />
                                     ) : (
                                         <Animated.Text style={[styles.loginButtonText, { opacity: fadeAnim }]}>
-                                            {isSignUp ? 'Sign Up' : 'Login'}
+                                            {isForgotPassword ? (isEmailVerified ? 'Change Password' : 'Verify') : (isSignUp ? 'Sign Up' : 'Login')}
                                         </Animated.Text>
                                     )}
                                 </LinearGradient>
                             </Pressable>
 
-                            {/* Footer Text */}
+                            {/* Footer */}
                             <View style={styles.footerContainer}>
-                                <Animated.Text style={[styles.footerText, { opacity: fadeAnim }]}>
-                                    {isSignUp ? "Already have an account" : "Don't have an account"}?{' '}
-                                    <Text style={styles.linkText} onPress={handleSignUpNavigation}>
-                                        {isSignUp ? 'Login' : 'Sign Up'}
-                                    </Text>
-                                </Animated.Text>
+                                {isForgotPassword ? (
+                                    <Animated.Text style={[styles.footerText, { opacity: fadeAnim }]}>
+                                        Remember your password?{' '}
+                                        <Text style={styles.linkText} onPress={handleForgotPasswordNavigation}>Login</Text>
+                                    </Animated.Text>
+                                ) : (
+                                    <Animated.Text style={[styles.footerText, { opacity: fadeAnim }]}>
+                                        {isSignUp ? "Already have an account" : "Don't have an account"}?{' '}
+                                        <Text style={styles.linkText} onPress={handleSignUpNavigation}>
+                                            {isSignUp ? 'Login' : 'Sign Up'}
+                                        </Text>
+                                    </Animated.Text>
+                                )}
                             </View>
                         </View>
                     </ScrollView>
@@ -382,57 +410,27 @@ const styles = StyleSheet.create({
     safeArea: { flex: 1 },
     container: { flex: 1 },
     scrollContent: { flexGrow: 1, paddingHorizontal: 20 },
-    backButton: { marginTop: 16, width: 40, height: 40, justifyContent: 'center' },
-
-    // Updated Spacer and Logo Styles
+    backButton: { marginTop: 16, width: 40, height: 40, justifyContent: 'center', zIndex: 10 },
     spacer: { flex: 1, justifyContent: 'center', alignItems: 'center', minHeight: 180, paddingVertical: 20 },
     logoCenterContainer: { alignItems: 'center', gap: 12 },
     logoMaskedView: { height: 42, flexDirection: 'row', alignItems: 'center' },
     logoText: { fontSize: 36, fontWeight: '900', letterSpacing: 0.5, lineHeight: 42, includeFontPadding: false },
-
     content: { paddingBottom: 40 },
     title: { fontSize: 20, fontWeight: 'bold', color: '#FFFFFF', marginBottom: 24 },
     inputWrapper: { marginBottom: 20 },
-    inputContainer: {
-        borderWidth: 1,
-        borderColor: '#8F98A0',
-        borderRadius: 8,
-        height: 56,
-        justifyContent: 'center',
-        paddingHorizontal: 16,
-    },
+    inputContainer: { borderWidth: 1, borderColor: '#8F98A0', borderRadius: 8, height: 56, justifyContent: 'center', paddingHorizontal: 16 },
     inputErrorBorder: { borderColor: '#E53935' },
-    floatingLabel: {
-        position: 'absolute',
-        top: -10,
-        left: 12,
-        backgroundColor: '#0A0A0C',
-        paddingHorizontal: 6,
-        color: '#8F98A0',
-        fontSize: 12,
-    },
+    floatingLabel: { position: 'absolute', top: -10, left: 12, backgroundColor: '#0A0A0C', paddingHorizontal: 6, color: '#8F98A0', fontSize: 12 },
     errorLabel: { color: '#E53935' },
     input: { color: '#FFFFFF', fontSize: 16, height: '100%' },
     errorText: { color: '#E53935', fontSize: 12, marginTop: 6, marginLeft: 4 },
-
-    // Updated Button Styles for Gradient
-    loginButtonContainer: {
-        marginTop: 8,
-        borderRadius: 8,
-        overflow: 'hidden', // Ensures the gradient respects the border radius
-    },
-    loginButtonGradient: {
-        height: 52,
-        justifyContent: 'center',
-        alignItems: 'center',
-        paddingHorizontal: 16,
-    },
-    loginButtonDisabled: {
-        opacity: 0.7,
-    },
+    forgotPasswordContainer: { alignSelf: 'flex-end', marginBottom: 20, marginTop: -8 },
+    forgotPasswordText: { color: '#8F98A0', fontSize: 13, fontWeight: '600' },
+    loginButtonContainer: { marginTop: 8, borderRadius: 8, overflow: 'hidden' },
+    loginButtonGradient: { height: 52, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 16 },
+    loginButtonDisabled: { opacity: 0.7 },
     loginButtonText: { color: '#FFFFFF', fontSize: 16, fontWeight: 'bold' },
-
-    footerContainer: { alignItems: 'center', marginTop: 20 },
+    footerContainer: { alignItems: 'center', marginTop: 24 },
     footerText: { color: '#8F98A0', fontSize: 14 },
-    linkText: { color: '#9B51E0', fontWeight: 'bold' }, // Updated link text to match theme purple
+    linkText: { color: '#9B51E0', fontWeight: 'bold' },
 });

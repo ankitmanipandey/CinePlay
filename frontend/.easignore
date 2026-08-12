@@ -32,3 +32,5 @@ Thumbs.db
 *.fig
 *.mp4
 *.mov
+
+firebase-key.json
