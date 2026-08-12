@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, FlatList, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
+import { StyleSheet, Text, View, FlatList, TouchableOpacity, ActivityIndicator, Modal } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
@@ -17,6 +17,9 @@ export default function NotificationsScreen() {
 
     const [notifications, setNotifications] = useState([]);
     const [isLoading, setIsLoading] = useState(true);
+
+    // State to control the custom confirmation modal
+    const [isClearModalVisible, setIsClearModalVisible] = useState(false);
 
     useEffect(() => {
         fetchNotifications();
@@ -63,30 +66,20 @@ export default function NotificationsScreen() {
         }
     };
 
-    // Clear all from DB
-    const handleClearAll = () => {
-        Alert.alert(
-            "Clear Notifications",
-            "Are you sure you want to delete all notifications? This cannot be undone.",
-            [
-                { text: "Cancel", style: "cancel" },
-                {
-                    text: "Clear All",
-                    style: "destructive",
-                    onPress: async () => {
-                        try {
-                            await axios.delete(`${BACKEND_URL}/buddies/notifications/clear`, {
-                                headers: { Authorization: `Bearer ${token}` }
-                            });
-                            setNotifications([]);
-                            clearNotifs();
-                        } catch (error) {
-                            Toast.show({ type: 'hotstarError', text1: 'Failed to clear notifications' });
-                        }
-                    }
-                }
-            ]
-        );
+    // Execute the actual deletion
+    const confirmClearAll = async () => {
+        try {
+            await axios.delete(`${BACKEND_URL}/buddies/notifications/clear`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            setNotifications([]);
+            clearNotifs();
+            setIsClearModalVisible(false);
+            Toast.show({ type: 'hotstarSuccess', text1: 'All notifications cleared' });
+        } catch (error) {
+            Toast.show({ type: 'hotstarError', text1: 'Failed to clear notifications' });
+            setIsClearModalVisible(false);
+        }
     };
 
     const handleAction = async (action, notificationId, senderId) => {
@@ -169,7 +162,7 @@ export default function NotificationsScreen() {
                     <Text style={styles.headerTitle}>Notifications</Text>
                 </View>
                 {notifications.length > 0 && (
-                    <TouchableOpacity onPress={handleClearAll} style={styles.clearBtn}>
+                    <TouchableOpacity onPress={() => setIsClearModalVisible(true)} style={styles.clearBtn}>
                         <Ionicons name="trash-outline" size={22} color="#E53935" />
                     </TouchableOpacity>
                 )}
@@ -186,6 +179,45 @@ export default function NotificationsScreen() {
                     ListEmptyComponent={<Text style={styles.emptyText}>No new notifications.</Text>}
                 />
             )}
+
+            {/* CUSTOM CLEAR CONFIRMATION MODAL */}
+            <Modal
+                visible={isClearModalVisible}
+                transparent={true}
+                animationType="fade"
+                onRequestClose={() => setIsClearModalVisible(false)}
+            >
+                <View style={styles.modalOverlay}>
+                    <View style={styles.modalContainer}>
+                        <View style={styles.modalIconWrapper}>
+                            <Ionicons name="trash" size={32} color="#E53935" />
+                        </View>
+
+                        <Text style={styles.modalTitle}>Clear Notifications</Text>
+                        <Text style={styles.modalMessage}>
+                            Are you sure you want to delete all notifications? This action cannot be undone.
+                        </Text>
+
+                        <View style={styles.modalActionRow}>
+                            <TouchableOpacity
+                                style={[styles.modalBtn, styles.modalCancelBtn]}
+                                onPress={() => setIsClearModalVisible(false)}
+                                activeOpacity={0.7}
+                            >
+                                <Text style={styles.modalCancelText}>Cancel</Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity
+                                style={[styles.modalBtn, styles.modalConfirmBtn]}
+                                onPress={confirmClearAll}
+                                activeOpacity={0.7}
+                            >
+                                <Text style={styles.modalConfirmText}>Clear All</Text>
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+                </View>
+            </Modal>
         </SafeAreaView>
     );
 }
@@ -209,5 +241,82 @@ const styles = StyleSheet.create({
     acceptBtn: { backgroundColor: 'rgba(0, 229, 255, 0.15)', borderWidth: 1, borderColor: '#00E5FF' },
     rejectBtn: { backgroundColor: 'rgba(229, 57, 53, 0.1)', borderWidth: 1, borderColor: '#E53935' },
     btnText: { color: '#00E5FF', fontWeight: 'bold', fontSize: 14 },
-    emptyText: { color: '#8F98A0', textAlign: 'center', marginTop: 40, fontSize: 15 }
+    emptyText: { color: '#8F98A0', textAlign: 'center', marginTop: 40, fontSize: 15 },
+
+    // --- MODAL STYLES ---
+    modalOverlay: {
+        flex: 1,
+        backgroundColor: 'rgba(0, 0, 0, 0.75)',
+        justifyContent: 'center',
+        alignItems: 'center',
+        padding: 24,
+    },
+    modalContainer: {
+        width: '100%',
+        backgroundColor: '#17171C',
+        borderRadius: 24,
+        padding: 24,
+        alignItems: 'center',
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.05)',
+        elevation: 10,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 10 },
+        shadowOpacity: 0.5,
+        shadowRadius: 20,
+    },
+    modalIconWrapper: {
+        width: 64,
+        height: 64,
+        borderRadius: 32,
+        backgroundColor: 'rgba(229, 57, 53, 0.15)',
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginBottom: 16,
+    },
+    modalTitle: {
+        color: '#FFFFFF',
+        fontSize: 22,
+        fontWeight: 'bold',
+        marginBottom: 8,
+    },
+    modalMessage: {
+        color: '#8F98A0',
+        fontSize: 15,
+        textAlign: 'center',
+        marginBottom: 28,
+        lineHeight: 22,
+    },
+    modalActionRow: {
+        flexDirection: 'row',
+        width: '100%',
+        gap: 12,
+    },
+    modalBtn: {
+        flex: 1,
+        paddingVertical: 14,
+        borderRadius: 12,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    modalCancelBtn: {
+        backgroundColor: 'rgba(255,255,255,0.05)',
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.1)',
+    },
+    modalConfirmBtn: {
+        backgroundColor: 'rgba(229, 57, 53, 0.15)',
+        borderWidth: 1,
+        borderColor: '#E53935',
+    },
+    modalCancelText: {
+        color: '#FFFFFF',
+        fontSize: 16,
+        fontWeight: 'bold',
+    },
+    modalConfirmText: {
+        color: '#E53935',
+        fontSize: 16,
+        fontWeight: 'bold',
+    },
 });
