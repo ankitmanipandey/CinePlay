@@ -19,11 +19,13 @@
     "android": {
       "predictiveBackGestureEnabled": false,
       "package": "com.ankitpandey.cineplay",
+      "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "foregroundImage": "./assets/icon.png",
         "backgroundColor": "#170D22"
       },
       "permissions": [
+        "POST_NOTIFICATIONS",
         "android.permission.RECORD_AUDIO"
       ]
     },
@@ -48,6 +50,12 @@
           "androidSpeechServicePackages": [
             "com.google.android.googlequicksearchbox"
           ]
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#00E5FF"
         }
       ]
     ],

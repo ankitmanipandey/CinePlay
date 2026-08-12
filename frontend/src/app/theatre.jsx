@@ -13,7 +13,9 @@ import {
     Keyboard,
     StatusBar,
     ScrollView,
-    useWindowDimensions
+    useWindowDimensions,
+    Modal,
+    BackHandler
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -22,6 +24,7 @@ import io from 'socket.io-client';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import Toast from 'react-native-toast-message';
 import { LinearGradient } from 'expo-linear-gradient'; // <-- Added import
+import axios from 'axios';
 
 import TheatrePlayer from '../screens/TheatrePlayer';
 import { useAuthStore } from '../store/useAuthStore';
@@ -71,9 +74,10 @@ export default function TheatreScreen() {
     const [isJoining, setIsJoining] = useState(!isHostBool);
 
     // --- User Identity & Room State ---
-    const { user } = useAuthStore();
+    const { user, token } = useAuthStore();
     const [username, setUsername] = useState('');
     const [roomUsers, setRoomUsers] = useState([]);
+    const [selectedUserToMod, setSelectedUserToMod] = useState(null);
 
     const [socket, setSocket] = useState(null);
     const [ytId, setYtId] = useState('');
@@ -99,6 +103,12 @@ export default function TheatreScreen() {
     // --- NEW: Keyboard State ---
     const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
 
+    const [isShareModalVisible, setIsShareModalVisible] = useState(false);
+    const [friendsList, setFriendsList] = useState([]);
+    const [isFetchingFriends, setIsFetchingFriends] = useState(false);
+    const [isWaitingForHost, setIsWaitingForHost] = useState(false);
+    const [pendingJoinRequest, setPendingJoinRequest] = useState(null);
+
     useEffect(() => {
         isPlayingRef.current = isPlaying;
     }, [isPlaying]);
@@ -120,6 +130,20 @@ export default function TheatreScreen() {
         };
     }, []);
 
+    useEffect(() => {
+        const onHardwareBackPress = () => {
+            handleBackPress(); // Trigger your custom exit logic
+            return true; // Return true to stop the default Android back behavior
+        };
+
+        const backHandler = BackHandler.addEventListener(
+            'hardwareBackPress',
+            onHardwareBackPress
+        );
+
+        return () => backHandler.remove();
+    }, [isFullScreen, isHostBool, socket, roomId]);
+
     // --- 1. CORE SOCKET SETUP ---
     useEffect(() => {
         const assignedUsername = user?.name ? user.name : `Guest-${Math.floor(1000 + Math.random() * 9000)}`;
@@ -130,12 +154,23 @@ export default function TheatreScreen() {
         setSocket(newSocket);
 
         newSocket.on('connect', () => {
-            newSocket.emit('join_room', { roomId, username: assignedUsername, isHost: isHostBool });
+            newSocket.emit('join_room', {
+                roomId,
+                username: assignedUsername,
+                isHost: isHostBool,
+                userId: user?._id // Required for the Gatekeeper logic!
+            });
         });
 
         newSocket.on('room_users', (userList) => {
             setIsJoining(false); // Room is confirmed, hide loading screen
             setRoomUsers(userList);
+        });
+
+        newSocket.on('kicked_from_room', (data) => {
+            Toast.show({ type: 'hotstarError', text1: 'Removed', text2: data.reason, position: 'top' });
+            if (router.canGoBack()) router.back();
+            else router.replace('/');
         });
 
         newSocket.on('new_video', (data) => {
@@ -158,6 +193,28 @@ export default function TheatreScreen() {
                 router.back();
             } else {
                 router.replace('/');
+            }
+        });
+
+        newSocket.on('waiting_for_host', () => {
+            setIsJoining(false);
+            setIsWaitingForHost(true);
+        });
+
+        newSocket.on('entry_approved', () => {
+            setIsWaitingForHost(false);
+            Toast.show({ type: 'hotstarSuccess', text1: 'Host let you in!', position: 'top' });
+        });
+
+        newSocket.on('entry_denied', (data) => {
+            Toast.show({ type: 'hotstarError', text1: 'Entry Denied', text2: data.reason, position: 'top' });
+            if (router.canGoBack()) router.back();
+            else router.replace('/');
+        });
+
+        newSocket.on('request_host_permission', (data) => {
+            if (isHostBool) {
+                setPendingJoinRequest(data);
             }
         });
 
@@ -195,7 +252,7 @@ export default function TheatreScreen() {
 
         newSocket.on('room_closed', () => {
             if (!isHostBool) {
-                Toast.show({ type: 'error', text1: 'Room Closed', text2: 'The host has ended the watch party.', position: 'top' });
+                Toast.show({ type: 'hotstarError', text1: 'Room Closed', text2: 'The host has ended the watch party.', position: 'top' });
                 // Safe routing exit
                 if (router.canGoBack()) {
                     router.back();
@@ -300,6 +357,31 @@ export default function TheatreScreen() {
         }
     };
 
+    const handleHostDecision = (decision) => {
+        if (!pendingJoinRequest) return;
+        socket.emit('host_decision', {
+            ...pendingJoinRequest,
+            decision,
+            roomId,
+            hostUserId: user._id
+        });
+        setPendingJoinRequest(null);
+    };
+
+    const handleKick = () => {
+        if (!selectedUserToMod) return;
+        socket.emit('kick_user', { roomId, targetUsername: selectedUserToMod });
+        setSelectedUserToMod(null);
+        Toast.show({ type: 'hotstarSuccess', text1: `${selectedUserToMod} was kicked.` });
+    };
+
+    const handleKickAndBlock = () => {
+        if (!selectedUserToMod) return;
+        socket.emit('kick_and_block_user', { roomId, targetUsername: selectedUserToMod, hostUserId: user._id });
+        setSelectedUserToMod(null);
+        Toast.show({ type: 'hotstarSuccess', text1: `${selectedUserToMod} was blocked.` });
+    };
+
     const handleSendMessage = () => {
         if (!chatInput.trim()) return;
         const msgData = {
@@ -346,6 +428,40 @@ export default function TheatreScreen() {
         );
     };
 
+    const openShareModal = async () => {
+        if (!user) {
+            Toast.show({ type: 'hotstarInfo', text1: 'Log in to invite friends!' });
+            return;
+        }
+        setIsShareModalVisible(true);
+        setIsFetchingFriends(true);
+        try {
+            const res = await axios.get(`${BACKEND_URL}/buddies/list`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            setFriendsList(res.data);
+        } catch (error) {
+            Toast.show({ type: 'hotstarError', text1: 'Failed to load friends.' });
+        } finally {
+            setIsFetchingFriends(false);
+        }
+    };
+
+    const sendTheatreInvite = async (receiverId) => {
+        try {
+            await axios.post(`${BACKEND_URL}/buddies/invite`,
+                { receiverId, roomId, videoTitle }, // <-- ADDED videoTitle here!
+                { headers: { Authorization: `Bearer ${token}` } }
+            );
+            Toast.show({ type: 'hotstarSuccess', text1: 'Invite Sent!' });
+            setIsShareModalVisible(false);
+        } catch (error) {
+            // This will perfectly grab the 'Your Friend is blocked by Creator.' message
+            const msg = error.response?.data?.message || 'Failed to send invite.';
+            Toast.show({ type: 'hotstarError', text1: msg });
+        }
+    };
+
     const actualWidth = Math.max(width, height);
     const actualHeight = Math.min(width, height);
     const containerWidth = isFullScreen ? actualWidth : width;
@@ -362,6 +478,24 @@ export default function TheatreScreen() {
                 <Text style={{ color: '#8F98A0', marginTop: 16, fontSize: 16, fontWeight: '500' }}>
                     Connecting to Room...
                 </Text>
+            </SafeAreaView>
+        );
+    }
+
+    if (isWaitingForHost) {
+        return (
+            <SafeAreaView style={[styles.safeArea, { justifyContent: 'center', alignItems: 'center' }]}>
+                <StatusBar hidden={false} barStyle="light-content" backgroundColor="#000" />
+                <ActivityIndicator size="large" color="#FF007A" />
+                <Text style={{ color: '#FFF', marginTop: 16, fontSize: 18, fontWeight: 'bold' }}>
+                    Asking to enter...
+                </Text>
+                <Text style={{ color: '#8F98A0', marginTop: 8, fontSize: 14 }}>
+                    Waiting for the Host to let you in.
+                </Text>
+                <TouchableOpacity onPress={handleBackPress} style={{ marginTop: 24, padding: 12 }}>
+                    <Text style={{ color: '#00E5FF', fontWeight: 'bold' }}>Cancel</Text>
+                </TouchableOpacity>
             </SafeAreaView>
         );
     }
@@ -427,7 +561,20 @@ export default function TheatreScreen() {
                                 </TouchableOpacity>
                             </View>
 
-                            <View style={styles.externalRightControls}>
+                            {/* Flexible spacer prevents left and right controls from ever colliding */}
+                            <View style={{ flex: 1, minWidth: 16 }} />
+
+                            {/* Wrap right controls in a ScrollView for narrow screens */}
+                            <ScrollView
+                                horizontal
+                                showsHorizontalScrollIndicator={false}
+                                contentContainerStyle={styles.externalRightControls}
+                                bounces={false}
+                            >
+                                <TouchableOpacity onPress={openShareModal} style={[styles.externalBtn, { backgroundColor: 'rgba(0, 229, 255, 0.15)' }]}>
+                                    <Ionicons name="paper-plane" size={16} color="#00E5FF" />
+                                    <Text style={[styles.externalBtnText, { color: '#00E5FF' }]}>Share</Text>
+                                </TouchableOpacity>
                                 {/* Using Theme Purple */}
                                 <View style={[styles.externalBtn, { backgroundColor: 'rgba(155, 81, 224, 0.15)' }]}>
                                     <Ionicons name="key" size={16} color="#9B51E0" />
@@ -438,7 +585,7 @@ export default function TheatreScreen() {
                                     <Ionicons name="people" size={18} color="#8F98A0" />
                                     <Text style={[styles.externalBtnText, { color: '#8F98A0' }]}>{roomUsers.length}</Text>
                                 </View>
-                            </View>
+                            </ScrollView>
                         </View>
 
                         {roomUsers.length > 0 && (
@@ -447,10 +594,17 @@ export default function TheatreScreen() {
                                     {roomUsers
                                         .filter(name => name !== username)
                                         .map((name, idx) => (
-                                            <View key={idx} style={styles.userChip}>
+                                            <TouchableOpacity
+                                                key={idx}
+                                                style={styles.userChip}
+                                                activeOpacity={isHostBool ? 0.7 : 1}
+                                                onPress={() => {
+                                                    if (isHostBool) setSelectedUserToMod(name);
+                                                }}
+                                            >
                                                 <View style={styles.userChipDot} />
                                                 <Text style={styles.userChipText}>{name}</Text>
-                                            </View>
+                                            </TouchableOpacity> /* <-- Fixed closing tag here */
                                         ))}
                                 </ScrollView>
                             </View>
@@ -579,6 +733,92 @@ export default function TheatreScreen() {
                     </View>
                 </View>
             </KeyboardAvoidingView>
+            {/* INSTAGRAM-STYLE SHARE BOTTOM SHEET */}
+            <Modal visible={isShareModalVisible} transparent={true} animationType="slide" onRequestClose={() => setIsShareModalVisible(false)}>
+                <View style={styles.modalOverlay}>
+                    <View style={styles.bottomSheet}>
+                        <View style={styles.sheetHeader}>
+                            <Text style={styles.sheetTitle}>Invite CineBuddies</Text>
+                            <TouchableOpacity onPress={() => setIsShareModalVisible(false)}>
+                                <Ionicons name="close-circle" size={28} color="#8F98A0" />
+                            </TouchableOpacity>
+                        </View>
+
+                        {isFetchingFriends ? (
+                            <ActivityIndicator size="large" color="#00E5FF" style={{ marginVertical: 40 }} />
+                        ) : (
+                            <FlatList
+                                data={friendsList}
+                                keyExtractor={item => item._id}
+                                contentContainerStyle={{ paddingBottom: 20 }}
+                                ListEmptyComponent={<Text style={{ color: '#8F98A0', textAlign: 'center', marginTop: 20 }}>No CineBuddies found.</Text>}
+                                renderItem={({ item }) => (
+                                    <View style={styles.friendRow}>
+                                        <View style={styles.friendAvatar}>
+                                            <Text style={styles.friendAvatarText}>{item.name.charAt(0).toUpperCase()}</Text>
+                                        </View>
+                                        <Text style={styles.friendName}>{item.name}</Text>
+                                        <TouchableOpacity style={styles.sendInviteBtn} onPress={() => sendTheatreInvite(item._id)}>
+                                            <Text style={styles.sendInviteText}>Send</Text>
+                                        </TouchableOpacity>
+                                    </View>
+                                )}
+                            />
+                        )}
+                    </View>
+                </View>
+            </Modal>
+
+            {/* HOST GATEKEEPER MODAL */}
+            <Modal visible={!!pendingJoinRequest} transparent={true} animationType="fade">
+                <View style={styles.modalOverlayCenter}>
+                    <View style={styles.permissionModal}>
+                        <Ionicons name="shield-checkmark" size={40} color="#00E5FF" style={{ alignSelf: 'center', marginBottom: 12 }} />
+                        <Text style={styles.permissionTitle}>Someone wants to join</Text>
+                        <Text style={styles.permissionDesc}>
+                            <Text style={{ fontWeight: 'bold', color: '#FFF' }}>{pendingJoinRequest?.joinerName}</Text> is asking to enter your room.
+                        </Text>
+
+                        <View style={styles.permissionActions}>
+                            <TouchableOpacity style={[styles.permBtn, { backgroundColor: '#00E5FF' }]} onPress={() => handleHostDecision('ALLOW')}>
+                                <Text style={[styles.permBtnText, { color: '#000' }]}>Allow</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity style={[styles.permBtn, { backgroundColor: 'rgba(255,255,255,0.1)' }]} onPress={() => handleHostDecision('REJECT')}>
+                                <Text style={styles.permBtnText}>Decline</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity style={[styles.permBtn, { backgroundColor: 'rgba(229, 57, 53, 0.15)' }]} onPress={() => handleHostDecision('BLOCK')}>
+                                <Text style={[styles.permBtnText, { color: '#E53935' }]}>Block</Text>
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+                </View>
+            </Modal>
+
+            {/* HOST MODERATION MODAL */}
+            <Modal visible={!!selectedUserToMod} transparent={true} animationType="fade" onRequestClose={() => setSelectedUserToMod(null)}>
+                <View style={styles.modalOverlayCenter}>
+                    <View style={styles.permissionModal}>
+                        <Ionicons name="warning" size={40} color="#E53935" style={{ alignSelf: 'center', marginBottom: 12 }} />
+                        <Text style={styles.permissionTitle}>Manage User</Text>
+                        <Text style={styles.permissionDesc}>
+                            What would you like to do with <Text style={{ fontWeight: 'bold', color: '#FFF' }}>{selectedUserToMod}</Text>?
+                        </Text>
+
+                        <View style={styles.permissionActions}>
+                            <TouchableOpacity style={[styles.permBtn, { backgroundColor: 'rgba(255,255,255,0.1)' }]} onPress={() => setSelectedUserToMod(null)}>
+                                <Text style={styles.permBtnText}>Cancel</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity style={[styles.permBtn, { backgroundColor: 'rgba(229, 57, 53, 0.15)' }]} onPress={handleKick}>
+                                <Text style={[styles.permBtnText, { color: '#E53935' }]}>Kick from Room</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity style={[styles.permBtn, { backgroundColor: '#E53935' }]} onPress={handleKickAndBlock}>
+                                <Text style={[styles.permBtnText, { color: '#FFF' }]}>Kick & Block Permanently</Text>
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+                </View>
+            </Modal>
+
         </SafeAreaView>
     );
 }
@@ -648,4 +888,22 @@ const styles = StyleSheet.create({
     // Updated Button Styles
     sendBtnContainer: { width: 40, height: 40, borderRadius: 20, overflow: 'hidden' },
     sendBtnGradient: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+
+    modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
+    bottomSheet: { backgroundColor: '#17171C', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, maxHeight: '60%' },
+    sheetHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
+    sheetTitle: { color: '#FFF', fontSize: 18, fontWeight: 'bold' },
+    friendRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
+    friendAvatar: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#9B51E0', justifyContent: 'center', alignItems: 'center', marginRight: 12 },
+    friendAvatarText: { color: '#FFF', fontWeight: 'bold', fontSize: 16 },
+    friendName: { flex: 1, color: '#FFF', fontSize: 16, fontWeight: '500' },
+    sendInviteBtn: { backgroundColor: '#00E5FF', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20 },
+    sendInviteText: { color: '#000', fontWeight: 'bold', fontSize: 13 },
+    modalOverlayCenter: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center', padding: 20 },
+    permissionModal: { backgroundColor: '#1E1E24', borderRadius: 20, padding: 24, width: '100%', borderWidth: 1, borderColor: 'rgba(0, 229, 255, 0.3)' },
+    permissionTitle: { color: '#FFF', fontSize: 20, fontWeight: 'bold', textAlign: 'center', marginBottom: 8 },
+    permissionDesc: { color: '#8F98A0', fontSize: 14, textAlign: 'center', marginBottom: 24, lineHeight: 22 },
+    permissionActions: { gap: 12 },
+    permBtn: { paddingVertical: 14, borderRadius: 12, alignItems: 'center' },
+    permBtnText: { color: '#FFF', fontWeight: 'bold', fontSize: 15 },
 });

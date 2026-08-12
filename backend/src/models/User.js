@@ -1,5 +1,19 @@
 const mongoose = require('mongoose');
 
+// Schema for individual notifications
+const notificationSchema = new mongoose.Schema({
+    type: {
+        type: String,
+        enum: ['CINEREQUEST', 'THEATRE_INVITE', 'REJECTED_ALERT'],
+        required: true
+    },
+    senderId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    message: { type: String },
+    roomId: { type: String }, // Used specifically for Theatre Invites
+    isRead: { type: Boolean, default: false },
+    createdAt: { type: Date, default: Date.now }
+});
+
 const userSchema = new mongoose.Schema(
     {
         name: {
@@ -29,13 +43,30 @@ const userSchema = new mongoose.Schema(
             type: String,
             default: null
         },
-        // --- NEW FIELDS FOR MOVIE LISTS ---
+        expoPushToken: {
+            type: String,
+            default: null
+        },
         watchlist: [{
             type: String
         }],
         watched: [{
             type: String
-        }]
+        }],
+        // --- NEW CINEBUDDIES FIELDS ---
+        friends: [{
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'User'
+        }],
+        friendRequests: [{
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'User'
+        }],
+        blockedUsers: [{
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'User'
+        }],
+        notifications: [notificationSchema]
     },
     {
         timestamps: true,

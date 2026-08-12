@@ -7,6 +7,9 @@ const authRouter = require('../routes/authRouter');
 const userRouter = require('../routes/userRouter');
 const aiRouter = require('../routes/aiRouter');
 const serverAwake = require('../jobs/serverAwake');
+const buddyRouter = require('../routes/buddyRouter');
+const chatRouter = require('../routes/chatRouter');
+const User = require('../models/User');
 
 const app = express();
 
@@ -18,8 +21,6 @@ const io = socketIo(server, {
     }
 });
 
-const rooms = {};
-
 app.use(express.json());
 
 app.get('/', (req, res) => { res.status(200).send('Server is awake'); });
@@ -27,8 +28,17 @@ app.get('/', (req, res) => { res.status(200).send('Server is awake'); });
 app.use('/api/auth', authRouter);
 app.use('/api/user', userRouter);
 app.use('/api/ai', aiRouter);
+app.use('/api/buddies', buddyRouter);
+app.use('/api/chat', chatRouter);
 
+// =========================================================
+// 1. THEATRE MODE SOCKET NAMESPACE (/api)
+// =========================================================
+const rooms = {};
 const apiNamespace = io.of('/api');
+
+// Export rooms so we can check if they exist in Phase 4 (Room Expiration Check)
+module.exports.rooms = rooms;
 
 function emitRoomUsers(roomId) {
     const state = rooms[roomId];
@@ -38,83 +48,254 @@ function emitRoomUsers(roomId) {
 
 apiNamespace.on('connection', (socket) => {
 
-    // --> ADDED isHost TO THE PAYLOAD
-    socket.on('join_room', ({ roomId, username, isHost }) => {
-
-        // --> SECURITY CHECK: If it's a viewer and the room doesn't exist, reject them.
+    socket.on('join_room', async ({ roomId, username, isHost, userId }) => {
+        // SECURITY CHECK: Room existence
         if (!isHost && !rooms[roomId]) {
-            socket.emit('room_not_found');
-            return; // Stop execution here, don't let them join
+            return socket.emit('room_not_found');
         }
 
-        socket.join(roomId);
+        if (isHost) {
+            // Host creates/joins the room unconditionally
+            socket.join(roomId);
+            socket.data.roomId = roomId;
+            socket.data.username = username;
 
-        socket.data.roomId = roomId;
-        socket.data.username = username;
+            rooms[roomId] = rooms[roomId] || { users: {} };
+            rooms[roomId].hostSocketId = socket.id;
+            rooms[roomId].hostUserId = userId; // Save Host's DB ID to check relationships later
+            rooms[roomId].users[socket.id] = username;
 
-        // If the host is joining and room doesn't exist, initialize it
-        if (!rooms[roomId]) {
-            rooms[roomId] = { users: {} };
+            emitRoomUsers(roomId);
+        } else {
+            // Viewer joining - The Gatekeeper Check
+            const room = rooms[roomId];
+
+            try {
+                // If they are a guest (no userId), instantly reject or make them ask. We will make them ask.
+                if (!userId || !room.hostUserId) {
+                    return askPermission();
+                }
+
+                const hostUser = await User.findById(room.hostUserId);
+                if (!hostUser) return socket.emit('room_not_found');
+
+                // 1. Check if Blocked
+                if (hostUser.blockedUsers.includes(userId)) {
+                    return socket.emit('entry_denied', { reason: 'You do not have permission to enter this room.' });
+                }
+
+                // 2. Check if Direct Friend
+                if (hostUser.friends.includes(userId)) {
+                    return completeJoin();
+                } else {
+                    // 3. Friend of Friend - Must ask permission
+                    return askPermission();
+                }
+            } catch (err) {
+                return socket.emit('room_not_found');
+            }
         }
-        if (!rooms[roomId].users) rooms[roomId].users = {};
 
-        rooms[roomId].users[socket.id] = username;
-
-        const state = rooms[roomId];
-        if (state.ytId) {
-            socket.emit('new_video', { ytId: state.ytId, title: state.title });
-            socket.emit('remote_sync', {
-                action: state.isPlaying ? 'play' : 'pause',
-                timestamp: state.timestamp || 0,
+        function askPermission() {
+            socket.emit('waiting_for_host');
+            apiNamespace.to(rooms[roomId].hostSocketId).emit('request_host_permission', {
+                joinerSocketId: socket.id,
+                joinerId: userId,
+                joinerName: username
             });
         }
 
-        emitRoomUsers(roomId);
+        function completeJoin() {
+            socket.join(roomId);
+            socket.data.roomId = roomId;
+            socket.data.username = username;
+            rooms[roomId].users[socket.id] = username;
+
+            const state = rooms[roomId];
+            if (state.ytId) {
+                socket.emit('new_video', { ytId: state.ytId, title: state.title });
+                socket.emit('remote_sync', {
+                    action: state.isPlaying ? 'play' : 'pause',
+                    timestamp: state.timestamp || 0,
+                });
+            }
+            emitRoomUsers(roomId);
+        }
     });
 
+    // Handle Host's Decision (Allow / Reject / Block)
+    socket.on('host_decision', async ({ joinerSocketId, joinerId, joinerName, decision, roomId, hostUserId }) => {
+        const joinerSocket = apiNamespace.sockets.get(joinerSocketId);
+        if (!joinerSocket) return; // User disconnected while waiting
+
+        if (decision === 'ALLOW') {
+            joinerSocket.join(roomId);
+            joinerSocket.data.roomId = roomId;
+            joinerSocket.data.username = joinerName;
+            rooms[roomId].users[joinerSocketId] = joinerName;
+
+            joinerSocket.emit('entry_approved');
+
+            const state = rooms[roomId];
+            if (state.ytId) {
+                joinerSocket.emit('new_video', { ytId: state.ytId, title: state.title });
+                joinerSocket.emit('remote_sync', {
+                    action: state.isPlaying ? 'play' : 'pause',
+                    timestamp: state.timestamp || 0,
+                });
+            }
+            emitRoomUsers(roomId);
+        } else if (decision === 'REJECT') {
+            joinerSocket.emit('entry_denied', { reason: 'The host declined your request to join.' });
+        } else if (decision === 'BLOCK') {
+            joinerSocket.emit('entry_denied', { reason: 'You do not have permission to enter this room.' });
+
+            // Add to DB Blocked List
+            if (joinerId && hostUserId) {
+                const hostUser = await User.findById(hostUserId);
+                if (hostUser && !hostUser.blockedUsers.includes(joinerId)) {
+                    hostUser.blockedUsers.push(joinerId);
+                    await hostUser.save();
+                }
+            }
+        }
+    });
+
+    // ... KEEP YOUR EXISTING change_video, sync_action, send_chat, close_room, and disconnect EVENTS HERE ...
     socket.on('change_video', (data) => {
-        rooms[data.roomId] = {
-            ...rooms[data.roomId],
-            ytId: data.ytId,
-            title: data.title,
-            isPlaying: true,
-            timestamp: 0,
-        };
+        rooms[data.roomId] = { ...rooms[data.roomId], ytId: data.ytId, title: data.title, isPlaying: true, timestamp: 0 };
         socket.to(data.roomId).emit('new_video', data);
     });
-
     socket.on('sync_action', (data) => {
-        if (rooms[data.roomId]) {
-            rooms[data.roomId].isPlaying = data.action === 'play';
-            rooms[data.roomId].timestamp = data.timestamp;
-        }
+        if (rooms[data.roomId]) { rooms[data.roomId].isPlaying = data.action === 'play'; rooms[data.roomId].timestamp = data.timestamp; }
         socket.to(data.roomId).emit('remote_sync', data);
     });
+    socket.on('send_chat', (data) => { socket.to(data.roomId).emit('receive_chat', data); });
+    socket.on('close_room', (roomId) => { delete rooms[roomId]; socket.to(roomId).emit('room_closed'); });
+    // --- MODERATION: KICK USER ---
+    socket.on('kick_user', ({ roomId, targetUsername }) => {
+        const room = rooms[roomId];
+        if (!room) return;
 
-    socket.on('send_chat', (data) => {
-        socket.to(data.roomId).emit('receive_chat', data);
+        // Find the socket ID of the user being kicked
+        let targetSocketId = null;
+        for (const [sId, uname] of Object.entries(room.users)) {
+            if (uname === targetUsername) { targetSocketId = sId; break; }
+        }
+
+        if (targetSocketId) {
+            const targetSocket = apiNamespace.sockets.get(targetSocketId);
+            if (targetSocket) {
+                targetSocket.emit('kicked_from_room', { reason: 'You were kicked from the room by the host.' });
+                targetSocket.leave(roomId); // Forcibly remove them from the socket room
+            }
+            // Remove from tracking and update everyone else
+            delete room.users[targetSocketId];
+            emitRoomUsers(roomId);
+        }
     });
 
-    socket.on('close_room', (roomId) => {
-        delete rooms[roomId];
-        socket.to(roomId).emit('room_closed');
-    });
+    // --- MODERATION: KICK AND BLOCK USER ---
+    socket.on('kick_and_block_user', async ({ roomId, targetUsername, hostUserId }) => {
+        const room = rooms[roomId];
+        if (!room) return;
 
+        let targetSocketId = null;
+        for (const [sId, uname] of Object.entries(room.users)) {
+            if (uname === targetUsername) { targetSocketId = sId; break; }
+        }
+
+        if (targetSocketId) {
+            const targetSocket = apiNamespace.sockets.get(targetSocketId);
+            let targetUserId = null;
+
+            if (targetSocket) {
+                targetUserId = targetSocket.data.userId; // We saved this during join_room!
+                targetSocket.emit('kicked_from_room', { reason: 'You were blocked by the host.' });
+                targetSocket.leave(roomId);
+            }
+
+            delete room.users[targetSocketId];
+            emitRoomUsers(roomId);
+
+            // Add to Host's Blocked List in MongoDB
+            if (hostUserId && targetUserId) {
+                const hostUser = await User.findById(hostUserId);
+                if (hostUser && !hostUser.blockedUsers.includes(targetUserId)) {
+                    hostUser.blockedUsers.push(targetUserId);
+                    await hostUser.save();
+                }
+            }
+        }
+    });
     socket.on('disconnect', () => {
         const roomId = socket.data.roomId;
 
-        if (roomId && rooms[roomId]?.users) {
-            delete rooms[roomId].users[socket.id];
-
-            if (Object.keys(rooms[roomId].users).length === 0) {
+        if (roomId && rooms[roomId]) {
+            // FAILSAFE: Check if the user who just disconnected is the Host
+            if (rooms[roomId].hostSocketId === socket.id) {
+                // The Host left! Notify viewers and destroy the room
+                socket.to(roomId).emit('room_closed');
                 delete rooms[roomId];
+                console.log(`[Room ${roomId}] Host disconnected. Room destroyed.`);
             } else {
-                emitRoomUsers(roomId);
+                // A normal viewer left
+                if (rooms[roomId].users) {
+                    delete rooms[roomId].users[socket.id];
+
+                    // If room is empty, clean it up
+                    if (Object.keys(rooms[roomId].users).length === 0) {
+                        delete rooms[roomId];
+                    } else {
+                        emitRoomUsers(roomId);
+                    }
+                }
             }
         }
     });
 });
 
+// =========================================================
+// 2. GLOBAL SOCKET NAMESPACE (/global) for CineBuddies
+// =========================================================
+const globalNamespace = io.of('/global');
+const onlineUsers = new Map(); // Tracks online users: userId -> socket.id
+app.locals.globalNamespace = globalNamespace;
+app.locals.onlineUsers = onlineUsers;
+app.locals.rooms = rooms;
+
+// Export them for use in future Notification/Buddy API Routes
+module.exports.onlineUsers = onlineUsers;
+module.exports.globalNamespace = globalNamespace;
+
+globalNamespace.on('connection', (socket) => {
+    socket.on('register_user', (userId) => {
+        if (userId) {
+            const uid = userId.toString();
+            onlineUsers.set(uid, socket.id);
+            socket.data.userId = uid;
+
+            // Broadcast to everyone that this user is online
+            globalNamespace.emit('user_status', { userId: uid, isOnline: true });
+        }
+    });
+
+    socket.on('disconnect', () => {
+        const userId = socket.data.userId;
+
+        if (userId && onlineUsers.get(userId) === socket.id) {
+            onlineUsers.delete(userId);
+
+            // Broadcast to everyone that this user is offline
+            globalNamespace.emit('user_status', { userId: userId, isOnline: false });
+        }
+    });
+});
+
+
+// =========================================================
+// START SERVER
+// =========================================================
 const PORT = process.env.PORT || 5000;
 
 const startServer = async () => {

@@ -1,5 +1,9 @@
+import * as Device from 'expo-device';
+import * as Notifications from 'expo-notifications';
+import Constants from 'expo-constants';
+import axios from 'axios';
 import React, { useEffect, useState, useRef } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, Animated, Dimensions } from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator, Animated, Dimensions, Platform, PermissionsAndroid, Linking } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import Toast from 'react-native-toast-message';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -8,24 +12,102 @@ import * as SecureStore from 'expo-secure-store';
 
 import { ThemeProvider, DarkTheme } from 'expo-router/react-navigation';
 
-// --- GLOBAL AUTH STORE ---
+// --- GLOBAL STORES ---
 import { useAuthStore } from '../store/useAuthStore';
+import { useGlobalSocket } from '../store/useGlobalSocket';
 
 // Get screen width to calculate the starting position off-screen to the right
 const { width } = Dimensions.get('window');
 
-// --- NEW: REUSABLE ANIMATED TOAST COMPONENT ---
-const AnimatedToast = ({ text1, colors, iconName }) => {
-  // Start the toast completely off-screen to the right
+// --- PUSH NOTIFICATION CONFIGURATION ---
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: true,
+  }),
+});
+
+// Helper function to ask permissions and generate the token
+async function registerForPushNotificationsAsync() {
+  console.log('[Push] 1. Function called. Platform:', Platform.OS, 'Version:', Platform.Version);
+  let token;
+
+  if (Platform.OS === 'android') {
+    console.log('[Push] 2. Is Android');
+    if (Platform.Version >= 33) {
+      console.log('[Push] 3. Version >= 33, checking permission');
+      const currentStatus = await PermissionsAndroid.check(
+        PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS
+      );
+      console.log('[Push] 4. currentStatus:', currentStatus);
+
+      if (!currentStatus) {
+        console.log('[Push] 5. Requesting permission NOW - dialog should appear');
+        const granted = await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS
+        );
+        console.log('[Push] 6. User responded:', granted);
+
+        if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+          console.log('[Push] 7. Not granted, returning null');
+          Toast.show({
+            type: 'hotstarInfo',
+            text1: 'Notifications are off',
+            text2: 'Tap here to enable them in Settings.',
+            onPress: () => Linking.openSettings()
+          });
+          return null;
+        }
+      }
+    } else {
+      console.log('[Push] 3b. Version < 33, skipping runtime permission');
+    }
+
+    await Notifications.setNotificationChannelAsync('default', {
+      name: 'default',
+      importance: Notifications.AndroidImportance.MAX,
+      vibrationPattern: [0, 250, 250, 250],
+      lightColor: '#FF007A',
+    });
+    console.log('[Push] 8. Channel set up');
+  }
+
+  console.log('[Push] 9. Device.isDevice:', Device.isDevice);
+  if (Device.isDevice) {
+    const { status: existingStatus } = await Notifications.getPermissionsAsync();
+    let finalStatus = existingStatus;
+
+    if (existingStatus !== 'granted') {
+      const { status } = await Notifications.requestPermissionsAsync();
+      finalStatus = status;
+    }
+
+    if (finalStatus !== 'granted') {
+      console.log('Failed to get push token for push notification!');
+      return null;
+    }
+
+    const projectId = Constants.expoConfig?.extra?.eas?.projectId ?? Constants.easConfig?.projectId;
+    token = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
+    console.log('[Push] 10. Token generated successfully:', token);
+  } else {
+    console.log('Must use physical device for Push Notifications');
+  }
+
+  return token;
+}
+
+// --- REUSABLE ANIMATED TOAST COMPONENT ---
+const AnimatedToast = ({ text1, text2, colors, iconName, onPress }) => {
   const slideAnim = useRef(new Animated.Value(width)).current;
 
   useEffect(() => {
-    // Spring animation slides it in from Right to Left
     Animated.spring(slideAnim, {
-      toValue: 0, // Target position (original position)
+      toValue: 0,
       useNativeDriver: true,
-      friction: 8,  // Adjust for bounciness
-      tension: 60,  // Adjust for speed
+      friction: 8,
+      tension: 60,
     }).start();
   }, [slideAnim]);
 
@@ -36,9 +118,13 @@ const AnimatedToast = ({ text1, colors, iconName }) => {
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
         style={styles.toastContainer}
+        onTouchEnd={onPress}
       >
         <Ionicons name={iconName} size={20} color="#FFFFFF" />
-        <Text style={styles.toastText}>{text1}</Text>
+        <View style={styles.toastTextContainer}>
+          <Text style={styles.toastText}>{text1}</Text>
+          {text2 && <Text style={styles.toastSubText}>{text2}</Text>}
+        </View>
       </LinearGradient>
     </Animated.View>
   );
@@ -46,14 +132,14 @@ const AnimatedToast = ({ text1, colors, iconName }) => {
 
 // --- TOAST CONFIG ---
 const toastConfig = {
-  hotstarSuccess: ({ text1 }) => (
-    <AnimatedToast text1={text1} colors={['#1F80E0', '#D63484']} iconName="checkmark-circle" />
+  hotstarSuccess: ({ text1, text2, onPress }) => (
+    <AnimatedToast text1={text1} text2={text2} onPress={onPress} colors={['#1F80E0', '#D63484']} iconName="checkmark-circle" />
   ),
-  hotstarInfo: ({ text1 }) => (
-    <AnimatedToast text1={text1} colors={['#1F80E0', '#D63484']} iconName="information-circle" />
+  hotstarInfo: ({ text1, text2, onPress }) => (
+    <AnimatedToast text1={text1} text2={text2} onPress={onPress} colors={['#1F80E0', '#D63484']} iconName="information-circle" />
   ),
-  hotstarError: ({ text1 }) => (
-    <AnimatedToast text1={text1} colors={['#E53935', '#990000']} iconName="alert-circle" />
+  hotstarError: ({ text1, text2, onPress }) => (
+    <AnimatedToast text1={text1} text2={text2} onPress={onPress} colors={['#E53935', '#990000']} iconName="alert-circle" />
   )
 };
 
@@ -61,20 +147,26 @@ export default function RootLayout() {
   const [isLoading, setIsLoading] = useState(true);
   const router = useRouter();
 
-  // Grab restoreSession from your global Zustand store
   const restoreSession = useAuthStore((state) => state.restoreSession);
+  const token = useAuthStore((state) => state.token);
+  const user = useAuthStore((state) => state.user);
 
+  const connectGlobalSocket = useGlobalSocket((state) => state.connectGlobalSocket);
+  const disconnectGlobalSocket = useGlobalSocket((state) => state.disconnectGlobalSocket);
+
+  const lastNotificationResponse = Notifications.useLastNotificationResponse();
+  const handledNotificationId = useRef(null);
+
+  // 1. Initial Auth Check
   useEffect(() => {
     const checkUserAuth = async () => {
       try {
-        const token = await SecureStore.getItemAsync('userToken');
-        const userDataString = await SecureStore.getItemAsync('userData'); // <-- Fetch saved user data
+        const storedToken = await SecureStore.getItemAsync('userToken');
+        const userDataString = await SecureStore.getItemAsync('userData');
 
-        if (token) {
-          // Parse the saved data, or fallback if it somehow doesn't exist
+        if (storedToken) {
           const userData = userDataString ? JSON.parse(userDataString) : { email: 'User', name: 'User' };
-
-          restoreSession(token, userData);
+          restoreSession(storedToken, userData);
           router.replace('/tabs/home');
         }
       } catch (error) {
@@ -86,6 +178,62 @@ export default function RootLayout() {
 
     checkUserAuth();
   }, []);
+
+  // 2. Global Socket Connection & Push Notification Manager (WITH STABILITY DELAY)
+  useEffect(() => {
+    console.log('[Push] Effect check — token:', !!token, 'user._id:', user?._id);
+    if (token && user?._id) {
+      console.log('[Push] Effect firing connectGlobalSocket');
+      connectGlobalSocket(user._id);
+
+      // 🕒 Added a 1.5s delay so the UI window is fully loaded before triggering the native OS prompt
+      const timer = setTimeout(() => {
+        console.log('[Push] Timer finished, requesting push notifications now...');
+        registerForPushNotificationsAsync().then(async (pushToken) => {
+          console.log('[Push] Final pushToken result:', pushToken);
+          if (pushToken) {
+            try {
+              await axios.put(`${process.env.EXPO_PUBLIC_API_URL}/user/push-token`,
+                { token: pushToken },
+                { headers: { Authorization: `Bearer ${token}` } }
+              );
+              console.log('[Push] Token successfully saved to backend!');
+            } catch (err) {
+              console.log("Failed to save push token to backend", err);
+            }
+          }
+        });
+      }, 1500);
+
+      return () => clearTimeout(timer);
+
+    } else {
+      console.log('[Push] Effect skipped because token or user._id is missing');
+      disconnectGlobalSocket();
+    }
+  }, [token, user]);
+
+  // 3. Deep Linking: Handle Tapping on Push Notifications
+  useEffect(() => {
+    // Wait until the app is fully loaded AND the user is restored
+    if (!isLoading && user && lastNotificationResponse) {
+      const responseId = lastNotificationResponse.notification.request.identifier;
+
+      // Prevent handling the same notification tap twice if the component re-renders
+      if (handledNotificationId.current !== responseId) {
+        handledNotificationId.current = responseId;
+
+        const data = lastNotificationResponse.notification.request.content.data;
+
+        if (data?.roomId && data?.type === 'THEATRE_INVITE') {
+          // A slight delay ensures the Home screen is fully mounted before pushing the Theatre screen
+          setTimeout(() => {
+            router.push(`/theatre?roomId=${data.roomId}&isHost=false`);
+          }, 800);
+        }
+      }
+    }
+  }, [lastNotificationResponse, isLoading, user]);
 
   if (isLoading) {
     return (
@@ -103,7 +251,6 @@ export default function RootLayout() {
           contentStyle: { backgroundColor: '#0A0A0C' },
         }}
       />
-      {/* Set topOffset so it clears the status bar cleanly on the top right */}
       <Toast config={toastConfig} position="top" topOffset={50} />
     </ThemeProvider>
   );
@@ -117,7 +264,7 @@ const styles = StyleSheet.create({
   },
   toastWrapper: {
     width: '100%',
-    alignItems: 'flex-end', // This ensures it hugs the right side of the screen
+    alignItems: 'flex-end',
     paddingRight: 20,
   },
   toastContainer: {
@@ -132,10 +279,18 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.25,
     shadowRadius: 3.84,
   },
+  toastTextContainer: {
+    marginLeft: 8,
+    flexDirection: 'column',
+  },
   toastText: {
     color: '#FFFFFF',
     fontWeight: 'bold',
-    marginLeft: 8,
     fontSize: 14,
   },
+  toastSubText: {
+    color: '#E0E0E0',
+    fontSize: 12,
+    marginTop: 2,
+  }
 });

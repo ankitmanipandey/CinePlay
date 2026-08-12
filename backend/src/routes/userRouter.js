@@ -70,4 +70,23 @@ userRouter.post('/watched/toggle', protect, async (req, res) => {
     }
 });
 
+userRouter.put('/push-token', protect, async (req, res) => {
+    try {
+        const { token } = req.body;
+        const user = await User.findById(req.user._id);
+
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        user.expoPushToken = token;
+        await user.save();
+
+        res.status(200).json({ message: 'Push token saved successfully' });
+    } catch (error) {
+        console.error('Error saving push token:', error);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
 module.exports = userRouter;

@@ -143,8 +143,9 @@ const LoginScreen = () => {
         }
     };
 
-    const handleAuthSuccess = async (token, userEmail, userName, successMessage) => {
-        await setSession(token, userEmail, userName); // <-- Passed userName here!
+    const handleAuthSuccess = async (responseObj, successMessage) => {
+        // Pass the token and the entire response object containing {_id, name, email, profilePicture}
+        await setSession(responseObj.token, responseObj);
         router.replace('/tabs/home');
         setTimeout(() => {
             Toast.show({
@@ -168,8 +169,8 @@ const LoginScreen = () => {
         try {
             const response = await axios.post(`${API_URL}/auth/login`, { email, password });
             if (response.data.token) {
-                // Pass the actual name from your backend response
-                await handleAuthSuccess(response.data.token, response.data.email, response.data.name, 'Login Successful');
+                // Pass the entire response data object
+                await handleAuthSuccess(response.data, 'Login Successful');
             }
         } catch (error) {
             const errorMessage = error.response?.data?.message || "Network error occurred";
@@ -191,8 +192,8 @@ const LoginScreen = () => {
         try {
             const response = await axios.post(`${API_URL}/auth/register`, { name, email, password });
             if (response.data.token) {
-                // Pass the actual name from your backend response
-                await handleAuthSuccess(response.data.token, response.data.email, response.data.name, 'Signup Successful');
+                // Pass the entire response data object
+                await handleAuthSuccess(response.data, 'Signup Successful');
             }
         } catch (error) {
             const errorMessage = error.response?.data?.message || "Network error occurred";

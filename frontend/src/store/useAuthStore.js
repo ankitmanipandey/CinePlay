@@ -6,10 +6,14 @@ export const useAuthStore = create((set) => ({
     token: null,
 
     // Call this after a successful login/register API call
-    setSession: async (token, email, providedName = null) => {
-        // Fallback to email prefix if name is not provided
-        const displayName = providedName || email.split('@')[0];
-        const userData = { email, name: displayName };
+    setSession: async (token, userDataFromBackend) => {
+        // userDataFromBackend contains: { _id, name, email, profilePicture }
+        const userData = {
+            _id: userDataFromBackend._id,
+            email: userDataFromBackend.email,
+            name: userDataFromBackend.name,
+            profilePicture: userDataFromBackend.profilePicture
+        };
 
         // Save token AND user data to secure storage
         await SecureStore.setItemAsync('userToken', token);
@@ -28,7 +32,7 @@ export const useAuthStore = create((set) => ({
 
     logout: async () => {
         await SecureStore.deleteItemAsync('userToken');
-        await SecureStore.deleteItemAsync('userData'); // Clear user data on logout
+        await SecureStore.deleteItemAsync('userData');
         set({ user: null, token: null });
     }
 }));

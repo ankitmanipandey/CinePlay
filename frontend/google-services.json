@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "689465710967",
+    "project_id": "cineplay-0705",
+    "storage_bucket": "cineplay-0705.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:689465710967:android:d4038d9e27188563f3e972",
+        "android_client_info": {
+          "package_name": "com.ankitpandey.cineplay"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD2KijaHyxMvpFQLUXtVh1l1vib07tqvf0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
