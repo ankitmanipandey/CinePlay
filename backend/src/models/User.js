@@ -4,7 +4,7 @@ const mongoose = require('mongoose');
 const notificationSchema = new mongoose.Schema({
     type: {
         type: String,
-        enum: ['CINEREQUEST', 'THEATRE_INVITE', 'REJECTED_ALERT'],
+        enum: ['CINEREQUEST', 'THEATRE_INVITE', 'REJECTED_ALERT','ACCEPTED_ALERT'],
         required: true
     },
     senderId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

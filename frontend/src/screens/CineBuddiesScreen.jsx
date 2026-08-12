@@ -21,15 +21,19 @@ export default function CineBuddiesScreen() {
     const [friends, setFriends] = useState([]);
     const [isLoadingFriends, setIsLoadingFriends] = useState(true);
 
+    // Discover State
+    const [discoverData, setDiscoverData] = useState({ friends: [], sent: [], received: [] });
+    const [isLoadingDiscover, setIsLoadingDiscover] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
     const [searchResults, setSearchResults] = useState([]);
     const [isSearching, setIsSearching] = useState(false);
 
-    // Reload friends list instantly when returning from ChatScreen to ensure badges are cleared
     useFocusEffect(
         useCallback(() => {
             if (activeTab === 'chats') {
                 fetchFriends();
+            } else if (activeTab === 'discover') {
+                fetchDiscoverData();
             }
         }, [activeTab])
     );
@@ -37,7 +41,7 @@ export default function CineBuddiesScreen() {
     useEffect(() => {
         if (!globalSocket) return;
 
-        // 1. Live Chat Counter
+        // 1. Live Chat Counter & Status
         const handleRealTimeChat = (newMessage) => {
             setFriends(prev => prev.map(friend => {
                 if (String(friend._id) === String(newMessage.sender)) {
@@ -47,21 +51,57 @@ export default function CineBuddiesScreen() {
             }));
         };
 
-        // 2. Live Online Presence
         const handleStatus = ({ userId, isOnline }) => {
             setFriends(prev => prev.map(f =>
                 String(f._id) === String(userId) ? { ...f, isOnline } : f
             ));
         };
 
+        // 2. Discover Real-Time Sync
+        const handleNewNotification = (notification) => {
+            if (notification.type === 'CINEREQUEST') {
+                // Someone sent us a request
+                setDiscoverData(prev => ({
+                    ...prev,
+                    received: [{ _id: notification.senderId, name: 'New Request' }, ...prev.received]
+                }));
+                if (activeTab === 'discover') fetchDiscoverData(); // Fetch to get actual name/avatar
+            } else if (notification.type === 'ACCEPTED_ALERT') {
+                // Someone accepted our request
+                if (activeTab === 'discover') fetchDiscoverData();
+            }
+        };
+
+        const handleRequestRejected = (alert) => {
+            // Someone rejected our request (remove from sent)
+            setDiscoverData(prev => ({
+                ...prev,
+                sent: prev.sent.filter(user => user._id !== alert.senderId)
+            }));
+        };
+
+        const handleFriendRemoved = (data) => {
+            setDiscoverData(prev => ({
+                ...prev,
+                friends: prev.friends.filter(f => f._id !== data.unfriendedBy)
+            }));
+            setFriends(prev => prev.filter(f => f._id !== data.unfriendedBy));
+        };
+
         globalSocket.on('receive_direct_message', handleRealTimeChat);
         globalSocket.on('user_status', handleStatus);
+        globalSocket.on('new_notification', handleNewNotification);
+        globalSocket.on('request_rejected', handleRequestRejected);
+        globalSocket.on('friend_removed', handleFriendRemoved);
 
         return () => {
             globalSocket.off('receive_direct_message', handleRealTimeChat);
             globalSocket.off('user_status', handleStatus);
+            globalSocket.off('new_notification', handleNewNotification);
+            globalSocket.off('request_rejected', handleRequestRejected);
+            globalSocket.off('friend_removed', handleFriendRemoved);
         };
-    }, [globalSocket]);
+    }, [globalSocket, activeTab]);
 
     const fetchFriends = async () => {
         setIsLoadingFriends(true);
@@ -74,6 +114,20 @@ export default function CineBuddiesScreen() {
             Toast.show({ type: 'hotstarError', text1: 'Failed to load friends' });
         } finally {
             setIsLoadingFriends(false);
+        }
+    };
+
+    const fetchDiscoverData = async () => {
+        setIsLoadingDiscover(true);
+        try {
+            const res = await axios.get(`${BACKEND_URL}/buddies/discover`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            setDiscoverData(res.data);
+        } catch (error) {
+            console.log(error);
+        } finally {
+            setIsLoadingDiscover(false);
         }
     };
 
@@ -93,75 +147,124 @@ export default function CineBuddiesScreen() {
         }
     };
 
-    const sendRequest = async (receiverId) => {
+    // --- OPTIMISTIC ACTIONS ---
+
+    const sendRequest = async (user) => {
+        // Optimistic UI Update
+        setDiscoverData(prev => ({ ...prev, sent: [...prev.sent, user] }));
+
         try {
             await axios.post(`${BACKEND_URL}/buddies/request`,
-                { receiverId },
+                { receiverId: user._id },
                 { headers: { Authorization: `Bearer ${token}` } }
             );
             Toast.show({ type: 'hotstarSuccess', text1: 'Cinerequest Sent!' });
         } catch (error) {
+            // Revert on failure
+            setDiscoverData(prev => ({ ...prev, sent: prev.sent.filter(u => u._id !== user._id) }));
             const msg = error.response?.data?.message || 'Failed to send request';
             Toast.show({ type: 'hotstarError', text1: msg });
         }
     };
 
-    const unfriendUser = async (friendId) => {
+    const unfriendUser = async (user) => {
+        // Optimistic UI Update
+        setDiscoverData(prev => ({ ...prev, friends: prev.friends.filter(f => f._id !== user._id) }));
+        setFriends(prev => prev.filter(f => f._id !== user._id));
+
         try {
             await axios.post(`${BACKEND_URL}/buddies/unfriend`,
-                { friendId },
+                { friendId: user._id },
                 { headers: { Authorization: `Bearer ${token}` } }
             );
             Toast.show({ type: 'hotstarSuccess', text1: 'Removed from CineBuddies' });
-            // Update local state to reflect removal
-            setFriends(prev => prev.filter(f => f._id !== friendId));
-            setSearchResults(prev => prev.map(u => u)); // trigger re-render
         } catch (error) {
+            fetchDiscoverData(); // Revert on fail
             Toast.show({ type: 'hotstarError', text1: 'Failed to unfriend' });
         }
     };
 
-    // Optimistic badge clearing before navigation
+    const handleRequestAction = async (action, user) => {
+        // Optimistic UI Update
+        if (action === 'accept') {
+            setDiscoverData(prev => ({
+                ...prev,
+                received: prev.received.filter(u => u._id !== user._id),
+                friends: [...prev.friends, user]
+            }));
+        } else {
+            setDiscoverData(prev => ({
+                ...prev,
+                received: prev.received.filter(u => u._id !== user._id)
+            }));
+        }
+
+        try {
+            await axios.post(`${BACKEND_URL}/buddies/${action}`,
+                { senderId: user._id },
+                { headers: { Authorization: `Bearer ${token}` } }
+            );
+            Toast.show({ type: 'hotstarSuccess', text1: `Request ${action === 'accept' ? 'Accepted' : 'Rejected'}` });
+        } catch (error) {
+            fetchDiscoverData(); // Revert on fail
+            Toast.show({ type: 'hotstarError', text1: 'Action failed' });
+        }
+    };
+
     const handleOpenChat = (friendId) => {
         setFriends(prev => prev.map(f => f._id === friendId ? { ...f, unreadCount: 0 } : f));
         router.push(`/chat?buddyId=${friendId}`);
     };
 
-    const renderFriend = ({ item }) => {
-        const initial = item.name ? item.name.charAt(0).toUpperCase() : '?';
-        return (
-            <TouchableOpacity style={styles.userCard} onPress={() => handleOpenChat(item._id)}>
+    // --- RENDER HELPERS ---
 
-                {/* NEW AVATAR WRAPPER FOR ONLINE DOT */}
-                <View style={styles.avatarWrapper}>
-                    <LinearGradient colors={['#9B51E0', '#FF007A']} style={styles.avatar}>
-                        <Text style={styles.avatarText}>{initial}</Text>
-                    </LinearGradient>
-                    {item.isOnline && <View style={styles.onlineIndicator} />}
-                </View>
-
-                <View style={styles.userInfo}>
-                    <Text style={styles.userName}>{item.name}</Text>
-                    <Text style={[styles.userEmail, item.isOnline && { color: '#00E676' }]}>
-                        {item.isOnline ? 'Online' : 'Tap to chat'}
-                    </Text>
-                </View>
-
-                {/* UNREAD CHAT BADGE */}
-                {item.unreadCount > 0 ? (
-                    <View style={styles.unreadBadge}>
-                        <Text style={styles.unreadBadgeText}>{item.unreadCount}</Text>
-                    </View>
-                ) : (
-                    <Ionicons name="chatbubble-ellipses" size={20} color="#8F98A0" />
-                )}
-            </TouchableOpacity>
-        );
+    const getUserStatus = (id) => {
+        if (discoverData.friends.some(f => f._id === id)) return 'friend';
+        if (discoverData.received.some(r => r._id === id)) return 'received';
+        if (discoverData.sent.some(s => s._id === id)) return 'sent';
+        return 'none';
     };
 
-    const renderSearchResult = ({ item }) => {
+    const renderDynamicButton = (item, status) => {
+        switch (status) {
+            case 'friend':
+                return (
+                    <TouchableOpacity style={[styles.actionBtn, styles.unfriendBtn]} onPress={() => unfriendUser(item)}>
+                        <Ionicons name="person-remove" size={16} color="#E53935" />
+                        <Text style={[styles.btnText, { color: '#E53935' }]}>Unfriend</Text>
+                    </TouchableOpacity>
+                );
+            case 'sent':
+                return (
+                    <View style={[styles.actionBtn, styles.sentBtn]}>
+                        <Ionicons name="checkmark-done" size={16} color="#B3B3B3" />
+                        <Text style={[styles.btnText, { color: '#B3B3B3' }]}>Sent</Text>
+                    </View>
+                );
+            case 'received':
+                return (
+                    <View style={styles.actionRow}>
+                        <TouchableOpacity style={styles.iconBtnAccept} onPress={() => handleRequestAction('accept', item)}>
+                            <Ionicons name="checkmark" size={20} color="#00E676" />
+                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.iconBtnReject} onPress={() => handleRequestAction('reject', item)}>
+                            <Ionicons name="close" size={20} color="#E53935" />
+                        </TouchableOpacity>
+                    </View>
+                );
+            default: // 'none'
+                return (
+                    <TouchableOpacity style={[styles.actionBtn, styles.addBtn]} onPress={() => sendRequest(item)}>
+                        <Ionicons name="person-add" size={16} color="#00E5FF" />
+                        <Text style={[styles.btnText, { color: '#00E5FF' }]}>Add</Text>
+                    </TouchableOpacity>
+                );
+        }
+    };
+
+    const renderUserItem = ({ item }) => {
         const initial = item.name ? item.name.charAt(0).toUpperCase() : '?';
-        const isAlreadyFriend = friends.some(f => f._id === item._id);
+        const status = getUserStatus(item._id);
 
         return (
             <View style={styles.userCard}>
@@ -170,22 +273,37 @@ export default function CineBuddiesScreen() {
                 </View>
                 <View style={styles.userInfo}>
                     <Text style={styles.userName}>{item.name}</Text>
-                    <Text style={styles.userEmail}>{item.email}</Text>
+                    <Text style={styles.userEmail}>{item.email || 'CineBuddy User'}</Text>
                 </View>
-
-                {/* DYNAMIC ADD / UNFRIEND BUTTON */}
-                {isAlreadyFriend ? (
-                    <TouchableOpacity style={[styles.addBtn, { borderColor: '#E53935', backgroundColor: 'rgba(229, 57, 53, 0.1)' }]} onPress={() => unfriendUser(item._id)}>
-                        <Ionicons name="person-remove" size={16} color="#E53935" />
-                        <Text style={[styles.addBtnText, { color: '#E53935' }]}>Unfriend</Text>
-                    </TouchableOpacity>
-                ) : (
-                    <TouchableOpacity style={styles.addBtn} onPress={() => sendRequest(item._id)}>
-                        <Ionicons name="person-add" size={16} color="#00E5FF" />
-                        <Text style={styles.addBtnText}>Add</Text>
-                    </TouchableOpacity>
-                )}
+                {renderDynamicButton(item, status)}
             </View>
+        );
+    };
+
+    const renderFriendChat = ({ item }) => {
+        const initial = item.name ? item.name.charAt(0).toUpperCase() : '?';
+        return (
+            <TouchableOpacity style={styles.userCard} onPress={() => handleOpenChat(item._id)}>
+                <View style={styles.avatarWrapper}>
+                    <LinearGradient colors={['#9B51E0', '#FF007A']} style={styles.avatar}>
+                        <Text style={styles.avatarText}>{initial}</Text>
+                    </LinearGradient>
+                    {item.isOnline && <View style={styles.onlineIndicator} />}
+                </View>
+                <View style={styles.userInfo}>
+                    <Text style={styles.userName}>{item.name}</Text>
+                    <Text style={[styles.userEmail, item.isOnline && { color: '#00E676' }]}>
+                        {item.isOnline ? 'Online' : 'Tap to chat'}
+                    </Text>
+                </View>
+                {item.unreadCount > 0 ? (
+                    <View style={styles.unreadBadge}>
+                        <Text style={styles.unreadBadgeText}>{item.unreadCount}</Text>
+                    </View>
+                ) : (
+                    <Ionicons name="chatbubble-ellipses" size={20} color="#8F98A0" />
+                )}
+            </TouchableOpacity>
         );
     };
 
@@ -214,7 +332,7 @@ export default function CineBuddiesScreen() {
                     <FlatList
                         data={friends}
                         keyExtractor={item => item._id}
-                        renderItem={renderFriend}
+                        renderItem={renderFriendChat}
                         contentContainerStyle={styles.listContent}
                         ListEmptyComponent={<Text style={styles.emptyText}>You have no CineBuddies yet. Go to Discover to find friends!</Text>}
                     />
@@ -233,19 +351,39 @@ export default function CineBuddiesScreen() {
                             returnKeyType="search"
                             autoCapitalize="none"
                         />
+                        {searchQuery.length > 0 && (
+                            <TouchableOpacity onPress={() => { setSearchQuery(''); setSearchResults([]); }}>
+                                <Ionicons name="close-circle" size={20} color="#8F98A0" />
+                            </TouchableOpacity>
+                        )}
                     </View>
 
-                    {isSearching ? (
+                    {isSearching || isLoadingDiscover ? (
                         <ActivityIndicator size="large" color="#00E5FF" style={{ marginTop: 40 }} />
-                    ) : (
+                    ) : searchQuery ? (
                         <FlatList
                             data={searchResults}
                             keyExtractor={item => item._id}
-                            renderItem={renderSearchResult}
+                            renderItem={renderUserItem}
                             contentContainerStyle={styles.listContent}
-                            ListEmptyComponent={
-                                searchQuery ? <Text style={styles.emptyText}>No users found.</Text> : null
-                            }
+                            ListEmptyComponent={<Text style={styles.emptyText}>No users found.</Text>}
+                        />
+                    ) : (
+                        <FlatList
+                            data={[
+                                ...(discoverData.received.length ? [{ isHeader: true, title: 'Received Requests' }, ...discoverData.received] : []),
+                                ...(discoverData.sent.length ? [{ isHeader: true, title: 'Sent Requests' }, ...discoverData.sent] : []),
+                                ...(discoverData.friends.length ? [{ isHeader: true, title: 'Your Friends' }, ...discoverData.friends] : [])
+                            ]}
+                            keyExtractor={(item, index) => item.isHeader ? item.title : item._id}
+                            renderItem={({ item }) => {
+                                if (item.isHeader) {
+                                    return <Text style={styles.sectionHeader}>{item.title}</Text>;
+                                }
+                                return renderUserItem({ item });
+                            }}
+                            contentContainerStyle={styles.listContent}
+                            ListEmptyComponent={<Text style={styles.emptyText}>No recent activity. Search for users to add them!</Text>}
                         />
                     )}
                 </View>
@@ -268,21 +406,21 @@ const styles = StyleSheet.create({
 
     listContent: { paddingHorizontal: 16, paddingBottom: 40 },
     emptyText: { color: '#8F98A0', textAlign: 'center', marginTop: 40, fontSize: 15, paddingHorizontal: 20 },
+    sectionHeader: { color: '#FFFFFF', fontSize: 16, fontWeight: 'bold', marginTop: 20, marginBottom: 10, marginLeft: 4 },
 
     userCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#17171C', padding: 12, borderRadius: 12, marginBottom: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
 
-    // NEW AVATAR STYLES (Wrapper for the Green Dot)
     avatarWrapper: { position: 'relative', marginRight: 14 },
-    avatar: { width: 44, height: 44, borderRadius: 22, justifyContent: 'center', alignItems: 'center' },
+    avatar: { width: 44, height: 44, borderRadius: 22, justifyContent: 'center', alignItems: 'center', marginRight: 14 },
     avatarText: { color: '#FFF', fontSize: 18, fontWeight: 'bold' },
     onlineIndicator: {
         position: 'absolute',
-        bottom: -2, right: -2,
+        bottom: -2, right: 10,
         width: 14, height: 14,
         borderRadius: 7,
         backgroundColor: '#00E676',
         borderWidth: 2.5,
-        borderColor: '#17171C' // Matches userCard background 
+        borderColor: '#17171C'
     },
 
     userInfo: { flex: 1 },
@@ -292,10 +430,17 @@ const styles = StyleSheet.create({
     unreadBadge: { backgroundColor: '#00E5FF', borderRadius: 12, paddingHorizontal: 8, paddingVertical: 2, minWidth: 24, alignItems: 'center' },
     unreadBadgeText: { color: '#000', fontSize: 12, fontWeight: 'bold' },
 
-    addBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0, 229, 255, 0.1)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, borderWidth: 1, borderColor: 'rgba(0, 229, 255, 0.3)', gap: 6 },
-    addBtnText: { color: '#00E5FF', fontWeight: 'bold', fontSize: 13 },
+    actionBtn: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, borderWidth: 1, gap: 6 },
+    addBtn: { backgroundColor: 'rgba(0, 229, 255, 0.1)', borderColor: 'rgba(0, 229, 255, 0.3)' },
+    unfriendBtn: { backgroundColor: 'rgba(229, 57, 53, 0.1)', borderColor: 'rgba(229, 57, 53, 0.3)' },
+    sentBtn: { backgroundColor: 'rgba(255, 255, 255, 0.05)', borderColor: 'rgba(255, 255, 255, 0.1)' },
+    btnText: { fontWeight: 'bold', fontSize: 13 },
+
+    actionRow: { flexDirection: 'row', gap: 8 },
+    iconBtnAccept: { width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(0, 230, 118, 0.1)', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(0, 230, 118, 0.3)' },
+    iconBtnReject: { width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(229, 57, 53, 0.1)', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(229, 57, 53, 0.3)' },
 
     discoverContainer: { flex: 1 },
-    searchBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#17171C', marginHorizontal: 16, paddingHorizontal: 16, height: 50, borderRadius: 25, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)', marginBottom: 16 },
-    searchInput: { flex: 1, color: '#FFF', fontSize: 15, marginLeft: 10 }
+    searchBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#17171C', marginHorizontal: 16, paddingHorizontal: 16, height: 50, borderRadius: 25, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)', marginBottom: 8 },
+    searchInput: { flex: 1, color: '#FFF', fontSize: 15, marginLeft: 10, marginRight: 10 }
 });

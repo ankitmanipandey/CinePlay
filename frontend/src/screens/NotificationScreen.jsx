@@ -90,6 +90,9 @@ export default function NotificationsScreen() {
         const isInvite = item.type === 'THEATRE_INVITE';
         const senderName = item.senderId?.name || 'Someone';
 
+        // 🚨 FAULT TOLERANCE: Safely extract ID even if population failed
+        const safeSenderId = typeof item.senderId === 'object' ? item.senderId._id : item.senderId;
+
         return (
             <View style={styles.notificationCard}>
                 <View style={styles.iconContainer}>
@@ -108,10 +111,10 @@ export default function NotificationsScreen() {
 
                     {isRequest && (
                         <View style={styles.actionButtons}>
-                            <TouchableOpacity style={[styles.btn, styles.acceptBtn]} onPress={() => handleAction('accept', item._id, item.senderId._id)}>
+                            <TouchableOpacity style={[styles.btn, styles.acceptBtn]} onPress={() => handleAction('accept', item._id, safeSenderId)}>
                                 <Text style={styles.btnText}>Accept</Text>
                             </TouchableOpacity>
-                            <TouchableOpacity style={[styles.btn, styles.rejectBtn]} onPress={() => handleAction('reject', item._id, item.senderId._id)}>
+                            <TouchableOpacity style={[styles.btn, styles.rejectBtn]} onPress={() => handleAction('reject', item._id, safeSenderId)}>
                                 <Text style={[styles.btnText, { color: '#E53935' }]}>Reject</Text>
                             </TouchableOpacity>
                         </View>

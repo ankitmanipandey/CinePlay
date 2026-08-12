@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { StyleSheet, Text, View, TextInput, TouchableOpacity, FlatList, KeyboardAvoidingView, Platform, ActivityIndicator } from 'react-native';
+import { StyleSheet, Text, View, TextInput, TouchableOpacity, FlatList, KeyboardAvoidingView, Platform, ActivityIndicator, Keyboard } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -18,7 +18,7 @@ export default function ChatScreen() {
     const safeBuddyId = Array.isArray(buddyId) ? buddyId[0] : buddyId;
 
     const { token, user } = useAuthStore();
-    const { globalSocket } = useGlobalSocket();
+    const { globalSocket, setActiveChat } = useGlobalSocket()
 
     const [messages, setMessages] = useState([]);
     const [buddyInfo, setBuddyInfo] = useState(null);
@@ -64,6 +64,14 @@ export default function ChatScreen() {
 
         fetchHistory();
     }, [safeBuddyId]);
+
+    useEffect(() => {
+        if (safeBuddyId) {
+            setActiveChat(safeBuddyId);
+        }
+        // Cleanup when we leave the screen
+        return () => setActiveChat(null);
+    }, [safeBuddyId, setActiveChat]);
 
     // Real-Time Listeners
     useEffect(() => {

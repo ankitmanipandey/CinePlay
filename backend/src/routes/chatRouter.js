@@ -24,7 +24,6 @@ chatRouter.get('/:buddyId', protect, async (req, res) => {
         const onlineUsers = req.app.locals.onlineUsers;
         const isOnline = onlineUsers ? onlineUsers.has(req.params.buddyId.toString()) : false;
 
-        // strip friends out of the object you send back to the client — no need to expose it
         const { friends, ...buddyPublic } = buddy.toObject();
 
         res.status(200).json({
@@ -58,9 +57,12 @@ chatRouter.post('/send', protect, async (req, res) => {
             isRead: false
         });
 
+        const senderUser = await User.findById(req.user._id);
+
         const cleanMessage = {
             _id: newMessage._id.toString(),
             sender: newMessage.sender.toString(),
+            senderName: senderUser.name,
             receiver: newMessage.receiver.toString(),
             text: newMessage.text,
             createdAt: newMessage.createdAt
@@ -72,20 +74,18 @@ chatRouter.post('/send', protect, async (req, res) => {
 
         if (receiverSocketId) {
             globalNamespace.to(receiverSocketId).emit('receive_direct_message', cleanMessage);
-        }
-
-        const senderUser = await User.findById(req.user._id);
-
-        if (receiverUser.expoPushToken && Expo.isExpoPushToken(receiverUser.expoPushToken)) {
-            let expo = new Expo();
-            let pushMessages = [{
-                to: receiverUser.expoPushToken,
-                sound: 'default',
-                title: senderUser.name,
-                body: text,
-                data: { buddyId: senderUser._id, type: 'NEW_CHAT' },
-            }];
-            try { await expo.sendPushNotificationsAsync(pushMessages); } catch (pushErr) { }
+        } else {
+            if (receiverUser.expoPushToken && Expo.isExpoPushToken(receiverUser.expoPushToken)) {
+                let expo = new Expo();
+                let pushMessages = [{
+                    to: receiverUser.expoPushToken,
+                    sound: 'default',
+                    title: senderUser.name,
+                    body: text,
+                    data: { buddyId: senderUser._id, type: 'NEW_CHAT' },
+                }];
+                try { await expo.sendPushNotificationsAsync(pushMessages); } catch (pushErr) { }
+            }
         }
 
         res.status(201).json(newMessage);
