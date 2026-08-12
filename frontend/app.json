@@ -3,6 +3,12 @@
     "name": "CinePlay",
     "slug": "cineplay",
     "version": "1.0.0",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/3bfb20e0-6dd2-4c96-9f25-40a7430c15c7"
+    },
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "cineplay",
