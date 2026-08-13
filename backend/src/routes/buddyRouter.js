@@ -165,7 +165,6 @@ buddyRouter.post('/accept', protect, async (req, res) => {
 
 
 // 4. REJECT REQUEST
-// 4. REJECT REQUEST (Updated)
 buddyRouter.post('/reject', protect, async (req, res) => {
     try {
         const { notificationId, senderId } = req.body;
@@ -186,17 +185,22 @@ buddyRouter.post('/reject', protect, async (req, res) => {
         user.friendRequests = user.friendRequests.filter(id => id.toString() !== senderId.toString());
 
         // 2. Identify the type of notification BEFORE clearing it
-        let notificationType = 'CINEREQUEST';
+        let notificationType = null; // 👈 FIX 1: Do not default to CINEREQUEST
 
         if (notificationId) {
             const targetNotif = user.notifications.find(n => n._id.toString() === notificationId);
-            if (targetNotif) {
-                notificationType = targetNotif.type;
+
+            // 👈 FIX 2: If the notification was already deleted on the first click, stop here safely!
+            if (!targetNotif) {
+                return res.status(200).json({ message: 'Notification already handled' });
             }
+
+            notificationType = targetNotif.type;
             // Clear the notification
             user.notifications = user.notifications.filter(n => n._id.toString() !== notificationId);
         } else {
             // Fallback clear
+            notificationType = 'CINEREQUEST';
             user.notifications = user.notifications.filter(n =>
                 !(n.type === 'CINEREQUEST' && n.senderId.toString() === senderId.toString())
             );
@@ -224,6 +228,7 @@ buddyRouter.post('/reject', protect, async (req, res) => {
                 globalNamespace.to(senderSocketId).emit('request_rejected', savedRejection);
             } else {
                 if (sender.expoPushToken && Expo.isExpoPushToken(sender.expoPushToken)) {
+                    const { Expo } = require('expo-server-sdk');
                     let expo = new Expo();
                     let pushMessages = [{
                         to: sender.expoPushToken,
@@ -341,11 +346,24 @@ buddyRouter.post('/invite', protect, async (req, res) => {
         const rooms = req.app.locals.rooms;
         const room = rooms ? rooms[roomId] : null;
 
+        // ==========================================
+        // NEW IN-MEMORY BLOCK & AUTO-FORGIVE LOGIC 
+        // ==========================================
         if (room && room.hostUserId) {
-            const hostUser = await User.findById(room.hostUserId);
-            if (hostUser && hostUser.blockedUsers.includes(receiverId)) {
-                return res.status(403).json({ message: 'Your Friend is blocked by Creator.' });
+            // 1. Check Room-Specific Memory Block List instead of MongoDB!
+            const isBlocked = room.blockedUsers && room.blockedUsers.includes(receiverId.toString());
+
+            if (isBlocked) {
+                // If the HOST is the one sending the invite, forgive and unblock!
+                if (senderId.toString() === room.hostUserId.toString()) {
+                    room.blockedUsers = room.blockedUsers.filter(id => id !== receiverId.toString());
+                } else {
+                    // If a regular viewer is trying to invite someone the Host blocked, stop them.
+                    return res.status(403).json({ message: 'Your Friend is blocked from this room.' });
+                }
             }
+
+            // 2. Pre-approve the user if the Host invited them (bypasses gates)
             if (room.hostUserId.toString() === senderId.toString()) {
                 room.preApprovedUsers = room.preApprovedUsers || [];
                 if (!room.preApprovedUsers.includes(receiverId.toString())) {
@@ -353,6 +371,7 @@ buddyRouter.post('/invite', protect, async (req, res) => {
                 }
             }
         }
+        // ==========================================
 
         const displayTitle = videoTitle ? `"${videoTitle}"` : 'a video';
         const notificationMessage = `You got a Theatre Invite from ${sender.name} for ${displayTitle}, click to join`;
@@ -375,6 +394,7 @@ buddyRouter.post('/invite', protect, async (req, res) => {
             globalNamespace.to(receiverSocketId).emit('new_notification', savedNotification);
         } else {
             if (receiver.expoPushToken && Expo.isExpoPushToken(receiver.expoPushToken)) {
+                const { Expo } = require('expo-server-sdk'); // Ensure Expo is required if not at top
                 let expo = new Expo();
                 let messages = [{
                     to: receiver.expoPushToken,

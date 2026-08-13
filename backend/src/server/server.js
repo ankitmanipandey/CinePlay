@@ -60,7 +60,8 @@ apiNamespace.on('connection', (socket) => {
             socket.data.roomId = roomId;
             socket.data.username = username;
 
-            rooms[roomId] = rooms[roomId] || { users: {} };
+            // NEW: Initialize Memory Block & Pre-Approve Arrays for the room
+            rooms[roomId] = rooms[roomId] || { users: {}, blockedUsers: [], preApprovedUsers: [] };
             rooms[roomId].hostSocketId = socket.id;
             rooms[roomId].hostUserId = userId; // Save Host's DB ID to check relationships later
             rooms[roomId].users[socket.id] = username;
@@ -76,19 +77,27 @@ apiNamespace.on('connection', (socket) => {
                     return askPermission();
                 }
 
+                // 1. Check if Blocked FOR THIS SPECIFIC ROOM (Memory Check)
+                const isBlocked = room.blockedUsers && room.blockedUsers.includes(userId.toString());
+                if (isBlocked) {
+                    return socket.emit('entry_denied', { reason: 'You have been blocked from this specific room.' });
+                }
+
+                // 2. Check if Pre-Approved (Host invited them, bypassing blocks/knocking)
+                const isPreApproved = room.preApprovedUsers && room.preApprovedUsers.includes(userId.toString());
+                if (isPreApproved) {
+                    return completeJoin();
+                }
+
+                // 3. Check if Direct Friend
                 const hostUser = await User.findById(room.hostUserId);
                 if (!hostUser) return socket.emit('room_not_found');
 
-                // 1. Check if Blocked
-                if (hostUser.blockedUsers.includes(userId)) {
-                    return socket.emit('entry_denied', { reason: 'You do not have permission to enter this room.' });
-                }
-
-                // 2. Check if Direct Friend
-                if (hostUser.friends.includes(userId)) {
+                const isFriend = hostUser.friends.some(id => id.toString() === userId.toString());
+                if (isFriend) {
                     return completeJoin();
                 } else {
-                    // 3. Friend of Friend - Must ask permission
+                    // 4. Friend of Friend - Must ask permission
                     return askPermission();
                 }
             } catch (err) {
@@ -109,6 +118,7 @@ apiNamespace.on('connection', (socket) => {
             socket.join(roomId);
             socket.data.roomId = roomId;
             socket.data.username = username;
+            socket.data.userId = userId; // 👈 Save the DB ID so we can block them later!
             rooms[roomId].users[socket.id] = username;
 
             const state = rooms[roomId];
@@ -132,6 +142,7 @@ apiNamespace.on('connection', (socket) => {
             joinerSocket.join(roomId);
             joinerSocket.data.roomId = roomId;
             joinerSocket.data.username = joinerName;
+            joinerSocket.data.userId = joinerId; // 👈 Save the DB ID here too!
             rooms[roomId].users[joinerSocketId] = joinerName;
 
             joinerSocket.emit('entry_approved');
@@ -148,14 +159,13 @@ apiNamespace.on('connection', (socket) => {
         } else if (decision === 'REJECT') {
             joinerSocket.emit('entry_denied', { reason: 'The host declined your request to join.' });
         } else if (decision === 'BLOCK') {
-            joinerSocket.emit('entry_denied', { reason: 'You do not have permission to enter this room.' });
+            joinerSocket.emit('entry_denied', { reason: 'You have been blocked from this specific room.' });
 
-            // Add to DB Blocked List
-            if (joinerId && hostUserId) {
-                const hostUser = await User.findById(hostUserId);
-                if (hostUser && !hostUser.blockedUsers.includes(joinerId)) {
-                    hostUser.blockedUsers.push(joinerId);
-                    await hostUser.save();
+            // Add to Room's Memory Block List (Not MongoDB)
+            if (joinerId) {
+                rooms[roomId].blockedUsers = rooms[roomId].blockedUsers || [];
+                if (!rooms[roomId].blockedUsers.includes(joinerId.toString())) {
+                    rooms[roomId].blockedUsers.push(joinerId.toString());
                 }
             }
         }
@@ -172,6 +182,7 @@ apiNamespace.on('connection', (socket) => {
     });
     socket.on('send_chat', (data) => { socket.to(data.roomId).emit('receive_chat', data); });
     socket.on('close_room', (roomId) => { delete rooms[roomId]; socket.to(roomId).emit('room_closed'); });
+
     // --- MODERATION: KICK USER ---
     socket.on('kick_user', ({ roomId, targetUsername }) => {
         const room = rooms[roomId];
@@ -211,23 +222,23 @@ apiNamespace.on('connection', (socket) => {
 
             if (targetSocket) {
                 targetUserId = targetSocket.data.userId; // We saved this during join_room!
-                targetSocket.emit('kicked_from_room', { reason: 'You were blocked by the host.' });
+                targetSocket.emit('kicked_from_room', { reason: 'You were blocked by the host for this room.' });
                 targetSocket.leave(roomId);
             }
 
             delete room.users[targetSocketId];
             emitRoomUsers(roomId);
 
-            // Add to Host's Blocked List in MongoDB
-            if (hostUserId && targetUserId) {
-                const hostUser = await User.findById(hostUserId);
-                if (hostUser && !hostUser.blockedUsers.includes(targetUserId)) {
-                    hostUser.blockedUsers.push(targetUserId);
-                    await hostUser.save();
+            // Add to Room's Memory Block List (Not MongoDB)
+            if (targetUserId) {
+                rooms[roomId].blockedUsers = rooms[roomId].blockedUsers || [];
+                if (!rooms[roomId].blockedUsers.includes(targetUserId.toString())) {
+                    rooms[roomId].blockedUsers.push(targetUserId.toString());
                 }
             }
         }
     });
+
     socket.on('disconnect', () => {
         const roomId = socket.data.roomId;
 
@@ -311,4 +322,4 @@ const startServer = async () => {
     }
 };
 
-startServer();
+startServer();  
