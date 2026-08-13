@@ -309,15 +309,16 @@ const styles = StyleSheet.create({
   },
   toastWrapper: {
     width: '100%',
-    alignItems: 'flex-end',
-    paddingRight: 20,
+    alignItems: 'center', // Centers the toast on the screen
+    paddingHorizontal: 16, // Keeps it from touching the left/right edges
   },
   toastContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 10,
+    width: '100%', // Ensures it fills the safe area but respects the padding above
+    paddingVertical: 12,
     paddingHorizontal: 16,
-    borderRadius: 24,
+    borderRadius: 16, // Slightly tighter radius looks better for full-width toasts
     elevation: 5,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
@@ -325,8 +326,8 @@ const styles = StyleSheet.create({
     shadowRadius: 3.84,
   },
   toastTextContainer: {
-    marginLeft: 8,
-    flexDirection: 'column',
+    marginLeft: 12,
+    flex: 1, // THIS IS THE FIX: Forces long text to wrap inside the container
   },
   toastText: {
     color: '#FFFFFF',
@@ -335,7 +336,8 @@ const styles = StyleSheet.create({
   },
   toastSubText: {
     color: '#E0E0E0',
-    fontSize: 12,
-    marginTop: 2,
+    fontSize: 13, // Slightly bumped up for readability
+    marginTop: 4,
+    lineHeight: 18, // Adds breathing room for multi-line text
   }
 });

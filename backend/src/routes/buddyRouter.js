@@ -165,6 +165,7 @@ buddyRouter.post('/accept', protect, async (req, res) => {
 
 
 // 4. REJECT REQUEST
+// 4. REJECT REQUEST (Updated)
 buddyRouter.post('/reject', protect, async (req, res) => {
     try {
         const { notificationId, senderId } = req.body;
@@ -184,10 +185,18 @@ buddyRouter.post('/reject', protect, async (req, res) => {
         // 1. Clean up friend request array
         user.friendRequests = user.friendRequests.filter(id => id.toString() !== senderId.toString());
 
-        // 2. Clear the notification card (safely handles missing notificationId)
+        // 2. Identify the type of notification BEFORE clearing it
+        let notificationType = 'CINEREQUEST';
+
         if (notificationId) {
+            const targetNotif = user.notifications.find(n => n._id.toString() === notificationId);
+            if (targetNotif) {
+                notificationType = targetNotif.type;
+            }
+            // Clear the notification
             user.notifications = user.notifications.filter(n => n._id.toString() !== notificationId);
         } else {
+            // Fallback clear
             user.notifications = user.notifications.filter(n =>
                 !(n.type === 'CINEREQUEST' && n.senderId.toString() === senderId.toString())
             );
@@ -195,42 +204,47 @@ buddyRouter.post('/reject', protect, async (req, res) => {
 
         await user.save();
 
-        // 3. Create and save rejection alert for the sender
-        const rejectionAlert = {
-            type: 'REJECTED_ALERT',
-            senderId: userId,
-            message: `${user.name} rejected your Cinerequest.`
-        };
-        sender.notifications.push(rejectionAlert);
-        await sender.save();
+        // 3. ONLY fire the rejection alert if they actually rejected a friend request
+        if (notificationType === 'CINEREQUEST') {
+            const rejectionAlert = {
+                type: 'REJECTED_ALERT',
+                senderId: userId,
+                message: `${user.name} rejected your Cinerequest.`
+            };
+            sender.notifications.push(rejectionAlert);
+            await sender.save();
 
-        // 4. Initialize Socket & Push logic
-        const globalNamespace = req.app.locals.globalNamespace;
-        const onlineUsers = req.app.locals.onlineUsers;
-        const senderSocketId = onlineUsers.get(senderId.toString());
+            // 4. Initialize Socket & Push logic
+            const globalNamespace = req.app.locals.globalNamespace;
+            const onlineUsers = req.app.locals.onlineUsers;
+            const senderSocketId = onlineUsers.get(senderId.toString());
 
-        if (senderSocketId) {
-            const savedRejection = sender.notifications[sender.notifications.length - 1];
-            globalNamespace.to(senderSocketId).emit('request_rejected', savedRejection);
-        } else {
-            if (sender.expoPushToken && Expo.isExpoPushToken(sender.expoPushToken)) {
-                let expo = new Expo();
-                let pushMessages = [{
-                    to: sender.expoPushToken,
-                    sound: 'default',
-                    title: 'Cinerequest Update',
-                    body: `${user.name} rejected your Cinerequest.`,
-                    data: { type: 'REJECTED_ALERT' },
-                }];
-                try {
-                    await expo.sendPushNotificationsAsync(pushMessages);
-                } catch (pushErr) {
-                    console.error('Expo Push Failed:', pushErr);
+            if (senderSocketId) {
+                const savedRejection = sender.notifications[sender.notifications.length - 1];
+                globalNamespace.to(senderSocketId).emit('request_rejected', savedRejection);
+            } else {
+                if (sender.expoPushToken && Expo.isExpoPushToken(sender.expoPushToken)) {
+                    let expo = new Expo();
+                    let pushMessages = [{
+                        to: sender.expoPushToken,
+                        sound: 'default',
+                        title: 'Cinerequest Update',
+                        body: `${user.name} rejected your Cinerequest.`,
+                        data: { type: 'REJECTED_ALERT' },
+                    }];
+                    try {
+                        await expo.sendPushNotificationsAsync(pushMessages);
+                    } catch (pushErr) {
+                        console.error('Expo Push Failed:', pushErr);
+                    }
                 }
             }
+
+            return res.status(200).json({ message: 'Cinerequest rejected' });
         }
 
-        res.status(200).json({ message: 'Cinerequest rejected' });
+        // If it was just a THEATRE_INVITE being dismissed, exit quietly
+        res.status(200).json({ message: 'Notification dismissed silently' });
 
     } catch (error) {
         console.error('Reject Request Error:', error);

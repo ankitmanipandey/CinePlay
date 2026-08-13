@@ -23,7 +23,7 @@ import { Ionicons } from '@expo/vector-icons';
 import io from 'socket.io-client';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import Toast from 'react-native-toast-message';
-import { LinearGradient } from 'expo-linear-gradient'; // <-- Added import
+import { LinearGradient } from 'expo-linear-gradient';
 import axios from 'axios';
 
 import TheatrePlayer from '../screens/TheatrePlayer';
@@ -70,7 +70,6 @@ export default function TheatreScreen() {
     const isHostBool = isHost === 'true';
 
     // --- Loading State ---
-    // Viewers start in a "joining" state until the server confirms the room exists
     const [isJoining, setIsJoining] = useState(!isHostBool);
 
     // --- User Identity & Room State ---
@@ -100,12 +99,15 @@ export default function TheatreScreen() {
     const [chatInput, setChatInput] = useState('');
     const chatListRef = useRef(null);
 
-    // --- NEW: Keyboard State ---
+    // --- Keyboard State ---
     const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
 
+    // --- Share & Invites State ---
     const [isShareModalVisible, setIsShareModalVisible] = useState(false);
     const [friendsList, setFriendsList] = useState([]);
     const [isFetchingFriends, setIsFetchingFriends] = useState(false);
+    const [selectedFriends, setSelectedFriends] = useState([]);
+
     const [isWaitingForHost, setIsWaitingForHost] = useState(false);
     const [pendingJoinRequest, setPendingJoinRequest] = useState(null);
 
@@ -188,7 +190,6 @@ export default function TheatreScreen() {
                 text2: 'This room does not exist or has been closed.',
                 position: 'top'
             });
-            // Safe routing exit
             if (router.canGoBack()) {
                 router.back();
             } else {
@@ -244,7 +245,6 @@ export default function TheatreScreen() {
 
         newSocket.on('receive_chat', (data) => {
             setMessages(prev => [...prev, data]);
-            // Optional: Auto-scroll on new message
             setTimeout(() => {
                 chatListRef.current?.scrollToEnd({ animated: true });
             }, 100);
@@ -253,7 +253,6 @@ export default function TheatreScreen() {
         newSocket.on('room_closed', () => {
             if (!isHostBool) {
                 Toast.show({ type: 'hotstarError', text1: 'Room Closed', text2: 'The host has ended the watch party.', position: 'top' });
-                // Safe routing exit
                 if (router.canGoBack()) {
                     router.back();
                 } else {
@@ -312,9 +311,7 @@ export default function TheatreScreen() {
         Keyboard.dismiss();
         setIsSearching(true);
         try {
-            // Apply the dynamic round-robin URL template instead of standard fetch
             const searchUrlTemplate = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(searchInput)}&type=video&maxResults=10&key=__API_KEY__`;
-
             const data = await fetchYouTubeWithRetry(searchUrlTemplate);
 
             if (data.error) {
@@ -395,6 +392,54 @@ export default function TheatreScreen() {
         setChatInput('');
     };
 
+    // --- INSTAGRAM-STYLE INVITE LOGIC ---
+    const openShareModal = async () => {
+        if (!user) {
+            Toast.show({ type: 'hotstarInfo', text1: 'Log in to invite friends!' });
+            return;
+        }
+        setIsShareModalVisible(true);
+        setSelectedFriends([]); // Reset selections when opened
+        setIsFetchingFriends(true);
+        try {
+            const res = await axios.get(`${BACKEND_URL}/buddies/list`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            setFriendsList(res.data);
+        } catch (error) {
+            Toast.show({ type: 'hotstarError', text1: 'Failed to load friends.' });
+        } finally {
+            setIsFetchingFriends(false);
+        }
+    };
+
+    const toggleFriendSelection = (id) => {
+        setSelectedFriends(prev =>
+            prev.includes(id) ? prev.filter(fId => fId !== id) : [...prev, id]
+        );
+    };
+
+    const sendBulkTheatreInvites = async () => {
+        if (selectedFriends.length === 0) return;
+
+        try {
+            // Fire off all invites simultaneously
+            await Promise.all(selectedFriends.map(receiverId =>
+                axios.post(`${BACKEND_URL}/buddies/invite`,
+                    { receiverId, roomId, videoTitle },
+                    { headers: { Authorization: `Bearer ${token}` } }
+                )
+            ));
+
+            Toast.show({ type: 'hotstarSuccess', text1: 'Invites Sent!' });
+            setIsShareModalVisible(false);
+            setSelectedFriends([]);
+        } catch (error) {
+            const msg = error.response?.data?.message || 'Failed to send some invites.';
+            Toast.show({ type: 'hotstarError', text1: msg });
+        }
+    };
+
     const renderSearchResult = ({ item }) => (
         <TouchableOpacity style={styles.resultCard} activeOpacity={0.8} onPress={() => handleSelectVideo(item.id.videoId, item.snippet?.title)}>
             <Image source={{ uri: item.snippet?.thumbnails?.medium?.url }} style={styles.resultImage} />
@@ -426,40 +471,6 @@ export default function TheatreScreen() {
                 )}
             </View>
         );
-    };
-
-    const openShareModal = async () => {
-        if (!user) {
-            Toast.show({ type: 'hotstarInfo', text1: 'Log in to invite friends!' });
-            return;
-        }
-        setIsShareModalVisible(true);
-        setIsFetchingFriends(true);
-        try {
-            const res = await axios.get(`${BACKEND_URL}/buddies/list`, {
-                headers: { Authorization: `Bearer ${token}` }
-            });
-            setFriendsList(res.data);
-        } catch (error) {
-            Toast.show({ type: 'hotstarError', text1: 'Failed to load friends.' });
-        } finally {
-            setIsFetchingFriends(false);
-        }
-    };
-
-    const sendTheatreInvite = async (receiverId) => {
-        try {
-            await axios.post(`${BACKEND_URL}/buddies/invite`,
-                { receiverId, roomId, videoTitle }, // <-- ADDED videoTitle here!
-                { headers: { Authorization: `Bearer ${token}` } }
-            );
-            Toast.show({ type: 'hotstarSuccess', text1: 'Invite Sent!' });
-            setIsShareModalVisible(false);
-        } catch (error) {
-            // This will perfectly grab the 'Your Friend is blocked by Creator.' message
-            const msg = error.response?.data?.message || 'Failed to send invite.';
-            Toast.show({ type: 'hotstarError', text1: msg });
-        }
     };
 
     const actualWidth = Math.max(width, height);
@@ -542,7 +553,6 @@ export default function TheatreScreen() {
                     <>
                         {videoTitle !== '' && (
                             <View style={styles.nowPlayingBar}>
-                                {/* Using Theme Cyan */}
                                 <Ionicons name="play" size={14} color="#00E5FF" />
                                 <Text style={styles.nowPlayingText} numberOfLines={1}>
                                     <Text style={{ color: '#8F98A0', fontWeight: 'bold' }}>Now Playing: </Text>
@@ -561,10 +571,8 @@ export default function TheatreScreen() {
                                 </TouchableOpacity>
                             </View>
 
-                            {/* Flexible spacer prevents left and right controls from ever colliding */}
                             <View style={{ flex: 1, minWidth: 16 }} />
 
-                            {/* Wrap right controls in a ScrollView for narrow screens */}
                             <ScrollView
                                 horizontal
                                 showsHorizontalScrollIndicator={false}
@@ -575,7 +583,7 @@ export default function TheatreScreen() {
                                     <Ionicons name="paper-plane" size={16} color="#00E5FF" />
                                     <Text style={[styles.externalBtnText, { color: '#00E5FF' }]}>Share</Text>
                                 </TouchableOpacity>
-                                {/* Using Theme Purple */}
+
                                 <View style={[styles.externalBtn, { backgroundColor: 'rgba(155, 81, 224, 0.15)' }]}>
                                     <Ionicons name="key" size={16} color="#9B51E0" />
                                     <Text style={[styles.externalBtnText, { color: '#9B51E0', letterSpacing: 1 }]}>{roomId}</Text>
@@ -604,7 +612,7 @@ export default function TheatreScreen() {
                                             >
                                                 <View style={styles.userChipDot} />
                                                 <Text style={styles.userChipText}>{name}</Text>
-                                            </TouchableOpacity> /* <-- Fixed closing tag here */
+                                            </TouchableOpacity>
                                         ))}
                                 </ScrollView>
                             </View>
@@ -645,7 +653,6 @@ export default function TheatreScreen() {
                                         returnKeyType="search"
                                         selectionColor="#9B51E0"
                                     />
-                                    {/* Updated Push/Search Button with Gradient */}
                                     <TouchableOpacity style={styles.pushBtnContainer} onPress={handleSearch}>
                                         <LinearGradient
                                             colors={['#00E5FF', '#9B51E0', '#FF007A']}
@@ -682,7 +689,6 @@ export default function TheatreScreen() {
                             <View style={styles.chatPanel}>
                                 {/* HIDE VIEWER HEADER WHEN KEYBOARD IS VISIBLE */}
                                 {!isHostBool && !isKeyboardVisible && (
-                                    // Using Theme Pink
                                     <View style={styles.viewerHeader}>
                                         <Ionicons name="lock-closed" size={16} color="#FF007A" />
                                         <Text style={styles.viewerHeaderText}>Viewer Mode: Sit back & enjoy</Text>
@@ -712,7 +718,6 @@ export default function TheatreScreen() {
                                         returnKeyType="send"
                                         selectionColor="#9B51E0"
                                     />
-                                    {/* Updated Send Button with Gradient */}
                                     <TouchableOpacity
                                         style={[styles.sendBtnContainer, !chatInput.trim() && { opacity: 0.5 }]}
                                         onPress={handleSendMessage}
@@ -733,6 +738,7 @@ export default function TheatreScreen() {
                     </View>
                 </View>
             </KeyboardAvoidingView>
+
             {/* INSTAGRAM-STYLE SHARE BOTTOM SHEET */}
             <Modal visible={isShareModalVisible} transparent={true} animationType="slide" onRequestClose={() => setIsShareModalVisible(false)}>
                 <View style={styles.modalOverlay}>
@@ -747,23 +753,49 @@ export default function TheatreScreen() {
                         {isFetchingFriends ? (
                             <ActivityIndicator size="large" color="#00E5FF" style={{ marginVertical: 40 }} />
                         ) : (
-                            <FlatList
-                                data={friendsList}
-                                keyExtractor={item => item._id}
-                                contentContainerStyle={{ paddingBottom: 20 }}
-                                ListEmptyComponent={<Text style={{ color: '#8F98A0', textAlign: 'center', marginTop: 20 }}>No CineBuddies found.</Text>}
-                                renderItem={({ item }) => (
-                                    <View style={styles.friendRow}>
-                                        <View style={styles.friendAvatar}>
-                                            <Text style={styles.friendAvatarText}>{item.name.charAt(0).toUpperCase()}</Text>
-                                        </View>
-                                        <Text style={styles.friendName}>{item.name}</Text>
-                                        <TouchableOpacity style={styles.sendInviteBtn} onPress={() => sendTheatreInvite(item._id)}>
-                                            <Text style={styles.sendInviteText}>Send</Text>
-                                        </TouchableOpacity>
-                                    </View>
-                                )}
-                            />
+                            <View style={{ flex: 1 }}>
+                                <FlatList
+                                    data={friendsList}
+                                    keyExtractor={item => item._id}
+                                    numColumns={4}
+                                    columnWrapperStyle={{ justifyContent: 'flex-start', marginBottom: 20 }}
+                                    contentContainerStyle={{ paddingBottom: 20, paddingTop: 10 }}
+                                    ListEmptyComponent={<Text style={{ color: '#8F98A0', textAlign: 'center', marginTop: 20 }}>No CineBuddies found.</Text>}
+                                    renderItem={({ item }) => {
+                                        const isSelected = selectedFriends.includes(item._id);
+                                        return (
+                                            <TouchableOpacity
+                                                style={styles.gridFriendItem}
+                                                onPress={() => toggleFriendSelection(item._id)}
+                                                activeOpacity={0.8}
+                                            >
+                                                <View style={[styles.gridFriendAvatar, isSelected && styles.gridFriendAvatarSelected]}>
+                                                    <Text style={styles.gridFriendAvatarText}>{item.name.charAt(0).toUpperCase()}</Text>
+                                                    {isSelected && (
+                                                        <View style={styles.checkBadge}>
+                                                            <Ionicons name="checkmark-circle" size={24} color="#00E5FF" />
+                                                        </View>
+                                                    )}
+                                                </View>
+                                                <Text style={styles.gridFriendName} numberOfLines={1}>
+                                                    {item.name.split(' ')[0]}
+                                                </Text>
+                                            </TouchableOpacity>
+                                        );
+                                    }}
+                                />
+
+                                {/* Bulk Send Button */}
+                                <TouchableOpacity
+                                    style={[styles.bulkSendBtn, selectedFriends.length === 0 && styles.bulkSendBtnDisabled]}
+                                    disabled={selectedFriends.length === 0}
+                                    onPress={sendBulkTheatreInvites}
+                                >
+                                    <Text style={[styles.bulkSendBtnText, selectedFriends.length === 0 && { color: '#8F98A0' }]}>
+                                        Send {selectedFriends.length > 0 ? `(${selectedFriends.length})` : ''}
+                                    </Text>
+                                </TouchableOpacity>
+                            </View>
                         )}
                     </View>
                 </View>
@@ -856,7 +888,6 @@ const styles = StyleSheet.create({
     searchRow: { flexDirection: 'row', gap: 12, marginBottom: 10 },
     searchInput: { flex: 1, backgroundColor: '#17171C', color: '#FFF', borderRadius: 10, paddingHorizontal: 16, height: 56, fontSize: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
 
-    // Updated Button Styles
     pushBtnContainer: { width: 56, height: 56, borderRadius: 10, overflow: 'hidden' },
     pushBtnGradient: { flex: 1, justifyContent: 'center', alignItems: 'center' },
 
@@ -880,25 +911,32 @@ const styles = StyleSheet.create({
     chatSenderName: { color: '#8F98A0', fontSize: 11, marginBottom: 4, marginLeft: 4 },
     chatBubble: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 16 },
     chatBubbleThem: { backgroundColor: '#2A2A30', borderBottomLeftRadius: 4 },
-    chatBubbleMe: { borderBottomRightRadius: 4 }, // Background handled by LinearGradient now
+    chatBubbleMe: { borderBottomRightRadius: 4 },
     chatText: { color: '#FFF', fontSize: 14, lineHeight: 20 },
     chatInputRow: { flexDirection: 'row', alignItems: 'center', padding: 12, backgroundColor: '#17171C', borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.05)', gap: 10 },
     chatInput: { flex: 1, backgroundColor: '#0A0A0C', color: '#FFF', borderRadius: 20, paddingHorizontal: 16, height: 44, fontSize: 14, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
 
-    // Updated Button Styles
     sendBtnContainer: { width: 40, height: 40, borderRadius: 20, overflow: 'hidden' },
     sendBtnGradient: { flex: 1, justifyContent: 'center', alignItems: 'center' },
 
     modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
-    bottomSheet: { backgroundColor: '#17171C', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, maxHeight: '60%' },
-    sheetHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
+
+    // Updated Bottom Sheet Styles for Grid
+    bottomSheet: { backgroundColor: '#17171C', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, height: '60%' },
+    sheetHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
     sheetTitle: { color: '#FFF', fontSize: 18, fontWeight: 'bold' },
-    friendRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
-    friendAvatar: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#9B51E0', justifyContent: 'center', alignItems: 'center', marginRight: 12 },
-    friendAvatarText: { color: '#FFF', fontWeight: 'bold', fontSize: 16 },
-    friendName: { flex: 1, color: '#FFF', fontSize: 16, fontWeight: '500' },
-    sendInviteBtn: { backgroundColor: '#00E5FF', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20 },
-    sendInviteText: { color: '#000', fontWeight: 'bold', fontSize: 13 },
+
+    gridFriendItem: { width: '25%', alignItems: 'center' },
+    gridFriendAvatar: { width: 56, height: 56, borderRadius: 28, backgroundColor: '#9B51E0', justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: 'transparent', position: 'relative' },
+    gridFriendAvatarSelected: { borderColor: '#00E5FF' },
+    gridFriendAvatarText: { color: '#FFF', fontWeight: 'bold', fontSize: 20 },
+    checkBadge: { position: 'absolute', bottom: -4, right: -4, backgroundColor: '#17171C', borderRadius: 12 },
+    gridFriendName: { color: '#FFF', fontSize: 12, fontWeight: '500', marginTop: 8, textAlign: 'center', paddingHorizontal: 4 },
+
+    bulkSendBtn: { backgroundColor: '#00E5FF', paddingVertical: 14, borderRadius: 16, alignItems: 'center', marginTop: 10 },
+    bulkSendBtnDisabled: { backgroundColor: 'rgba(255,255,255,0.08)' },
+    bulkSendBtnText: { color: '#000', fontWeight: 'bold', fontSize: 16 },
+
     modalOverlayCenter: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center', padding: 20 },
     permissionModal: { backgroundColor: '#1E1E24', borderRadius: 20, padding: 24, width: '100%', borderWidth: 1, borderColor: 'rgba(0, 229, 255, 0.3)' },
     permissionTitle: { color: '#FFF', fontSize: 20, fontWeight: 'bold', textAlign: 'center', marginBottom: 8 },

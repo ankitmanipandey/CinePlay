@@ -102,7 +102,7 @@ const ProfileScreen = () => {
 
     const handleProtectedNavigation = (targetPath) => {
         if (!isLoggedIn) {
-            Toast.show({ type: 'hotstarInfo', text1: 'Log in for personalization', topOffset: insets.top > 0 ? insets.top + 10 : 50 });
+            Toast.show({ type: 'hotstarInfo', text1: 'Log in to use this feature', topOffset: insets.top > 0 ? insets.top + 10 : 50 });
         } else {
             router.push(targetPath);
         }
@@ -118,7 +118,18 @@ const ProfileScreen = () => {
         }
     };
 
-    const openTheatreModal = () => { setJoinCode(''); setIsTheatreModalVisible(true); };
+    const openTheatreModal = () => {
+        if (!isLoggedIn) {
+            Toast.show({
+                type: 'hotstarInfo',
+                text1: 'Log in to use this feature',
+                topOffset: insets.top > 0 ? insets.top + 10 : 50
+            });
+            return;
+        }
+        setJoinCode('');
+        setIsTheatreModalVisible(true);
+    };
     const handleCreateRoom = () => { setIsTheatreModalVisible(false); router.push(`/theatre?roomId=${Math.floor(10000 + Math.random() * 90000).toString()}&isHost=true`); };
     const handleJoinRoom = () => {
         if (joinCode.length === 5) { setIsTheatreModalVisible(false); router.push(`/theatre?roomId=${joinCode}&isHost=false`); }
@@ -162,7 +173,12 @@ const ProfileScreen = () => {
                     <View style={styles.menuSection}>
                         <Text style={styles.sectionTitle}>Watch Together</Text>
                         <View style={styles.menuCard}>
-                            <MenuRow icon="people-circle-outline" title="Theatre Mode" subtitle="Sync playback real-time with friends" onPress={openTheatreModal} />
+                            <MenuRow
+                                icon="people-circle-outline"
+                                title="CineTheatre"
+                                subtitle="Sync playback real-time with friends"
+                                onPress={openTheatreModal}
+                            />
                         </View>
                     </View>
 
@@ -223,7 +239,7 @@ const ProfileScreen = () => {
                             <Ionicons name="close" size={24} color="#8F98A0" />
                         </TouchableOpacity>
 
-                        <Text style={styles.modalTitle}>Theatre Mode</Text>
+                        <Text style={styles.modalTitle}>CineTheatre</Text>
                         <Text style={styles.modalSub}>Watch synchronized videos with friends in real-time.</Text>
 
                         <TouchableOpacity style={styles.createRoomBtn} activeOpacity={0.8} onPress={handleCreateRoom}>
