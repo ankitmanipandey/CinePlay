@@ -558,4 +558,4 @@ const styles = StyleSheet.create({
     ytCardImage: { width: '100%', height: 101, borderRadius: 8, backgroundColor: '#1E1428' },
     ytPlayIconOverlay: { position: 'absolute', top: 35, left: 74, zIndex: 2 },
     ytCardTitle: { color: '#D0D0D5', fontSize: 13, marginTop: 8, fontWeight: '500' }
-});
+}); 
