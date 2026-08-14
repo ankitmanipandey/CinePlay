@@ -60,6 +60,9 @@ const ProfileScreen = () => {
     const exactName = user?.name || (user?.email ? user.email.split('@')[0] : 'User');
     const displayInitial = exactName.charAt(0).toUpperCase();
 
+    // Dynamically calculate the custom tab bar height to avoid overlapping content
+    const TAB_BAR_HEIGHT = (Platform.OS === 'ios' ? 88 : 65) + insets.bottom;
+
     // Re-sync exact counts on focus as a fallback
     useFocusEffect(
         useCallback(() => {
@@ -130,6 +133,7 @@ const ProfileScreen = () => {
         setJoinCode('');
         setIsTheatreModalVisible(true);
     };
+
     const handleCreateRoom = () => { setIsTheatreModalVisible(false); router.push(`/theatre?roomId=${Math.floor(10000 + Math.random() * 90000).toString()}&isHost=true`); };
     const handleJoinRoom = () => {
         if (joinCode.length === 5) { setIsTheatreModalVisible(false); router.push(`/theatre?roomId=${joinCode}&isHost=false`); }
@@ -140,7 +144,10 @@ const ProfileScreen = () => {
         <View style={styles.container}>
             <LinearGradient colors={['rgba(155, 81, 224, 0.15)', 'transparent']} style={styles.backgroundGlow} />
             <SafeAreaView style={styles.safeArea} edges={['top']}>
-                <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+                <ScrollView
+                    showsVerticalScrollIndicator={false}
+                    contentContainerStyle={[styles.scrollContent, { paddingBottom: TAB_BAR_HEIGHT + 20 }]}
+                >
 
                     {isLoggedIn ? (
                         <View style={styles.profileHeader}>
@@ -298,7 +305,8 @@ const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#0A0A0C' },
     backgroundGlow: { position: 'absolute', top: 0, left: 0, right: 0, height: 300, zIndex: -2 },
     safeArea: { flex: 1 },
-    scrollContent: { paddingBottom: 100 },
+    // Removed the static paddingBottom: 100 from scrollContent
+    scrollContent: {},
 
     profileHeader: { alignItems: 'center', paddingVertical: 32, paddingHorizontal: 20 },
     avatarContainer: { width: 86, height: 86, borderRadius: 43, justifyContent: 'center', alignItems: 'center', marginBottom: 16, shadowColor: '#9B51E0', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.35, shadowRadius: 10, elevation: 8 },

@@ -9,7 +9,8 @@ import {
     FlatList,
     StatusBar,
     ActivityIndicator,
-    useWindowDimensions
+    useWindowDimensions,
+    Platform // Make sure Platform is imported (it already was in your code)
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -79,6 +80,9 @@ export default function PlayerScreen() {
 
     const { watchlist, watched, toggleWatchlist, toggleWatched } = useUserListStore();
     const { token } = useAuthStore();
+
+    // Dynamically calculate the custom tab bar height to avoid overlapping content
+    const TAB_BAR_HEIGHT = (Platform.OS === 'ios' ? 88 : 65) + insets.bottom;
 
     useEffect(() => {
         return () => {
@@ -385,7 +389,8 @@ export default function PlayerScreen() {
                 <ScrollView
                     style={{ display: isFullScreen ? 'none' : 'flex' }}
                     showsVerticalScrollIndicator={false}
-                    contentContainerStyle={styles.scrollContent}
+                    // Apply the dynamic bottom padding here
+                    contentContainerStyle={[styles.scrollContent, { paddingBottom: TAB_BAR_HEIGHT + 20 }]}
                 >
                     <View style={styles.detailsContainer}>
                         <Text style={styles.mediaTitle}>{title}</Text>
@@ -506,7 +511,8 @@ export default function PlayerScreen() {
 const styles = StyleSheet.create({
     safeArea: { flex: 1, backgroundColor: '#000' },
     container: { flex: 1, backgroundColor: '#0A0A0C' },
-    scrollContent: { paddingBottom: 50 },
+    // Removed the hardcoded paddingBottom: 50 from here
+    scrollContent: {},
 
     playerContainer: { backgroundColor: '#000', position: 'relative' },
     videoThumbnail: { width: '100%', height: '100%', position: 'absolute' },
