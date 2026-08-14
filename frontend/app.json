@@ -20,7 +20,8 @@
       "bundleIdentifier": "com.ankitpandey.cineplay",
       "infoPlist": {
         "NSSpeechRecognitionUsageDescription": "Allow CinePlay to securely transcribe your voice into text for search.",
-        "NSMicrophoneUsageDescription": "Allow CinePlay to access your microphone to search for movies and shows."
+        "NSMicrophoneUsageDescription": "Allow CinePlay to access your microphone to search for movies and shows.",
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {

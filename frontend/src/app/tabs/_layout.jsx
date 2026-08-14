@@ -3,6 +3,7 @@ import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { StyleSheet, Platform, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useGlobalSocket } from '../../store/useGlobalSocket';
 
@@ -33,6 +34,8 @@ const TabIcon = ({ name, focused, color, size, showBadge = false }) => (
 
 export default function TabLayout() {
     const unreadNotifsCount = useGlobalSocket((state) => state.unreadNotifsCount);
+    // Fetch the safe area insets to account for system navigation bars
+    const insets = useSafeAreaInsets();
 
     return (
         <Tabs
@@ -41,7 +44,14 @@ export default function TabLayout() {
                 tabBarShowLabel: true,
                 tabBarActiveTintColor: '#FFFFFF',
                 tabBarInactiveTintColor: '#8F98A0',
-                tabBarStyle: styles.tabBar,
+                tabBarStyle: [
+                    styles.tabBar,
+                    {
+                        // Dynamically add the bottom inset to ensure the tab bar sits above system buttons
+                        height: (Platform.OS === 'ios' ? 88 : 65) + insets.bottom,
+                        paddingBottom: (Platform.OS === 'ios' ? 30 : 10) + insets.bottom,
+                    }
+                ],
                 tabBarLabelStyle: styles.tabBarLabel,
                 sceneContainerStyle: { backgroundColor: '#0A0A0C' },
             }}
@@ -90,8 +100,6 @@ const styles = StyleSheet.create({
         backgroundColor: '#0A0A0C',
         borderTopWidth: 1,
         borderTopColor: 'rgba(255, 255, 255, 0.06)', // Very subtle border line
-        height: Platform.OS === 'ios' ? 88 : 65,
-        paddingBottom: Platform.OS === 'ios' ? 30 : 10,
         paddingTop: 8,
         elevation: 0,
         position: 'absolute',
