@@ -57,7 +57,6 @@ const fetchYouTubeWithRetry = async (urlTemplate) => {
     return { error: { code: 429, message: 'All YouTube API keys have exhausted their daily quota.' } };
 };
 
-// --- FLOATING EMOJI COMPONENT (With Sender Name) ---
 const FloatingEmoji = ({ emoji, sender, onComplete }) => {
     const translateY = useRef(new Animated.Value(0)).current;
     const opacity = useRef(new Animated.Value(1)).current;
@@ -65,47 +64,27 @@ const FloatingEmoji = ({ emoji, sender, onComplete }) => {
 
     useEffect(() => {
         Animated.parallel([
-            Animated.timing(translateY, {
-                toValue: -150,
-                duration: 2000,
-                useNativeDriver: true,
-            }),
-            Animated.timing(opacity, {
-                toValue: 0,
-                duration: 2000,
-                useNativeDriver: true,
-            }),
+            Animated.timing(translateY, { toValue: -150, duration: 2000, useNativeDriver: true }),
+            Animated.timing(opacity, { toValue: 0, duration: 2000, useNativeDriver: true }),
         ]).start(() => onComplete());
     }, []);
 
     return (
-        <Animated.View style={[styles.floatingEmojiContainer, {
-            transform: [{ translateY }, { translateX }],
-            opacity
-        }]}>
+        <Animated.View style={[styles.floatingEmojiContainer, { transform: [{ translateY }, { translateX }], opacity }]}>
             <Text style={styles.floatingEmojiSender} numberOfLines={1}>{sender}</Text>
             <Text style={styles.floatingEmoji}>{emoji}</Text>
         </Animated.View>
     );
 };
 
-// --- FLOATING CHAT BUBBLE COMPONENT ---
 const FloatingMessage = ({ msg, onComplete }) => {
     const translateY = useRef(new Animated.Value(0)).current;
     const opacity = useRef(new Animated.Value(1)).current;
 
     useEffect(() => {
         Animated.parallel([
-            Animated.timing(translateY, {
-                toValue: -150,
-                duration: 4000,
-                useNativeDriver: true,
-            }),
-            Animated.timing(opacity, {
-                toValue: 0,
-                duration: 4000,
-                useNativeDriver: true,
-            }),
+            Animated.timing(translateY, { toValue: -150, duration: 4000, useNativeDriver: true }),
+            Animated.timing(opacity, { toValue: 0, duration: 4000, useNativeDriver: true }),
         ]).start(() => onComplete());
     }, []);
 
@@ -119,7 +98,6 @@ const FloatingMessage = ({ msg, onComplete }) => {
 
 const EMOJIS = ['😂', '🔥', '😱', '😍', '👏', '😢'];
 
-// --- WHATSAPP-STYLE PAN RESPONDER COMPONENT ---
 const ReactionButtonUI = ({ isFullScreen, showFloatingEmojis, toggleDistractionFree, sendReaction, extendOverlayTimer }) => {
     const [pickerVisible, setPickerVisible] = useState(false);
     const [uiHoveredIndex, setUIHoveredIndex] = useState(-1);
@@ -172,7 +150,8 @@ const ReactionButtonUI = ({ isFullScreen, showFloatingEmojis, toggleDistractionF
                     if (Math.abs(dy) > 80) { setHover(-1); return; }
                     let absDx = Math.abs(dx);
                     if (dx < 0 && absDx > 45 && absDx < 45 + EMOJIS.length * EMOJI_SIZE) {
-                        index = Math.floor((absDx - 45) / EMOJI_SIZE);
+                        let rawIndex = Math.floor((absDx - 45) / EMOJI_SIZE);
+                        index = (EMOJIS.length - 1) - rawIndex;
                     }
                 }
                 setHover(index);
@@ -239,7 +218,6 @@ export default function TheatreScreen() {
     const router = useRouter();
     const { width, height } = useWindowDimensions();
 
-    // --- NEW: Added initialYtId and initialTitle to catch Cloudflare videos ---
     const { roomId, isHost, initialYtId, initialTitle } = useLocalSearchParams();
     const isHostBool = isHost === 'true';
 
@@ -325,7 +303,6 @@ export default function TheatreScreen() {
         newSocket.on('connect', () => {
             newSocket.emit('join_room', { roomId, username: assignedUsername, isHost: isHostBool, userId: user?._id });
 
-            // --- NEW: Instantly load the Cloudflare video if we passed one from MyVideos ---
             if (isHostBool && initialYtId && initialTitle) {
                 setYtId(initialYtId);
                 setVideoTitle(initialTitle);
@@ -382,6 +359,8 @@ export default function TheatreScreen() {
             if (isHostBool) return;
             playerRef.current?.getCurrentTime().then(viewerTime => {
                 const timeDiff = Math.abs(viewerTime - data.timestamp);
+
+                // --- FIXED: Joinee plays but is instantly muted to maintain sync ---
                 if (data.action === 'pause') {
                     setIsMuted(true);
                     setIsPlaying(true);
@@ -477,9 +456,11 @@ export default function TheatreScreen() {
         setShowFloatingEmojis(prev => !prev);
     };
 
+    // --- UI TOGGLE SYNC LOGIC ---
     const extendOverlayTimer = () => {
+        playerRef.current?.extendControls?.();
         if (overlayTimer.current) clearTimeout(overlayTimer.current);
-        overlayTimer.current = setTimeout(() => setOverlayVisible(false), 3500);
+        overlayTimer.current = setTimeout(() => setOverlayVisible(false), 6000); // --- FIXED: Increased timeout to 6 seconds ---
     };
 
     const handleVideoTap = () => {
@@ -664,7 +645,7 @@ export default function TheatreScreen() {
             <KeyboardAvoidingView style={styles.container} behavior="padding" keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 24}>
                 <StatusBar hidden={isFullScreen} showHideTransition="slide" barStyle="light-content" backgroundColor="#000" translucent={false} />
 
-                {/* --- VIDEO CONTAINER --- */}
+                {/* --- VIDEO CONTAINER (With synced tap listener) --- */}
                 <View
                     style={[
                         styles.playerContainer,
@@ -672,7 +653,7 @@ export default function TheatreScreen() {
                         isFullScreen && { position: 'absolute', top: 0, left: 0, zIndex: 9999, elevation: 9999, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' }
                     ]}
                     onStartShouldSetResponderCapture={() => {
-                        if (isHostBool && ytId) {
+                        if (ytId) {
                             handleVideoTap();
                         }
                         return false;
@@ -687,19 +668,29 @@ export default function TheatreScreen() {
                         onPlayerStateChange={onPlayerStateChange}
                         width={innerVideoWidth}
                         height={innerVideoHeight}
+                        isFullScreen={isFullScreen}
+                        onExit={handleBackPress}
+                        onToggleOrientation={async () => {
+                            const current = await ScreenOrientation.getOrientationAsync();
+                            if (current === ScreenOrientation.Orientation.PORTRAIT_UP) {
+                                await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+                            } else {
+                                await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+                            }
+                        }}
+                        onControlsToggle={(visible) => {
+                            setOverlayVisible(visible);
+                        }}
                     />
 
-                    {ytId && !isHostBool && (
-                        <Pressable style={StyleSheet.absoluteFill} onPress={handleVideoTap} />
-                    )}
-
+                    {/* --- FIXED: Removed orientation button from overlay --- */}
                     {isFullScreen && showOverlayUI && (
                         <TouchableOpacity style={[styles.fullscreenExitBtn, { zIndex: 100000, elevation: 10 }]} onPress={toggleFullScreen} activeOpacity={0.7}>
                             <Ionicons name="close" size={26} color="#FFFFFF" />
                         </TouchableOpacity>
                     )}
 
-                    {ytId && roomUsers.length > 0 && (
+                    {ytId && roomUsers.length > 0 && showOverlayUI && (
                         <View style={styles.liveViewerBadge} pointerEvents="none">
                             <Ionicons name="eye" size={14} color="#FFF" />
                             <Text style={styles.liveViewerText}>{roomUsers.length}</Text>

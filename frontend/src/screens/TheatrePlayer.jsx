@@ -18,7 +18,6 @@ import YoutubePlayer from 'react-native-youtube-iframe';
 import * as Brightness from 'expo-brightness';
 import { VolumeManager } from 'react-native-volume-manager';
 
-// --- CUSTOM GRADIENT SPINNER (100% Transparent Middle) ---
 const GradientLoader = () => {
     const spinValue = useRef(new Animated.Value(0)).current;
     useEffect(() => {
@@ -51,7 +50,6 @@ const formatTime = (seconds) => {
     return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
 };
 
-// --- HARDWARE PERMISSIONS CACHE (Fix for Strict Mode Double-Mount Crashes) ---
 let brightnessPermissionPromise = null;
 const requestBrightnessPermissionOnce = () => {
     if (!brightnessPermissionPromise) {
@@ -65,7 +63,7 @@ const requestBrightnessPermissionOnce = () => {
 
 const TheatrePlayer = forwardRef(({
     ytId, isPlaying, isHostBool, onPlayerStateChange, width, height, isMuted,
-    isFullScreen, onExit, onToggleOrientation
+    isFullScreen, onExit, onToggleOrientation, onControlsToggle
 }, ref) => {
 
     const isCustom = ytId && ytId.startsWith('CUSTOM:');
@@ -74,13 +72,11 @@ const TheatrePlayer = forwardRef(({
 
     const ytRef = useRef(null);
 
-    // --- UI OVERLAY STATE ---
     const [controlsVisible, setControlsVisible] = useState(true);
     const fadeAnim = useRef(new Animated.Value(1)).current;
     const controlsTimer = useRef(null);
     const [showSettings, setShowSettings] = useState(false);
 
-    // --- HARDWARE GESTURE STATE & LIVE REFS ---
     const [brightness, setBrightness] = useState(1);
     const [volume, setVolume] = useState(1);
     const brightnessRef = useRef(1);
@@ -91,7 +87,6 @@ const TheatrePlayer = forwardRef(({
     const lastTap = useRef({ time: 0, timeout: null });
     const swipeState = useRef({ isSwiping: false, startY: 0, startVal: 0, side: '' });
 
-    // Initialize Hardware States (Crash-Proof Version)
     useEffect(() => {
         let isMounted = true;
 
@@ -121,7 +116,6 @@ const TheatrePlayer = forwardRef(({
             }
         })();
 
-        // Listen for physical volume button presses
         const volumeListener = VolumeManager.addVolumeListener((result) => {
             if (isMounted) {
                 volumeRef.current = result.volume;
@@ -135,11 +129,9 @@ const TheatrePlayer = forwardRef(({
         };
     }, []);
 
-    // --- LIVE FUNCTION REFS ---
     const toggleControlsRef = useRef(null);
     const handleSkipRef = useRef(null);
 
-    // --- VIDEO METRICS & SCRUBBING STATE ---
     const [currentTime, setCurrentTime] = useState(0);
     const [duration, setDuration] = useState(0);
     const [isBuffering, setIsBuffering] = useState(false);
@@ -157,7 +149,7 @@ const TheatrePlayer = forwardRef(({
         player.loop = false;
         player.muted = isMuted;
         player.preservesPitch = true;
-        if (isPlaying) player.play();
+        // FIXED: Removed player.play() here. Our safe useEffect handles it after mount!
     });
 
     const nativePlayerRef = useRef(nativePlayer);
@@ -250,6 +242,8 @@ const TheatrePlayer = forwardRef(({
 
     const showControlsTemporarily = () => {
         setControlsVisible(true);
+        if (onControlsToggle) onControlsToggle(true);
+
         Animated.timing(fadeAnim, { toValue: 1, duration: 200, useNativeDriver: true }).start();
 
         if (controlsTimer.current) clearTimeout(controlsTimer.current);
@@ -257,15 +251,17 @@ const TheatrePlayer = forwardRef(({
             if (!showSettings && isPlaying && !isScrubbingRef.current) {
                 Animated.timing(fadeAnim, { toValue: 0, duration: 400, useNativeDriver: true }).start(() => {
                     setControlsVisible(false);
+                    if (onControlsToggle) onControlsToggle(false);
                 });
             }
-        }, 3500);
+        }, 6000);
     };
 
     toggleControlsRef.current = () => {
         if (controlsVisible) {
             Animated.timing(fadeAnim, { toValue: 0, duration: 250, useNativeDriver: true }).start(() => {
                 setControlsVisible(false);
+                if (onControlsToggle) onControlsToggle(false);
             });
             if (controlsTimer.current) clearTimeout(controlsTimer.current);
         } else {
@@ -298,7 +294,6 @@ const TheatrePlayer = forwardRef(({
         } catch (e) { }
     };
 
-    // --- MAIN BACKGROUND GESTURE RESPONDER (HARDWARE INTEGRATED) ---
     const mainPanResponder = useRef(
         PanResponder.create({
             onStartShouldSetPanResponder: () => true,
@@ -326,12 +321,12 @@ const TheatrePlayer = forwardRef(({
                     if (swipeState.current.side === 'left') {
                         brightnessRef.current = newVal;
                         setBrightness(newVal);
-                        Brightness.setBrightnessAsync(newVal); // REAL HARDWARE BRIGHTNESS
+                        Brightness.setBrightnessAsync(newVal);
                         setSwipeIndicator({ visible: true, type: 'brightness', value: Math.round(newVal * 100) });
                     } else {
                         volumeRef.current = newVal;
                         setVolume(newVal);
-                        VolumeManager.setVolume(newVal); // REAL HARDWARE VOLUME
+                        VolumeManager.setVolume(newVal);
                         setSwipeIndicator({ visible: true, type: 'volume', value: Math.round(newVal * 100) });
                     }
                 }
@@ -467,10 +462,10 @@ const TheatrePlayer = forwardRef(({
                         nativeControls={false}
                     />
 
-                    {/* BACKGROUND GESTURE RECEIVER */}
+                    <View style={[StyleSheet.absoluteFill, { backgroundColor: 'black', opacity: 1 - brightness, zIndex: 1 }]} pointerEvents="none" />
+
                     <View style={[StyleSheet.absoluteFill, { zIndex: 2 }]} {...mainPanResponder.panHandlers} />
 
-                    {/* VISUAL SWIPE INDICATOR */}
                     {swipeIndicator.visible && (
                         <View style={styles.swipeIndicatorContainer}>
                             <Ionicons name={swipeIndicator.type === 'brightness' ? 'sunny' : 'volume-high'} size={32} color="#FFF" />
@@ -478,24 +473,20 @@ const TheatrePlayer = forwardRef(({
                         </View>
                     )}
 
-                    {/* CONTROLS LAYER */}
                     {controlsVisible && (
                         <Animated.View style={[styles.overlayWrapper, { opacity: fadeAnim }]} pointerEvents="box-none">
 
                             <LinearGradient colors={['rgba(0,0,0,0.8)', 'transparent']} style={styles.topShadow} pointerEvents="none" />
 
                             <View style={[styles.topBar, { justifyContent: 'flex-end' }]} pointerEvents="box-none">
-                                {isFullScreen && (
-                                    <TouchableOpacity style={[styles.topBtn, { marginRight: 12 }]} onPress={onToggleOrientation}>
-                                        <Ionicons name="phone-landscape-outline" size={22} color="#FFF" />
+                                {isHostBool && (
+                                    <TouchableOpacity style={styles.topBtn} onPress={() => { setShowSettings(!showSettings); showControlsTemporarily(); }}>
+                                        <Ionicons name="settings-outline" size={24} color="#FFF" />
                                     </TouchableOpacity>
                                 )}
-                                <TouchableOpacity style={styles.topBtn} onPress={() => { setShowSettings(!showSettings); showControlsTemporarily(); }}>
-                                    <Ionicons name="settings-outline" size={24} color="#FFF" />
-                                </TouchableOpacity>
                             </View>
 
-                            {showSettings && (
+                            {showSettings && isHostBool && (
                                 <View style={styles.settingsMenu}>
                                     <Text style={styles.settingsHeader}>Playback Speed</Text>
                                     <View style={styles.speedRow}>
@@ -540,7 +531,7 @@ const TheatrePlayer = forwardRef(({
                                 <View
                                     style={styles.progressBarContainer}
                                     onLayout={(e) => progressWidthRef.current = e.nativeEvent.layout.width}
-                                    {...progressPanResponder.panHandlers}
+                                    {...(isHostBool ? progressPanResponder.panHandlers : {})}
                                 >
                                     <View style={styles.progressBarTrack} pointerEvents="none">
                                         <LinearGradient
@@ -575,7 +566,18 @@ const styles = StyleSheet.create({
     topShadow: { position: 'absolute', top: 0, left: 0, right: 0, height: 80 },
     bottomShadow: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 90, justifyContent: 'flex-end', paddingHorizontal: 16, paddingBottom: 12 },
 
-    middleControls: { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 40, zIndex: 10 },
+    middleControls: {
+        position: 'absolute',
+        top: 0,
+        bottom: 0,
+        left: 0,
+        right: 0,
+        flexDirection: 'row',
+        justifyContent: 'center',
+        alignItems: 'center',
+        gap: 40,
+        zIndex: 10
+    },
 
     topBar: { flexDirection: 'row', paddingHorizontal: 16, paddingTop: 16, zIndex: 20 },
     topBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
@@ -591,7 +593,21 @@ const styles = StyleSheet.create({
     progressBarTrack: { width: '100%', height: 4, backgroundColor: 'rgba(255,255,255,0.3)', borderRadius: 2, overflow: 'hidden' },
     progressBarFill: { height: '100%', borderRadius: 2 },
 
-    progressKnob: { position: 'absolute', top: '50%', marginTop: -7, width: 14, height: 14, borderRadius: 7, backgroundColor: '#FFFFFF', marginLeft: -7, elevation: 4, shadowColor: '#00E5FF', shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.8, shadowRadius: 4 },
+    progressKnob: {
+        position: 'absolute',
+        top: '50%',
+        marginTop: -7,
+        width: 14,
+        height: 14,
+        borderRadius: 7,
+        backgroundColor: '#FFFFFF',
+        marginLeft: -7,
+        elevation: 4,
+        shadowColor: '#00E5FF',
+        shadowOffset: { width: 0, height: 0 },
+        shadowOpacity: 0.8,
+        shadowRadius: 4
+    },
 
     settingsMenu: { position: 'absolute', top: 60, right: 16, width: 220, backgroundColor: 'rgba(20,20,25,0.95)', borderRadius: 12, padding: 16, zIndex: 30, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
     settingsHeader: { color: '#8F98A0', fontSize: 11, textTransform: 'uppercase', fontWeight: 'bold', marginBottom: 12, letterSpacing: 1 },
