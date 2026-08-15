@@ -39,6 +39,7 @@ const VideoListItem = ({ item, onDeleteRequest, onPlayRequest }) => {
 
     return (
         <View style={styles.videoItem}>
+            {/* Thumbnail */}
             <TouchableOpacity
                 style={styles.listThumbnailContainer}
                 activeOpacity={0.8}
@@ -52,36 +53,45 @@ const VideoListItem = ({ item, onDeleteRequest, onPlayRequest }) => {
                     nativeControls={false}
                 />
                 <View style={styles.playOverlay}>
-                    <Ionicons name="play" size={28} color="#00E5FF" style={{ marginLeft: 3 }} />
+                    <Ionicons name="play" size={24} color="#00E5FF" style={{ marginLeft: 3 }} />
                 </View>
                 <View style={styles.durationBadge}>
                     <Text style={styles.durationText}>{item.duration || "0:00"}</Text>
                 </View>
             </TouchableOpacity>
 
+            {/* Video Info */}
             <View style={styles.videoInfo}>
                 <Text style={styles.videoTitle} numberOfLines={2}>{item.title}</Text>
             </View>
 
-            {/* --- THEMED PLAY BUTTON (Matches HomeScreen) --- */}
-            <TouchableOpacity
-                style={styles.playButtonWrapper}
-                activeOpacity={0.8}
-                onPress={() => onPlayRequest(item)}
-            >
-                <LinearGradient
-                    colors={['#00E5FF', '#9B51E0', '#FF007A']}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    style={styles.playButtonGradient}
+            {/* Action Buttons Container */}
+            <View style={styles.actionButtonsRow}>
+                {/* Play Button */}
+                <TouchableOpacity
+                    style={styles.playButtonWrapper}
+                    activeOpacity={0.8}
+                    onPress={() => onPlayRequest(item)}
                 >
-                    <Ionicons name="play" size={22} color="#FFFFFF" style={{ marginLeft: 3 }} />
-                </LinearGradient>
-            </TouchableOpacity>
+                    <LinearGradient
+                        colors={['#00E5FF', '#9B51E0', '#FF007A']}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 1 }}
+                        style={styles.playButtonGradient}
+                    >
+                        <Ionicons name="play" size={20} color="#FFFFFF" style={{ marginLeft: 3 }} />
+                    </LinearGradient>
+                </TouchableOpacity>
 
-            <TouchableOpacity onPress={() => onDeleteRequest(item._id)} style={styles.trashBtn}>
-                <Ionicons name="trash-outline" size={22} color="#E53935" />
-            </TouchableOpacity>
+                {/* Trash Button */}
+                <TouchableOpacity
+                    onPress={() => onDeleteRequest(item._id)}
+                    style={styles.trashBtn}
+                    activeOpacity={0.7}
+                >
+                    <Ionicons name="trash" size={18} color="#E53935" />
+                </TouchableOpacity>
+            </View>
         </View>
     );
 };
@@ -261,7 +271,6 @@ const MyVideosScreen = () => {
         }
     };
 
-    // --- NEW: Route to Theatre Screen with the Custom Cloudflare URL ---
     const playVideoInTheatre = (video) => {
         const newRoomId = Math.floor(10000 + Math.random() * 90000).toString();
         router.push({
@@ -269,7 +278,7 @@ const MyVideosScreen = () => {
             params: {
                 roomId: newRoomId,
                 isHost: 'true',
-                initialYtId: `CUSTOM:${video.url}`, // The trick that prevents breaking the Node backend
+                initialYtId: `CUSTOM:${video.url}`,
                 initialTitle: video.title
             }
         });
@@ -400,18 +409,78 @@ const styles = StyleSheet.create({
     emptySubText: { color: '#8F98A0', fontSize: 14, textAlign: 'center' },
     listContent: { padding: 20, paddingBottom: 100 },
 
-    videoItem: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#17171C', padding: 12, borderRadius: 12, marginBottom: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
-    listThumbnailContainer: { width: 90, height: 60, borderRadius: 8, overflow: 'hidden', backgroundColor: '#0A0A0C', position: 'relative' },
+    // --- IMPROVED VIDEO ITEM STYLES ---
+    videoItem: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: '#16161A', // Slightly lifted background
+        padding: 16, // Increased padding
+        borderRadius: 16,
+        marginBottom: 16,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.06)',
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.2,
+        shadowRadius: 6,
+        elevation: 4
+    },
+    listThumbnailContainer: {
+        width: 100, // Slightly wider
+        height: 64,
+        borderRadius: 10,
+        overflow: 'hidden',
+        backgroundColor: '#0A0A0C',
+        position: 'relative'
+    },
     listThumbnailVideo: { width: '100%', height: '100%' },
 
-    // --- NEW: Play Overlay Style ---
-    playOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center' },
+    playOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.3)', justifyContent: 'center', alignItems: 'center' },
+    durationBadge: { position: 'absolute', bottom: 6, right: 6, backgroundColor: 'rgba(0,0,0,0.85)', paddingHorizontal: 5, paddingVertical: 3, borderRadius: 4 },
+    durationText: { color: '#FFF', fontSize: 10, fontWeight: 'bold', letterSpacing: 0.5 },
 
-    durationBadge: { position: 'absolute', bottom: 4, right: 4, backgroundColor: 'rgba(0,0,0,0.85)', paddingHorizontal: 4, paddingVertical: 2, borderRadius: 4 },
-    durationText: { color: '#FFF', fontSize: 10, fontWeight: 'bold' },
-    videoInfo: { flex: 1, marginLeft: 12, justifyContent: 'center' },
-    videoTitle: { color: '#FFF', fontSize: 15, fontWeight: '500' },
-    trashBtn: { padding: 8 },
+    videoInfo: {
+        flex: 1,
+        marginLeft: 16,
+        marginRight: 12, // Prevents text from touching buttons
+        justifyContent: 'center'
+    },
+    videoTitle: {
+        color: '#FFFFFF',
+        fontSize: 15,
+        fontWeight: '600',
+        lineHeight: 22 // Better readability for multiline titles
+    },
+
+    actionButtonsRow: {
+        flexDirection: 'row',
+        alignItems: 'center'
+    },
+    playButtonWrapper: {
+        width: 44, // Generous touch target
+        height: 44,
+        borderRadius: 22,
+        elevation: 8,
+        shadowColor: '#FF007A',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.4,
+        shadowRadius: 8,
+        marginRight: 12
+    },
+    playButtonGradient: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+        borderRadius: 22
+    },
+    trashBtn: {
+        width: 40,
+        height: 40,
+        borderRadius: 20,
+        backgroundColor: 'rgba(229, 57, 53, 0.1)', // Subtle red background
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
 
     ghostCard: { flexDirection: 'row', backgroundColor: '#121216', marginHorizontal: 20, marginTop: 20, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(0, 229, 255, 0.3)' },
     thumbnailContainer: { width: 100, height: 70, borderRadius: 8, overflow: 'hidden', position: 'relative' },
@@ -450,21 +519,4 @@ const styles = StyleSheet.create({
     deleteCancelBtnText: { color: '#FFF', fontSize: 15, fontWeight: '600' },
     deleteConfirmBtn: { flex: 1, backgroundColor: '#E53935', paddingVertical: 14, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
     deleteConfirmBtnText: { color: '#FFF', fontSize: 15, fontWeight: 'bold' },
-    playButtonWrapper: {
-        width: 30,
-        height: 30,
-        borderRadius: 22,
-        elevation: 6,
-        shadowColor: '#FF007A',
-        shadowOffset: { width: 0, height: 3 },
-        shadowOpacity: 0.35,
-        shadowRadius: 4,
-        marginRight: 12
-    },
-    playButtonGradient: {
-        flex: 1,
-        justifyContent: 'center',
-        alignItems: 'center',
-        borderRadius: 50
-    },
 });
