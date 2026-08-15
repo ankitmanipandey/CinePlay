@@ -170,7 +170,6 @@ const ReactionButtonUI = ({ isFullScreen, showFloatingEmojis, toggleDistractionF
                     }
                 } else {
                     if (Math.abs(dy) > 80) { setHover(-1); return; }
-                    // NEW: Check for negative dx (dragging left) since button is on the right
                     let absDx = Math.abs(dx);
                     if (dx < 0 && absDx > 45 && absDx < 45 + EMOJIS.length * EMOJI_SIZE) {
                         index = Math.floor((absDx - 45) / EMOJI_SIZE);
@@ -215,7 +214,6 @@ const ReactionButtonUI = ({ isFullScreen, showFloatingEmojis, toggleDistractionF
     const PickerMenu = (
         <View style={[
             isFullScreen ? styles.emojiPickerMenuVertical : styles.emojiPickerMenuHorizontal,
-            // NEW: Use marginRight instead of marginLeft so it spaces from the button correctly
             isFullScreen ? { marginBottom: 10 } : { marginRight: 10 }
         ]}>
             {EMOJIS.map((emoji, idx) => {
@@ -230,10 +228,7 @@ const ReactionButtonUI = ({ isFullScreen, showFloatingEmojis, toggleDistractionF
     );
 
     return (
-        // NEW: Changed flex direction to row-reverse so menu opens to the left
-        <View style={[
-            { pointerEvents: 'box-none', flexDirection: isFullScreen ? 'column-reverse' : 'row-reverse', alignItems: 'flex-end' }
-        ]}>
+        <View style={[{ pointerEvents: 'box-none', flexDirection: isFullScreen ? 'column-reverse' : 'row-reverse', alignItems: 'flex-end' }]}>
             {MainBtn}
             {pickerVisible && PickerMenu}
         </View>
@@ -243,7 +238,9 @@ const ReactionButtonUI = ({ isFullScreen, showFloatingEmojis, toggleDistractionF
 export default function TheatreScreen() {
     const router = useRouter();
     const { width, height } = useWindowDimensions();
-    const { roomId, isHost } = useLocalSearchParams();
+
+    // --- NEW: Added initialYtId and initialTitle to catch Cloudflare videos ---
+    const { roomId, isHost, initialYtId, initialTitle } = useLocalSearchParams();
     const isHostBool = isHost === 'true';
 
     const [isJoining, setIsJoining] = useState(!isHostBool);
@@ -278,11 +275,9 @@ export default function TheatreScreen() {
     const [isWaitingForHost, setIsWaitingForHost] = useState(false);
     const [pendingJoinRequest, setPendingJoinRequest] = useState(null);
 
-    // --- REACTION & OVERLAY STATE ---
     const [showFloatingEmojis, setShowFloatingEmojis] = useState(true);
     const [activeReactions, setActiveReactions] = useState([]);
 
-    // Live Chat Bubbles State
     const [showFloatingMessages, setShowFloatingMessages] = useState(true);
     const [activeFloatingMessages, setActiveFloatingMessages] = useState([]);
 
@@ -311,7 +306,6 @@ export default function TheatreScreen() {
         return () => backHandler.remove();
     }, [isFullScreen, isHostBool, socket, roomId]);
 
-    // Show overlay briefly when a new video starts
     useEffect(() => {
         if (ytId) {
             setOverlayVisible(true);
@@ -330,6 +324,13 @@ export default function TheatreScreen() {
 
         newSocket.on('connect', () => {
             newSocket.emit('join_room', { roomId, username: assignedUsername, isHost: isHostBool, userId: user?._id });
+
+            // --- NEW: Instantly load the Cloudflare video if we passed one from MyVideos ---
+            if (isHostBool && initialYtId && initialTitle) {
+                setYtId(initialYtId);
+                setVideoTitle(initialTitle);
+                newSocket.emit('change_video', { roomId, ytId: initialYtId, title: initialTitle });
+            }
         });
 
         newSocket.on('room_users', (userList) => {
@@ -418,7 +419,7 @@ export default function TheatreScreen() {
             newSocket.disconnect();
             ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
         };
-    }, [roomId, isHostBool, user]);
+    }, [roomId, isHostBool, user, initialYtId, initialTitle]);
 
     // --- HOST SYNC ENGINE ---
     useEffect(() => {
@@ -476,7 +477,6 @@ export default function TheatreScreen() {
         setShowFloatingEmojis(prev => !prev);
     };
 
-    // UI Overlay Timer Logic (Works for Host and Joinee)
     const extendOverlayTimer = () => {
         if (overlayTimer.current) clearTimeout(overlayTimer.current);
         overlayTimer.current = setTimeout(() => setOverlayVisible(false), 3500);
@@ -671,12 +671,11 @@ export default function TheatreScreen() {
                         { width: containerWidth, height: containerHeight },
                         isFullScreen && { position: 'absolute', top: 0, left: 0, zIndex: 9999, elevation: 9999, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' }
                     ]}
-                    // NEW: Intercept touches for the host on the way down without blocking them
                     onStartShouldSetResponderCapture={() => {
                         if (isHostBool && ytId) {
                             handleVideoTap();
                         }
-                        return false; // Let the touch pass through to the inner video player
+                        return false;
                     }}
                 >
                     <TheatrePlayer
@@ -690,19 +689,16 @@ export default function TheatreScreen() {
                         height={innerVideoHeight}
                     />
 
-                    {/* Viewers: Solid Pressable overlay to capture taps and block touching the video */}
                     {ytId && !isHostBool && (
                         <Pressable style={StyleSheet.absoluteFill} onPress={handleVideoTap} />
                     )}
 
-                    {/* Fullscreen Exit: Auto-hides with the overlay */}
                     {isFullScreen && showOverlayUI && (
                         <TouchableOpacity style={[styles.fullscreenExitBtn, { zIndex: 100000, elevation: 10 }]} onPress={toggleFullScreen} activeOpacity={0.7}>
                             <Ionicons name="close" size={26} color="#FFFFFF" />
                         </TouchableOpacity>
                     )}
 
-                    {/* Live Viewer Badge */}
                     {ytId && roomUsers.length > 0 && (
                         <View style={styles.liveViewerBadge} pointerEvents="none">
                             <Ionicons name="eye" size={14} color="#FFF" />
@@ -710,12 +706,9 @@ export default function TheatreScreen() {
                         </View>
                     )}
 
-                    {/* Right Unified Controls Overlay (Host & Joinee) - Auto Hides */}
                     {showOverlayUI && (
                         <View style={styles.rightOverlayWrapper} pointerEvents="box-none">
-
                             <View style={styles.rightActionButtons} pointerEvents="box-none">
-                                {/* Chat Visibility Toggle */}
                                 <TouchableOpacity
                                     style={[styles.reactionMainBtn, { marginBottom: 12 }]}
                                     activeOpacity={0.7}
@@ -731,7 +724,6 @@ export default function TheatreScreen() {
                                     />
                                 </TouchableOpacity>
 
-                                {/* Emoji Dispatcher & Toggle */}
                                 <ReactionButtonUI
                                     isFullScreen={isFullScreen}
                                     showFloatingEmojis={showFloatingEmojis}
@@ -743,14 +735,12 @@ export default function TheatreScreen() {
                         </View>
                     )}
 
-                    {/* Live Floating Chat Messages Zone */}
                     <View style={styles.floatingMessagesZone} pointerEvents="none">
                         {showFloatingMessages && activeFloatingMessages.map(msg => (
                             <FloatingMessage key={msg.id} msg={msg} onComplete={() => removeFloatingMessage(msg.id)} />
                         ))}
                     </View>
 
-                    {/* Floating Emojis Zone */}
                     {showFloatingEmojis && (
                         <View style={styles.floatingAnimationZone} pointerEvents="none">
                             {activeReactions.map((reaction) => (
@@ -806,13 +796,13 @@ export default function TheatreScreen() {
                                     bounces={true}
                                 >
                                     {roomUsers.map((uname, idx) => {
-                                        if (uname === username) return null; // Don't show host to themselves
+                                        if (uname === username) return null;
                                         return (
                                             <TouchableOpacity
                                                 key={idx}
                                                 style={styles.viewerChip}
                                                 activeOpacity={0.7}
-                                                onPress={() => setSelectedUserToMod(uname)} // THIS OPENS YOUR MODAL!
+                                                onPress={() => setSelectedUserToMod(uname)}
                                             >
                                                 <Ionicons name="person" size={12} color="#00E5FF" />
                                                 <Text style={styles.viewerChipText}>{uname}</Text>
@@ -977,7 +967,6 @@ const styles = StyleSheet.create({
     playerContainer: { position: 'relative', backgroundColor: '#000' },
     fullscreenExitBtn: { position: 'absolute', top: 15, left: 20, backgroundColor: 'rgba(0,0,0,0.7)', padding: 8, borderRadius: 20 },
 
-    // --- RIGHT OVERLAY & REACTION STYLES ---
     rightOverlayWrapper: { position: 'absolute', bottom: 15, right: 15, zIndex: 99999, pointerEvents: 'box-none' },
     rightActionButtons: { flexDirection: 'column', alignItems: 'flex-end', pointerEvents: 'box-none' },
     reactionMainBtn: { backgroundColor: 'rgba(0,0,0,0.7)', padding: 8, borderRadius: 20, width: 44, height: 44, justifyContent: 'center', alignItems: 'center' },
@@ -989,7 +978,6 @@ const styles = StyleSheet.create({
     emojiOptionHovered: { transform: [{ scale: 1.4 }] },
     emojiOptionText: { fontSize: 26 },
 
-    // --- FLOATING ASSETS ---
     floatingAnimationZone: { position: 'absolute', right: 15, bottom: 60, width: 80, height: 200, zIndex: 99998, justifyContent: 'flex-end', alignItems: 'center' },
 
     floatingEmojiContainer: { position: 'absolute', bottom: 0, alignItems: 'center' },
@@ -1001,11 +989,9 @@ const styles = StyleSheet.create({
     floatingMessageSender: { color: '#00E5FF', fontWeight: 'bold', fontSize: 13, marginRight: 6 },
     floatingMessageText: { color: '#FFF', fontSize: 13 },
 
-    // --- LIVE VIEWER BADGE ---
     liveViewerBadge: { position: 'absolute', top: 15, right: 20, backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 16, paddingHorizontal: 10, paddingVertical: 6, flexDirection: 'row', alignItems: 'center', zIndex: 99999 },
     liveViewerText: { color: '#FFF', marginLeft: 6, fontWeight: 'bold', fontSize: 13 },
 
-    // --- CHAT REACTION STYLE ---
     reactionMessageWrapper: {
         alignSelf: 'center',
         backgroundColor: 'rgba(255,255,255,0.08)',
@@ -1095,7 +1081,6 @@ const styles = StyleSheet.create({
     permissionActions: { gap: 12 },
     permBtn: { paddingVertical: 14, borderRadius: 12, alignItems: 'center' },
     permBtnText: { color: '#FFF', fontWeight: 'bold', fontSize: 15 },
-    // --- HOST MODERATION VIEWER LIST ---
     viewersBar: {
         backgroundColor: '#14141A',
         paddingVertical: 12,

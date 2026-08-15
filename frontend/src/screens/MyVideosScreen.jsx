@@ -31,7 +31,7 @@ const formatDuration = (seconds) => {
     return `${m}:${s < 10 ? '0' : ''}${s}`;
 };
 
-const VideoListItem = ({ item, onDeleteRequest }) => {
+const VideoListItem = ({ item, onDeleteRequest, onPlayRequest }) => {
     const player = useVideoPlayer(item.url, (player) => {
         player.muted = true;
         player.pause();
@@ -39,20 +39,46 @@ const VideoListItem = ({ item, onDeleteRequest }) => {
 
     return (
         <View style={styles.videoItem}>
-            <View style={styles.listThumbnailContainer}>
+            <TouchableOpacity
+                style={styles.listThumbnailContainer}
+                activeOpacity={0.8}
+                onPress={() => onPlayRequest(item)}
+                renderToHardwareTextureAndroid={true}
+            >
                 <VideoView
                     player={player}
                     style={styles.listThumbnailVideo}
                     contentFit="cover"
                     nativeControls={false}
                 />
+                <View style={styles.playOverlay}>
+                    <Ionicons name="play" size={28} color="#00E5FF" style={{ marginLeft: 3 }} />
+                </View>
                 <View style={styles.durationBadge}>
                     <Text style={styles.durationText}>{item.duration || "0:00"}</Text>
                 </View>
-            </View>
+            </TouchableOpacity>
+
             <View style={styles.videoInfo}>
                 <Text style={styles.videoTitle} numberOfLines={2}>{item.title}</Text>
             </View>
+
+            {/* --- THEMED PLAY BUTTON (Matches HomeScreen) --- */}
+            <TouchableOpacity
+                style={styles.playButtonWrapper}
+                activeOpacity={0.8}
+                onPress={() => onPlayRequest(item)}
+            >
+                <LinearGradient
+                    colors={['#00E5FF', '#9B51E0', '#FF007A']}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.playButtonGradient}
+                >
+                    <Ionicons name="play" size={22} color="#FFFFFF" style={{ marginLeft: 3 }} />
+                </LinearGradient>
+            </TouchableOpacity>
+
             <TouchableOpacity onPress={() => onDeleteRequest(item._id)} style={styles.trashBtn}>
                 <Ionicons name="trash-outline" size={22} color="#E53935" />
             </TouchableOpacity>
@@ -70,7 +96,7 @@ const MyVideosScreen = () => {
 
     const [activeUpload, setActiveUpload] = useState(null);
     const uploadTaskRef = useRef(null);
-    const uploadDurationRef = useRef(0); // --- NEW: Track duration safely outside the closure ---
+    const uploadDurationRef = useRef(0);
 
     const [deleteModalVisible, setDeleteModalVisible] = useState(false);
     const [videoToDelete, setVideoToDelete] = useState(null);
@@ -121,39 +147,26 @@ const MyVideosScreen = () => {
         player.play();
     });
 
-    // --- NEW: Safely capture the video duration when the player is ready ---
     useEffect(() => {
         if (!ghostPlayer) return;
-
         const sub = ghostPlayer.addListener('statusChange', (status) => {
             if (status.status === 'readyToPlay' && ghostPlayer.duration) {
                 uploadDurationRef.current = ghostPlayer.duration;
             }
         });
-
-        // Fallback in case it initializes faster than the listener attaches
-        if (ghostPlayer.duration) {
-            uploadDurationRef.current = ghostPlayer.duration;
-        }
-
+        if (ghostPlayer.duration) uploadDurationRef.current = ghostPlayer.duration;
         return () => sub.remove();
     }, [ghostPlayer]);
 
     const handleUpload = async () => {
         if (!selectedFile || !user) return;
-
         const fileToUpload = selectedFile;
         const titleToUpload = videoTitle;
 
         setIsUploadModalVisible(false);
         setVideoTitle('');
         setSelectedFile(null);
-
-        setActiveUpload({
-            uri: fileToUpload.uri,
-            title: titleToUpload,
-            progress: 0
-        });
+        setActiveUpload({ uri: fileToUpload.uri, title: titleToUpload, progress: 0 });
 
         try {
             const initRes = await axios.post(`${BACKEND_URL}/media/get-upload-url`, {
@@ -186,7 +199,6 @@ const MyVideosScreen = () => {
             if (!uploadTaskRef.current) return;
 
             if (uploadResult.status === 200) {
-                // --- FIXED: Read the duration from the safe ref, not the stale closure ---
                 const durationSec = uploadDurationRef.current;
                 const formattedDuration = formatDuration(durationSec);
 
@@ -203,12 +215,9 @@ const MyVideosScreen = () => {
             } else {
                 throw new Error('Server rejected the upload');
             }
-
         } catch (error) {
             if (!uploadTaskRef.current) return;
-            // --- FIXED: Add error logging back in ---
             console.error("Upload confirm error:", error);
-
             if (error.response?.status === 403) {
                 Toast.show({ type: 'hotstarError', text1: 'Storage Full', text2: error.response.data.error });
             } else {
@@ -217,17 +226,13 @@ const MyVideosScreen = () => {
         } finally {
             setActiveUpload(null);
             uploadTaskRef.current = null;
-            uploadDurationRef.current = 0; // Reset the ref for the next upload
+            uploadDurationRef.current = 0;
         }
     };
 
     const cancelUpload = async () => {
         if (uploadTaskRef.current) {
-            try {
-                await uploadTaskRef.current.cancelAsync();
-            } catch (e) {
-                console.log("Error cancelling task:", e);
-            }
+            try { await uploadTaskRef.current.cancelAsync(); } catch (e) { console.log(e); }
         }
         uploadTaskRef.current = null;
         setActiveUpload(null);
@@ -254,6 +259,20 @@ const MyVideosScreen = () => {
             setIsDeleting(false);
             setVideoToDelete(null);
         }
+    };
+
+    // --- NEW: Route to Theatre Screen with the Custom Cloudflare URL ---
+    const playVideoInTheatre = (video) => {
+        const newRoomId = Math.floor(10000 + Math.random() * 90000).toString();
+        router.push({
+            pathname: '/theatre',
+            params: {
+                roomId: newRoomId,
+                isHost: 'true',
+                initialYtId: `CUSTOM:${video.url}`, // The trick that prevents breaking the Node backend
+                initialTitle: video.title
+            }
+        });
     };
 
     return (
@@ -287,14 +306,10 @@ const MyVideosScreen = () => {
                                     </TouchableOpacity>
                                 </View>
                                 <View style={styles.ghostCardInfo}>
-                                    <Text style={styles.ghostCardTitle} numberOfLines={2}>
-                                        {activeUpload.title}
-                                    </Text>
+                                    <Text style={styles.ghostCardTitle} numberOfLines={2}>{activeUpload.title}</Text>
                                     <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                                         <Text style={styles.ghostCardSubtitle}>Uploading to Cloudflare...</Text>
-                                        <Text style={{ color: '#00E5FF', fontSize: 13, fontWeight: 'bold' }}>
-                                            {activeUpload.progress}%
-                                        </Text>
+                                        <Text style={{ color: '#00E5FF', fontSize: 13, fontWeight: 'bold' }}>{activeUpload.progress}%</Text>
                                     </View>
                                     <View style={styles.ghostCardProgressBarBg}>
                                         <View style={[styles.ghostCardProgressBarFill, { width: `${activeUpload.progress}%` }]} />
@@ -308,7 +323,11 @@ const MyVideosScreen = () => {
                             keyExtractor={(item, index) => item._id || index.toString()}
                             contentContainerStyle={styles.listContent}
                             renderItem={({ item }) => (
-                                <VideoListItem item={item} onDeleteRequest={requestDelete} />
+                                <VideoListItem
+                                    item={item}
+                                    onDeleteRequest={requestDelete}
+                                    onPlayRequest={playVideoInTheatre}
+                                />
                             )}
                         />
                     </View>
@@ -352,31 +371,13 @@ const MyVideosScreen = () => {
                             <Ionicons name="trash" size={32} color="#E53935" />
                         </View>
                         <Text style={styles.deleteModalTitle}>Delete Video?</Text>
-                        <Text style={styles.deleteModalSub}>
-                            This video will be permanently removed from your storage. This action cannot be undone.
-                        </Text>
-
+                        <Text style={styles.deleteModalSub}>This video will be permanently removed from your storage. This action cannot be undone.</Text>
                         <View style={styles.deleteModalBtnRow}>
-                            <TouchableOpacity
-                                style={styles.deleteCancelBtn}
-                                activeOpacity={0.7}
-                                onPress={() => setDeleteModalVisible(false)}
-                                disabled={isDeleting}
-                            >
+                            <TouchableOpacity style={styles.deleteCancelBtn} activeOpacity={0.7} onPress={() => setDeleteModalVisible(false)} disabled={isDeleting}>
                                 <Text style={styles.deleteCancelBtnText}>Cancel</Text>
                             </TouchableOpacity>
-
-                            <TouchableOpacity
-                                style={styles.deleteConfirmBtn}
-                                activeOpacity={0.8}
-                                onPress={confirmDelete}
-                                disabled={isDeleting}
-                            >
-                                {isDeleting ? (
-                                    <ActivityIndicator color="#FFF" size="small" />
-                                ) : (
-                                    <Text style={styles.deleteConfirmBtnText}>Delete</Text>
-                                )}
+                            <TouchableOpacity style={styles.deleteConfirmBtn} activeOpacity={0.8} onPress={confirmDelete} disabled={isDeleting}>
+                                {isDeleting ? <ActivityIndicator color="#FFF" size="small" /> : <Text style={styles.deleteConfirmBtnText}>Delete</Text>}
                             </TouchableOpacity>
                         </View>
                     </View>
@@ -402,6 +403,10 @@ const styles = StyleSheet.create({
     videoItem: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#17171C', padding: 12, borderRadius: 12, marginBottom: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
     listThumbnailContainer: { width: 90, height: 60, borderRadius: 8, overflow: 'hidden', backgroundColor: '#0A0A0C', position: 'relative' },
     listThumbnailVideo: { width: '100%', height: '100%' },
+
+    // --- NEW: Play Overlay Style ---
+    playOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center' },
+
     durationBadge: { position: 'absolute', bottom: 4, right: 4, backgroundColor: 'rgba(0,0,0,0.85)', paddingHorizontal: 4, paddingVertical: 2, borderRadius: 4 },
     durationText: { color: '#FFF', fontSize: 10, fontWeight: 'bold' },
     videoInfo: { flex: 1, marginLeft: 12, justifyContent: 'center' },
@@ -444,5 +449,22 @@ const styles = StyleSheet.create({
     deleteCancelBtn: { flex: 1, backgroundColor: 'rgba(255,255,255,0.05)', paddingVertical: 14, borderRadius: 12, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
     deleteCancelBtnText: { color: '#FFF', fontSize: 15, fontWeight: '600' },
     deleteConfirmBtn: { flex: 1, backgroundColor: '#E53935', paddingVertical: 14, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
-    deleteConfirmBtnText: { color: '#FFF', fontSize: 15, fontWeight: 'bold' }
+    deleteConfirmBtnText: { color: '#FFF', fontSize: 15, fontWeight: 'bold' },
+    playButtonWrapper: {
+        width: 30,
+        height: 30,
+        borderRadius: 22,
+        elevation: 6,
+        shadowColor: '#FF007A',
+        shadowOffset: { width: 0, height: 3 },
+        shadowOpacity: 0.35,
+        shadowRadius: 4,
+        marginRight: 12
+    },
+    playButtonGradient: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+        borderRadius: 50
+    },
 });
