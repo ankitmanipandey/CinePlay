@@ -15,7 +15,6 @@ import {
 } from 'react-native';
 import Svg, { Circle, Defs, Stop, LinearGradient as SvgLinearGradient } from 'react-native-svg';
 import YoutubePlayer from 'react-native-youtube-iframe';
-import * as Brightness from 'expo-brightness';
 import { VolumeManager } from 'react-native-volume-manager';
 
 const GradientLoader = () => {
@@ -50,18 +49,6 @@ const formatTime = (seconds) => {
     return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
 };
 
-// --- Module-level promise so the OS permission dialog is only ever triggered once per app session ---
-let brightnessPermissionPromise = null;
-const requestBrightnessPermissionOnce = () => {
-    if (!brightnessPermissionPromise) {
-        brightnessPermissionPromise = Brightness.requestPermissionsAsync().catch((err) => {
-            brightnessPermissionPromise = null;
-            throw err;
-        });
-    }
-    return brightnessPermissionPromise;
-};
-
 const TheatrePlayer = forwardRef(({
     ytId, isPlaying, isHostBool, onPlayerStateChange, width, height, isMuted,
     isFullScreen, onExit, onToggleOrientation, onControlsToggle
@@ -86,32 +73,16 @@ const TheatrePlayer = forwardRef(({
     const controlsTimer = useRef(null);
     const [showSettings, setShowSettings] = useState(false);
 
+    // --- Brightness is a purely local, in-app simulation. It does NOT
+    // touch the real device brightness (no `expo-brightness` call), which
+    // means it never needs the OS "Allow modify system settings" permission
+    // and can never trigger that screen — not intermittently, not ever.
+    // The visible dimming effect comes entirely from the black overlay
+    // `View` below (opacity: 1 - brightness), driven by this state. ---
     const [brightness, setBrightness] = useState(1);
     const [volume, setVolume] = useState(1);
     const brightnessRef = useRef(1);
     const volumeRef = useRef(1);
-
-    // --- Brightness permission is requested lazily, only the first time the
-    // user actually swipes on the left half of the screen (the brightness
-    // gesture). This stops the Android "Allow modify system settings" screen
-    // from popping up every time a video opens, even when the user never
-    // touches that gesture. ---
-    const brightnessReadyRef = useRef(false);
-    const ensureBrightnessReady = async () => {
-        if (brightnessReadyRef.current) return;
-        brightnessReadyRef.current = true; // mark immediately to avoid duplicate concurrent requests
-        try {
-            const { status } = await requestBrightnessPermissionOnce();
-            if (status === 'granted') {
-                const currentB = await Brightness.getBrightnessAsync();
-                brightnessRef.current = currentB;
-                setBrightness(currentB);
-            }
-        } catch (e) {
-            console.log('Brightness init failed:', e.message);
-            brightnessReadyRef.current = false; // allow retry on next swipe if it failed
-        }
-    };
 
     const [swipeIndicator, setSwipeIndicator] = useState({ visible: false, type: '', value: 0 });
 
@@ -348,13 +319,6 @@ const TheatrePlayer = forwardRef(({
                 const x = evt.nativeEvent.locationX;
                 const side = x < currentWidth / 2 ? 'left' : 'right';
 
-                // Only ask for the brightness permission (which triggers
-                // Android's "Allow modify system settings" screen) the moment
-                // the user actually starts a left-side swipe.
-                if (side === 'left') {
-                    ensureBrightnessReady();
-                }
-
                 swipeState.current = {
                     isSwiping: false,
                     startY: evt.nativeEvent.locationY,
@@ -371,9 +335,11 @@ const TheatrePlayer = forwardRef(({
                     const newVal = Math.max(0, Math.min(1, swipeState.current.startVal + delta));
 
                     if (swipeState.current.side === 'left') {
+                        // In-app-only brightness simulation — no real device
+                        // API call here, so this can never trigger the OS
+                        // "Allow modify system settings" permission screen.
                         brightnessRef.current = newVal;
                         setBrightness(newVal);
-                        Brightness.setBrightnessAsync(newVal).catch(() => { });
                         setSwipeIndicator({ visible: true, type: 'brightness', value: Math.round(newVal * 100) });
                     } else {
                         volumeRef.current = newVal;
