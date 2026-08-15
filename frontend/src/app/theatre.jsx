@@ -259,8 +259,22 @@ export default function TheatreScreen() {
     const [showFloatingMessages, setShowFloatingMessages] = useState(true);
     const [activeFloatingMessages, setActiveFloatingMessages] = useState([]);
 
+    // --- overlayVisible controls this screen's OWN overlay elements
+    // (reaction button, chat toggle, live-viewer badge, fullscreen exit btn).
+    // It is intentionally NOT governed by its own independent timer anymore.
+    // The single 6-second auto-hide clock lives inside TheatrePlayer; this
+    // state simply mirrors it via the onControlsToggle callback below, so
+    // every visible overlay element (the player's own bars AND this
+    // screen's buttons) shows and hides at exactly the same moment. ---
     const [overlayVisible, setOverlayVisible] = useState(true);
-    const overlayTimer = useRef(null);
+
+    // Whether the currently loaded video is a locally-uploaded/custom video
+    // (as opposed to a plain YouTube video). Custom videos get their tap
+    // handling from TheatrePlayer's own internal gesture layer, so this
+    // screen must NOT also try to toggle controls on every touch — that
+    // would fight the player's own toggle and cause flicker/inconsistent
+    // show-hide behavior.
+    const isCustomVideo = !!ytId && ytId.startsWith('CUSTOM:');
 
     useEffect(() => {
         isPlayingRef.current = isPlaying;
@@ -270,7 +284,9 @@ export default function TheatreScreen() {
         const keyboardDidShowListener = Keyboard.addListener('keyboardDidShow', () => setIsKeyboardVisible(true));
         const keyboardDidHideListener = Keyboard.addListener('keyboardDidHide', () => setIsKeyboardVisible(false));
         return () => {
-            keyboardDidHideListener.remove();
+            // FIXED: was removing keyboardDidHideListener twice, leaking the
+            // keyboardDidShow listener across re-mounts.
+            keyboardDidShowListener.remove();
             keyboardDidHideListener.remove();
         };
     }, []);
@@ -289,6 +305,7 @@ export default function TheatreScreen() {
             setOverlayVisible(true);
             extendOverlayTimer();
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [ytId]);
 
     // --- SOCKET SETUP ---
@@ -457,15 +474,31 @@ export default function TheatreScreen() {
     };
 
     // --- UI TOGGLE SYNC LOGIC ---
+    // extendOverlayTimer: SHOWS controls and resets the single 6s clock.
+    // Used by any button press (chat toggle, reaction picker, etc.) that
+    // should keep the overlay visible without toggling it off.
     const extendOverlayTimer = () => {
         playerRef.current?.extendControls?.();
-        if (overlayTimer.current) clearTimeout(overlayTimer.current);
-        overlayTimer.current = setTimeout(() => setOverlayVisible(false), 6000); // --- FIXED: Increased timeout to 6 seconds ---
     };
 
+    // handleVideoTap: only relevant for plain YouTube playback, where
+    // TheatrePlayer renders no bars/gesture-layer of its own (it relies on
+    // YouTube's native controls). We ask the player to TOGGLE its shared
+    // visibility state, which — via onControlsToggle — updates this
+    // screen's own overlayVisible too, so the reaction/chat buttons and
+    // badge appear/disappear in lockstep.
+    //
+    // For custom (uploaded) videos we deliberately do nothing here:
+    // TheatrePlayer's own internal pan responder already detects taps on
+    // empty video space and calls toggleControlsRef itself. If we also
+    // toggled from here on every touch-start, the two toggles would race
+    // and the overlay would flicker or appear to "never" hide, since a
+    // touch-down (this handler) and the matching touch-up (the player's
+    // gesture) could each flip the state, effectively canceling out.
     const handleVideoTap = () => {
-        setOverlayVisible(true);
-        extendOverlayTimer();
+        if (!isCustomVideo) {
+            playerRef.current?.toggleControls?.();
+        }
     };
 
     // --- NORMAL CHAT LOGIC ---

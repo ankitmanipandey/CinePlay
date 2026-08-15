@@ -50,6 +50,7 @@ const formatTime = (seconds) => {
     return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
 };
 
+// --- Module-level promise so the OS permission dialog is only ever triggered once per app session ---
 let brightnessPermissionPromise = null;
 const requestBrightnessPermissionOnce = () => {
     if (!brightnessPermissionPromise) {
@@ -72,6 +73,14 @@ const TheatrePlayer = forwardRef(({
 
     const ytRef = useRef(null);
 
+    // --- controlsVisible is the SINGLE SOURCE OF TRUTH for whether any
+    // on-screen controls (this component's own bars, AND the parent
+    // TheatreScreen's reaction/chat/fullscreen buttons via onControlsToggle)
+    // should be visible. There is exactly one 6-second timer that governs
+    // this, defined below. Nothing else should independently hide/show
+    // these elements — everything routes through showControlsTemporarily /
+    // toggleControlsRef so that every visible element appears and
+    // disappears together. ---
     const [controlsVisible, setControlsVisible] = useState(true);
     const fadeAnim = useRef(new Animated.Value(1)).current;
     const controlsTimer = useRef(null);
@@ -82,28 +91,39 @@ const TheatrePlayer = forwardRef(({
     const brightnessRef = useRef(1);
     const volumeRef = useRef(1);
 
+    // --- Brightness permission is requested lazily, only the first time the
+    // user actually swipes on the left half of the screen (the brightness
+    // gesture). This stops the Android "Allow modify system settings" screen
+    // from popping up every time a video opens, even when the user never
+    // touches that gesture. ---
+    const brightnessReadyRef = useRef(false);
+    const ensureBrightnessReady = async () => {
+        if (brightnessReadyRef.current) return;
+        brightnessReadyRef.current = true; // mark immediately to avoid duplicate concurrent requests
+        try {
+            const { status } = await requestBrightnessPermissionOnce();
+            if (status === 'granted') {
+                const currentB = await Brightness.getBrightnessAsync();
+                brightnessRef.current = currentB;
+                setBrightness(currentB);
+            }
+        } catch (e) {
+            console.log('Brightness init failed:', e.message);
+            brightnessReadyRef.current = false; // allow retry on next swipe if it failed
+        }
+    };
+
     const [swipeIndicator, setSwipeIndicator] = useState({ visible: false, type: '', value: 0 });
 
     const lastTap = useRef({ time: 0, timeout: null });
     const swipeState = useRef({ isSwiping: false, startY: 0, startVal: 0, side: '' });
 
+    // --- Only volume is read on mount. Reading volume does not require any
+    // special Android permission, so it's safe to do eagerly. ---
     useEffect(() => {
         let isMounted = true;
 
         (async () => {
-            try {
-                const { status } = await requestBrightnessPermissionOnce();
-                if (status === 'granted' && isMounted) {
-                    const currentB = await Brightness.getBrightnessAsync();
-                    if (isMounted) {
-                        brightnessRef.current = currentB;
-                        setBrightness(currentB);
-                    }
-                }
-            } catch (e) {
-                console.log('Brightness init failed:', e.message);
-            }
-
             try {
                 const currentV = await VolumeManager.getVolume();
                 const v = typeof currentV === 'number' ? currentV : currentV.volume;
@@ -130,6 +150,7 @@ const TheatrePlayer = forwardRef(({
     }, []);
 
     const toggleControlsRef = useRef(null);
+    const showControlsRef = useRef(null);
     const handleSkipRef = useRef(null);
 
     const [currentTime, setCurrentTime] = useState(0);
@@ -220,26 +241,6 @@ const TheatrePlayer = forwardRef(({
         };
     }, [nativePlayer, isCustom, isPlaying, onPlayerStateChange]);
 
-    useImperativeHandle(ref, () => ({
-        getCurrentTime: async () => {
-            try {
-                if (youtubeId && ytRef.current) return (await ytRef.current.getCurrentTime()) ?? 0;
-                if (isCustom && nativePlayerRef.current) return nativePlayerRef.current.currentTime ?? 0;
-            } catch (e) { }
-            return 0;
-        },
-        seekTo: (seconds, allowSeekAhead) => {
-            try {
-                if (youtubeId && ytRef.current) {
-                    ytRef.current.seekTo(seconds, allowSeekAhead);
-                } else if (isCustom && nativePlayerRef.current) {
-                    nativePlayerRef.current.currentTime = seconds;
-                    setCurrentTime(seconds);
-                }
-            } catch (e) { }
-        }
-    }), [isCustom, youtubeId]);
-
     const showControlsTemporarily = () => {
         setControlsVisible(true);
         if (onControlsToggle) onControlsToggle(true);
@@ -257,6 +258,12 @@ const TheatrePlayer = forwardRef(({
         }, 6000);
     };
 
+    // Reassigned fresh on every render so it always closes over the LATEST
+    // isPlaying / showSettings / controlsVisible — this is what prevents the
+    // "auto-hide silently stops working once the video actually starts
+    // playing" bug that a stale closure would otherwise cause.
+    showControlsRef.current = showControlsTemporarily;
+
     toggleControlsRef.current = () => {
         if (controlsVisible) {
             Animated.timing(fadeAnim, { toValue: 0, duration: 250, useNativeDriver: true }).start(() => {
@@ -268,6 +275,44 @@ const TheatrePlayer = forwardRef(({
             showControlsTemporarily();
         }
     };
+
+    // --- Everything exposed to the parent is routed through the *Ref
+    // indirections above, never through a function closured directly at the
+    // time the imperative handle factory ran. useImperativeHandle only
+    // re-runs its factory when [isCustom, youtubeId] change — capturing
+    // showControlsTemporarily directly here would freeze it to whatever
+    // isPlaying/showSettings were on the render the video type was first
+    // determined (usually before playback even started). Routing through
+    // the refs guarantees we always call the current-render version. ---
+    useImperativeHandle(ref, () => ({
+        getCurrentTime: async () => {
+            try {
+                if (youtubeId && ytRef.current) return (await ytRef.current.getCurrentTime()) ?? 0;
+                if (isCustom && nativePlayerRef.current) return nativePlayerRef.current.currentTime ?? 0;
+            } catch (e) { }
+            return 0;
+        },
+        seekTo: (seconds, allowSeekAhead) => {
+            try {
+                if (youtubeId && ytRef.current) {
+                    ytRef.current.seekTo(seconds, allowSeekAhead);
+                } else if (isCustom && nativePlayerRef.current) {
+                    nativePlayerRef.current.currentTime = seconds;
+                    setCurrentTime(seconds);
+                }
+            } catch (e) { }
+        },
+        // Show controls & reset the 6s auto-hide clock (used by external
+        // buttons like the chat/reaction toggles in TheatreScreen).
+        extendControls: () => {
+            showControlsRef.current?.();
+        },
+        // Toggle controls on/off (used for taps on the video area where
+        // there's no internal gesture layer, e.g. plain YouTube playback).
+        toggleControls: () => {
+            toggleControlsRef.current?.();
+        }
+    }), [isCustom, youtubeId]);
 
     useEffect(() => {
         showControlsTemporarily();
@@ -303,6 +348,13 @@ const TheatrePlayer = forwardRef(({
                 const x = evt.nativeEvent.locationX;
                 const side = x < currentWidth / 2 ? 'left' : 'right';
 
+                // Only ask for the brightness permission (which triggers
+                // Android's "Allow modify system settings" screen) the moment
+                // the user actually starts a left-side swipe.
+                if (side === 'left') {
+                    ensureBrightnessReady();
+                }
+
                 swipeState.current = {
                     isSwiping: false,
                     startY: evt.nativeEvent.locationY,
@@ -321,7 +373,7 @@ const TheatrePlayer = forwardRef(({
                     if (swipeState.current.side === 'left') {
                         brightnessRef.current = newVal;
                         setBrightness(newVal);
-                        Brightness.setBrightnessAsync(newVal);
+                        Brightness.setBrightnessAsync(newVal).catch(() => { });
                         setSwipeIndicator({ visible: true, type: 'brightness', value: Math.round(newVal * 100) });
                     } else {
                         volumeRef.current = newVal;
@@ -350,6 +402,11 @@ const TheatrePlayer = forwardRef(({
                         lastTap.current.time = now;
                         lastTap.current.timeout = setTimeout(() => {
                             if (lastTap.current.time === now) {
+                                // A single tap on empty video space TOGGLES
+                                // controls — shows them if hidden, hides them
+                                // if visible. This (plus the shared state
+                                // above) is what makes every overlay element
+                                // appear and disappear together.
                                 toggleControlsRef.current();
                             }
                         }, DOUBLE_TAP_DELAY);
