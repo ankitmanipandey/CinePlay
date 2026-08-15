@@ -4,6 +4,7 @@ import { useVideoPlayer, VideoView } from 'expo-video';
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import {
     Animated,
+    Dimensions,
     Easing,
     PanResponder,
     StyleSheet,
@@ -14,6 +15,8 @@ import {
 } from 'react-native';
 import Svg, { Circle, Defs, Stop, LinearGradient as SvgLinearGradient } from 'react-native-svg';
 import YoutubePlayer from 'react-native-youtube-iframe';
+import * as Brightness from 'expo-brightness';
+import { VolumeManager } from 'react-native-volume-manager';
 
 // --- CUSTOM GRADIENT SPINNER (100% Transparent Middle) ---
 const GradientLoader = () => {
@@ -35,22 +38,12 @@ const GradientLoader = () => {
                         <Stop offset="100%" stopColor="#FF007A" />
                     </SvgLinearGradient>
                 </Defs>
-                <Circle
-                    cx="22"
-                    cy="22"
-                    r="18"
-                    stroke="url(#loaderGrad)"
-                    strokeWidth="4"
-                    fill="none"
-                    strokeDasharray="85 113"
-                    strokeLinecap="round"
-                />
+                <Circle cx="22" cy="22" r="18" stroke="url(#loaderGrad)" strokeWidth="4" fill="none" strokeDasharray="85 113" strokeLinecap="round" />
             </Svg>
         </Animated.View>
     );
 };
 
-// Helper for formatting time (MM:SS)
 const formatTime = (seconds) => {
     if (!seconds || isNaN(seconds)) return "00:00";
     const m = Math.floor(seconds / 60);
@@ -58,8 +51,21 @@ const formatTime = (seconds) => {
     return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
 };
 
+// --- HARDWARE PERMISSIONS CACHE (Fix for Strict Mode Double-Mount Crashes) ---
+let brightnessPermissionPromise = null;
+const requestBrightnessPermissionOnce = () => {
+    if (!brightnessPermissionPromise) {
+        brightnessPermissionPromise = Brightness.requestPermissionsAsync().catch((err) => {
+            brightnessPermissionPromise = null;
+            throw err;
+        });
+    }
+    return brightnessPermissionPromise;
+};
+
 const TheatrePlayer = forwardRef(({
-    ytId, isPlaying, isHostBool, onPlayerStateChange, width, height, isMuted
+    ytId, isPlaying, isHostBool, onPlayerStateChange, width, height, isMuted,
+    isFullScreen, onExit, onToggleOrientation
 }, ref) => {
 
     const isCustom = ytId && ytId.startsWith('CUSTOM:');
@@ -73,6 +79,65 @@ const TheatrePlayer = forwardRef(({
     const fadeAnim = useRef(new Animated.Value(1)).current;
     const controlsTimer = useRef(null);
     const [showSettings, setShowSettings] = useState(false);
+
+    // --- HARDWARE GESTURE STATE & LIVE REFS ---
+    const [brightness, setBrightness] = useState(1);
+    const [volume, setVolume] = useState(1);
+    const brightnessRef = useRef(1);
+    const volumeRef = useRef(1);
+
+    const [swipeIndicator, setSwipeIndicator] = useState({ visible: false, type: '', value: 0 });
+
+    const lastTap = useRef({ time: 0, timeout: null });
+    const swipeState = useRef({ isSwiping: false, startY: 0, startVal: 0, side: '' });
+
+    // Initialize Hardware States (Crash-Proof Version)
+    useEffect(() => {
+        let isMounted = true;
+
+        (async () => {
+            try {
+                const { status } = await requestBrightnessPermissionOnce();
+                if (status === 'granted' && isMounted) {
+                    const currentB = await Brightness.getBrightnessAsync();
+                    if (isMounted) {
+                        brightnessRef.current = currentB;
+                        setBrightness(currentB);
+                    }
+                }
+            } catch (e) {
+                console.log('Brightness init failed:', e.message);
+            }
+
+            try {
+                const currentV = await VolumeManager.getVolume();
+                const v = typeof currentV === 'number' ? currentV : currentV.volume;
+                if (isMounted) {
+                    volumeRef.current = v;
+                    setVolume(v);
+                }
+            } catch (e) {
+                console.log('Volume init failed:', e.message);
+            }
+        })();
+
+        // Listen for physical volume button presses
+        const volumeListener = VolumeManager.addVolumeListener((result) => {
+            if (isMounted) {
+                volumeRef.current = result.volume;
+                setVolume(result.volume);
+            }
+        });
+
+        return () => {
+            isMounted = false;
+            volumeListener?.remove();
+        };
+    }, []);
+
+    // --- LIVE FUNCTION REFS ---
+    const toggleControlsRef = useRef(null);
+    const handleSkipRef = useRef(null);
 
     // --- VIDEO METRICS & SCRUBBING STATE ---
     const [currentTime, setCurrentTime] = useState(0);
@@ -91,20 +156,16 @@ const TheatrePlayer = forwardRef(({
     const nativePlayer = useVideoPlayer(customUrl || '', (player) => {
         player.loop = false;
         player.muted = isMuted;
+        player.preservesPitch = true;
         if (isPlaying) player.play();
     });
 
     const nativePlayerRef = useRef(nativePlayer);
-    useEffect(() => {
-        nativePlayerRef.current = nativePlayer;
-    }, [nativePlayer]);
+    useEffect(() => { nativePlayerRef.current = nativePlayer; }, [nativePlayer]);
 
     const durationRef = useRef(duration);
-    useEffect(() => {
-        durationRef.current = duration;
-    }, [duration]);
+    useEffect(() => { durationRef.current = duration; }, [duration]);
 
-    // Keep Player Synced
     useEffect(() => {
         if (!nativePlayer || !isCustom) return;
         try {
@@ -114,20 +175,15 @@ const TheatrePlayer = forwardRef(({
         } catch (e) { }
     }, [isPlaying, isMuted, nativePlayer, isCustom]);
 
-    // --- FIXED: Smart Listeners that prevent false pauses during buffering ---
     useEffect(() => {
         if (!nativePlayer || !isCustom) return;
 
         const subStatus = nativePlayer.addListener('statusChange', (status) => {
-            if (status.status === 'loading' || status.status === 'buffering') {
-                setIsBuffering(true);
-            } else if (status.status === 'readyToPlay') {
+            if (status.status === 'loading' || status.status === 'buffering') setIsBuffering(true);
+            else if (status.status === 'readyToPlay') {
                 setIsBuffering(false);
                 stallCounter.current = 0;
-                // Force play if the room is meant to be playing
-                if (isPlaying && !nativePlayer.playing) {
-                    nativePlayer.play();
-                }
+                if (isPlaying && !nativePlayer.playing) nativePlayer.play();
             }
         });
 
@@ -136,8 +192,6 @@ const TheatrePlayer = forwardRef(({
                 setIsBuffering(false);
                 stallCounter.current = 0;
             } else {
-                // ONLY tell the room to pause if the video naturally reached the very end.
-                // Otherwise, it paused against our will (buffering/seeking) and we ignore it!
                 if (isPlaying && durationRef.current > 0 && nativePlayer.currentTime >= durationRef.current - 0.5) {
                     onPlayerStateChange('paused');
                 }
@@ -158,14 +212,10 @@ const TheatrePlayer = forwardRef(({
                         setIsBuffering(false);
                     }
                 } else if (!nativePlayer.playing && !isScrubbingRef.current && isPlaying) {
-                    // Video is frozen, but room is playing -> It is buffering!
                     setIsBuffering(true);
                 }
 
-                if (!isScrubbingRef.current) {
-                    setCurrentTime(currentNativeTime);
-                }
-
+                if (!isScrubbingRef.current) setCurrentTime(currentNativeTime);
                 if (nativePlayer.duration) setDuration(nativePlayer.duration);
                 lastTimeRef.current = currentNativeTime;
             } catch (e) { }
@@ -176,7 +226,7 @@ const TheatrePlayer = forwardRef(({
             subPlay.remove();
             clearInterval(interval);
         };
-    }, [nativePlayer, isCustom, isPlaying, onPlayerStateChange]); // Added isPlaying to dependencies
+    }, [nativePlayer, isCustom, isPlaying, onPlayerStateChange]);
 
     useImperativeHandle(ref, () => ({
         getCurrentTime: async () => {
@@ -212,12 +262,113 @@ const TheatrePlayer = forwardRef(({
         }, 3500);
     };
 
+    toggleControlsRef.current = () => {
+        if (controlsVisible) {
+            Animated.timing(fadeAnim, { toValue: 0, duration: 250, useNativeDriver: true }).start(() => {
+                setControlsVisible(false);
+            });
+            if (controlsTimer.current) clearTimeout(controlsTimer.current);
+        } else {
+            showControlsTemporarily();
+        }
+    };
+
     useEffect(() => {
         showControlsTemporarily();
         return () => clearTimeout(controlsTimer.current);
     }, [isPlaying, showSettings]);
 
-    // --- PAN RESPONDER (FIXED: Force playback resume after scrub release) ---
+    handleSkipRef.current = (seconds) => {
+        if (!isHostBool) return;
+        const player = nativePlayerRef.current;
+        if (!player) return;
+        try {
+            const newTime = Math.max(0, Math.min(durationRef.current, player.currentTime + seconds));
+            player.currentTime = newTime;
+
+            if (isPlaying) {
+                setIsBuffering(true);
+                stallCounter.current = 2;
+                player.play();
+            }
+
+            setCurrentTime(newTime);
+            lastTimeRef.current = newTime;
+            showControlsTemporarily();
+        } catch (e) { }
+    };
+
+    // --- MAIN BACKGROUND GESTURE RESPONDER (HARDWARE INTEGRATED) ---
+    const mainPanResponder = useRef(
+        PanResponder.create({
+            onStartShouldSetPanResponder: () => true,
+            onMoveShouldSetPanResponder: (evt, gestureState) => Math.abs(gestureState.dy) > 10,
+            onPanResponderGrant: (evt) => {
+                const { width: currentWidth } = Dimensions.get('window');
+                const x = evt.nativeEvent.locationX;
+                const side = x < currentWidth / 2 ? 'left' : 'right';
+
+                swipeState.current = {
+                    isSwiping: false,
+                    startY: evt.nativeEvent.locationY,
+                    startVal: side === 'left' ? brightnessRef.current : volumeRef.current,
+                    side: side
+                };
+            },
+            onPanResponderMove: (evt, gestureState) => {
+                if (Math.abs(gestureState.dy) > 10) {
+                    swipeState.current.isSwiping = true;
+
+                    const { height: currentHeight } = Dimensions.get('window');
+                    const delta = -(gestureState.dy / (currentHeight / 1.5));
+                    const newVal = Math.max(0, Math.min(1, swipeState.current.startVal + delta));
+
+                    if (swipeState.current.side === 'left') {
+                        brightnessRef.current = newVal;
+                        setBrightness(newVal);
+                        Brightness.setBrightnessAsync(newVal); // REAL HARDWARE BRIGHTNESS
+                        setSwipeIndicator({ visible: true, type: 'brightness', value: Math.round(newVal * 100) });
+                    } else {
+                        volumeRef.current = newVal;
+                        setVolume(newVal);
+                        VolumeManager.setVolume(newVal); // REAL HARDWARE VOLUME
+                        setSwipeIndicator({ visible: true, type: 'volume', value: Math.round(newVal * 100) });
+                    }
+                }
+            },
+            onPanResponderRelease: (evt, gestureState) => {
+                if (swipeState.current.isSwiping) {
+                    setSwipeIndicator({ visible: false, type: '', value: 0 });
+                } else {
+                    const now = Date.now();
+                    const { width: currentWidth } = Dimensions.get('window');
+                    const x = evt.nativeEvent.locationX;
+                    const DOUBLE_TAP_DELAY = 300;
+
+                    if (now - lastTap.current.time < DOUBLE_TAP_DELAY) {
+                        if (lastTap.current.timeout) clearTimeout(lastTap.current.timeout);
+                        lastTap.current.time = 0;
+
+                        if (x < currentWidth / 2) handleSkipRef.current(-10);
+                        else handleSkipRef.current(10);
+                    } else {
+                        lastTap.current.time = now;
+                        lastTap.current.timeout = setTimeout(() => {
+                            if (lastTap.current.time === now) {
+                                toggleControlsRef.current();
+                            }
+                        }, DOUBLE_TAP_DELAY);
+                    }
+                }
+                swipeState.current.isSwiping = false;
+            },
+            onPanResponderTerminate: () => {
+                setSwipeIndicator({ visible: false, type: '', value: 0 });
+                swipeState.current.isSwiping = false;
+            }
+        })
+    ).current;
+
     const progressPanResponder = useRef(
         PanResponder.create({
             onStartShouldSetPanResponder: () => true,
@@ -256,7 +407,6 @@ const TheatrePlayer = forwardRef(({
                     try {
                         if (player.duration > 0) {
                             player.currentTime = newTime;
-                            // Enforce auto-play immediately if the room is playing
                             if (isPlaying) {
                                 setIsBuffering(true);
                                 stallCounter.current = 2;
@@ -279,27 +429,6 @@ const TheatrePlayer = forwardRef(({
         })
     ).current;
 
-    const handleSkip = (seconds) => {
-        if (!isHostBool) return;
-        const player = nativePlayerRef.current;
-        if (!player) return;
-        try {
-            const newTime = Math.max(0, Math.min(durationRef.current, player.currentTime + seconds));
-            player.currentTime = newTime;
-
-            // Enforce auto-play immediately if the room is playing
-            if (isPlaying) {
-                setIsBuffering(true);
-                stallCounter.current = 2;
-                player.play();
-            }
-
-            setCurrentTime(newTime);
-            lastTimeRef.current = newTime;
-            showControlsTemporarily();
-        } catch (e) { }
-    };
-
     const togglePlayPause = () => {
         if (!isHostBool) return;
         onPlayerStateChange(isPlaying ? 'paused' : 'playing');
@@ -309,9 +438,7 @@ const TheatrePlayer = forwardRef(({
     const handleSpeedChange = (speed) => {
         const player = nativePlayerRef.current;
         if (!player) return;
-        try {
-            player.playbackRate = speed;
-        } catch (e) { }
+        try { player.playbackRate = speed; } catch (e) { }
         setShowSettings(false);
     };
 
@@ -332,87 +459,101 @@ const TheatrePlayer = forwardRef(({
                 </View>
             ) : customUrl ? (
                 <View style={{ width: '100%', height: '100%' }}>
+
                     <VideoView
                         player={nativePlayer}
-                        style={{ position: 'absolute', width: '100%', height: '100%' }}
+                        style={{ position: 'absolute', width: '100%', height: '100%', zIndex: 0 }}
                         contentFit="contain"
                         nativeControls={false}
                     />
 
-                    <TouchableWithoutFeedback onPress={showControlsTemporarily}>
-                        <View style={{ position: 'absolute', width: '100%', height: '100%' }}>
-                            {controlsVisible && (
-                                <Animated.View style={[styles.overlayWrapper, { opacity: fadeAnim }]}>
+                    {/* BACKGROUND GESTURE RECEIVER */}
+                    <View style={[StyleSheet.absoluteFill, { zIndex: 2 }]} {...mainPanResponder.panHandlers} />
 
-                                    <LinearGradient colors={['rgba(0,0,0,0.8)', 'transparent']} style={styles.topShadow} />
-
-                                    <View style={[styles.topBar, { justifyContent: 'flex-end' }]}>
-                                        <TouchableOpacity style={styles.topBtn} onPress={() => { setShowSettings(!showSettings); showControlsTemporarily(); }}>
-                                            <Ionicons name="settings-outline" size={24} color="#FFF" />
-                                        </TouchableOpacity>
-                                    </View>
-
-                                    {showSettings && (
-                                        <View style={styles.settingsMenu}>
-                                            <Text style={styles.settingsHeader}>Playback Speed</Text>
-                                            <View style={styles.speedRow}>
-                                                {[0.5, 1, 1.5, 2].map(speed => (
-                                                    <TouchableOpacity key={speed} style={styles.speedBtn} onPress={() => handleSpeedChange(speed)}>
-                                                        <Text style={styles.speedText}>{speed}x</Text>
-                                                    </TouchableOpacity>
-                                                ))}
-                                            </View>
-                                        </View>
-                                    )}
-
-                                    <View style={styles.middleControls} pointerEvents="box-none">
-                                        {isBuffering ? (
-                                            <GradientLoader />
-                                        ) : (
-                                            <>
-                                                <TouchableOpacity style={[styles.middleBtn, !isHostBool && { opacity: 0 }]} onPress={() => handleSkip(-10)} disabled={!isHostBool}>
-                                                    <Ionicons name="play-back" size={42} color="#FFF" />
-                                                    <Text style={styles.skipText}>10s</Text>
-                                                </TouchableOpacity>
-
-                                                <TouchableOpacity style={[styles.playPauseBtn, !isHostBool && { opacity: 0 }]} onPress={togglePlayPause} disabled={!isHostBool}>
-                                                    <Ionicons name={isPlaying ? "pause" : "play"} size={64} color="#FFF" style={{ marginLeft: isPlaying ? 0 : 4 }} />
-                                                </TouchableOpacity>
-
-                                                <TouchableOpacity style={[styles.middleBtn, !isHostBool && { opacity: 0 }]} onPress={() => handleSkip(10)} disabled={!isHostBool}>
-                                                    <Ionicons name="play-forward" size={42} color="#FFF" />
-                                                    <Text style={styles.skipText}>10s</Text>
-                                                </TouchableOpacity>
-                                            </>
-                                        )}
-                                    </View>
-
-                                    <LinearGradient colors={['transparent', 'rgba(0,0,0,0.9)']} style={styles.bottomShadow} pointerEvents="box-none">
-                                        <View style={styles.timeRow}>
-                                            <Text style={styles.durationText}>
-                                                {formatTime(displayTime)} / {formatTime(duration)}
-                                            </Text>
-                                        </View>
-
-                                        <View
-                                            style={styles.progressBarContainer}
-                                            onLayout={(e) => progressWidthRef.current = e.nativeEvent.layout.width}
-                                            {...progressPanResponder.panHandlers}
-                                        >
-                                            <View style={styles.progressBarTrack} pointerEvents="none">
-                                                <LinearGradient
-                                                    colors={['#00E5FF', '#9B51E0', '#FF007A']}
-                                                    start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                                                    style={[styles.progressBarFill, { width: `${progressPercent}%` }]}
-                                                />
-                                            </View>
-                                            <View style={[styles.progressKnob, { left: `${progressPercent}%` }]} pointerEvents="none" />
-                                        </View>
-                                    </LinearGradient>
-                                </Animated.View>
-                            )}
+                    {/* VISUAL SWIPE INDICATOR */}
+                    {swipeIndicator.visible && (
+                        <View style={styles.swipeIndicatorContainer}>
+                            <Ionicons name={swipeIndicator.type === 'brightness' ? 'sunny' : 'volume-high'} size={32} color="#FFF" />
+                            <Text style={styles.swipeIndicatorText}>{swipeIndicator.value}%</Text>
                         </View>
-                    </TouchableWithoutFeedback>
+                    )}
+
+                    {/* CONTROLS LAYER */}
+                    {controlsVisible && (
+                        <Animated.View style={[styles.overlayWrapper, { opacity: fadeAnim }]} pointerEvents="box-none">
+
+                            <LinearGradient colors={['rgba(0,0,0,0.8)', 'transparent']} style={styles.topShadow} pointerEvents="none" />
+
+                            <View style={[styles.topBar, { justifyContent: 'flex-end' }]} pointerEvents="box-none">
+                                {isFullScreen && (
+                                    <TouchableOpacity style={[styles.topBtn, { marginRight: 12 }]} onPress={onToggleOrientation}>
+                                        <Ionicons name="phone-landscape-outline" size={22} color="#FFF" />
+                                    </TouchableOpacity>
+                                )}
+                                <TouchableOpacity style={styles.topBtn} onPress={() => { setShowSettings(!showSettings); showControlsTemporarily(); }}>
+                                    <Ionicons name="settings-outline" size={24} color="#FFF" />
+                                </TouchableOpacity>
+                            </View>
+
+                            {showSettings && (
+                                <View style={styles.settingsMenu}>
+                                    <Text style={styles.settingsHeader}>Playback Speed</Text>
+                                    <View style={styles.speedRow}>
+                                        {[0.5, 1, 1.5, 2].map(speed => (
+                                            <TouchableOpacity key={speed} style={styles.speedBtn} onPress={() => handleSpeedChange(speed)}>
+                                                <Text style={styles.speedText}>{speed}x</Text>
+                                            </TouchableOpacity>
+                                        ))}
+                                    </View>
+                                </View>
+                            )}
+
+                            <View style={styles.middleControls} pointerEvents="box-none">
+                                {isBuffering ? (
+                                    <GradientLoader />
+                                ) : (
+                                    <>
+                                        <TouchableOpacity style={[styles.middleBtn, !isHostBool && { opacity: 0 }]} onPress={() => handleSkipRef.current(-10)} disabled={!isHostBool}>
+                                            <Ionicons name="play-back" size={42} color="#FFF" />
+                                            <Text style={styles.skipText}>10s</Text>
+                                        </TouchableOpacity>
+
+                                        <TouchableOpacity style={[styles.playPauseBtn, !isHostBool && { opacity: 0 }]} onPress={togglePlayPause} disabled={!isHostBool}>
+                                            <Ionicons name={isPlaying ? "pause" : "play"} size={64} color="#FFF" style={{ marginLeft: isPlaying ? 0 : 4 }} />
+                                        </TouchableOpacity>
+
+                                        <TouchableOpacity style={[styles.middleBtn, !isHostBool && { opacity: 0 }]} onPress={() => handleSkipRef.current(10)} disabled={!isHostBool}>
+                                            <Ionicons name="play-forward" size={42} color="#FFF" />
+                                            <Text style={styles.skipText}>10s</Text>
+                                        </TouchableOpacity>
+                                    </>
+                                )}
+                            </View>
+
+                            <LinearGradient colors={['transparent', 'rgba(0,0,0,0.9)']} style={styles.bottomShadow} pointerEvents="box-none">
+                                <View style={styles.timeRow}>
+                                    <Text style={styles.durationText}>
+                                        {formatTime(displayTime)} / {formatTime(duration)}
+                                    </Text>
+                                </View>
+
+                                <View
+                                    style={styles.progressBarContainer}
+                                    onLayout={(e) => progressWidthRef.current = e.nativeEvent.layout.width}
+                                    {...progressPanResponder.panHandlers}
+                                >
+                                    <View style={styles.progressBarTrack} pointerEvents="none">
+                                        <LinearGradient
+                                            colors={['#00E5FF', '#9B51E0', '#FF007A']}
+                                            start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+                                            style={[styles.progressBarFill, { width: `${progressPercent}%` }]}
+                                        />
+                                    </View>
+                                    <View style={[styles.progressKnob, { left: `${progressPercent}%` }]} pointerEvents="none" />
+                                </View>
+                            </LinearGradient>
+                        </Animated.View>
+                    )}
                 </View>
             ) : (
                 <View style={styles.emptyPlayer}>
@@ -434,18 +575,7 @@ const styles = StyleSheet.create({
     topShadow: { position: 'absolute', top: 0, left: 0, right: 0, height: 80 },
     bottomShadow: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 90, justifyContent: 'flex-end', paddingHorizontal: 16, paddingBottom: 12 },
 
-    middleControls: {
-        position: 'absolute',
-        top: 0,
-        bottom: 0,
-        left: 0,
-        right: 0,
-        flexDirection: 'row',
-        justifyContent: 'center',
-        alignItems: 'center',
-        gap: 40,
-        zIndex: 10
-    },
+    middleControls: { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 40, zIndex: 10 },
 
     topBar: { flexDirection: 'row', paddingHorizontal: 16, paddingTop: 16, zIndex: 20 },
     topBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
@@ -461,21 +591,7 @@ const styles = StyleSheet.create({
     progressBarTrack: { width: '100%', height: 4, backgroundColor: 'rgba(255,255,255,0.3)', borderRadius: 2, overflow: 'hidden' },
     progressBarFill: { height: '100%', borderRadius: 2 },
 
-    progressKnob: {
-        position: 'absolute',
-        top: '50%',
-        marginTop: -7,
-        width: 14,
-        height: 14,
-        borderRadius: 7,
-        backgroundColor: '#FFFFFF',
-        marginLeft: -7,
-        elevation: 4,
-        shadowColor: '#00E5FF',
-        shadowOffset: { width: 0, height: 0 },
-        shadowOpacity: 0.8,
-        shadowRadius: 4
-    },
+    progressKnob: { position: 'absolute', top: '50%', marginTop: -7, width: 14, height: 14, borderRadius: 7, backgroundColor: '#FFFFFF', marginLeft: -7, elevation: 4, shadowColor: '#00E5FF', shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.8, shadowRadius: 4 },
 
     settingsMenu: { position: 'absolute', top: 60, right: 16, width: 220, backgroundColor: 'rgba(20,20,25,0.95)', borderRadius: 12, padding: 16, zIndex: 30, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
     settingsHeader: { color: '#8F98A0', fontSize: 11, textTransform: 'uppercase', fontWeight: 'bold', marginBottom: 12, letterSpacing: 1 },
@@ -483,5 +599,8 @@ const styles = StyleSheet.create({
     speedBtn: { backgroundColor: 'rgba(255,255,255,0.1)', paddingHorizontal: 8, paddingVertical: 6, borderRadius: 6 },
     speedText: { color: '#FFF', fontSize: 12, fontWeight: 'bold' },
 
-    loaderContainer: { width: 44, height: 44, justifyContent: 'center', alignItems: 'center' }
+    loaderContainer: { width: 44, height: 44, justifyContent: 'center', alignItems: 'center' },
+
+    swipeIndicatorContainer: { position: 'absolute', top: '30%', alignSelf: 'center', backgroundColor: 'rgba(0,0,0,0.65)', paddingHorizontal: 24, paddingVertical: 16, borderRadius: 16, alignItems: 'center', zIndex: 50 },
+    swipeIndicatorText: { color: '#FFF', fontSize: 16, fontWeight: 'bold', marginTop: 8 }
 });
