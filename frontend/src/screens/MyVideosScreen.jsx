@@ -21,6 +21,9 @@ import axios from 'axios';
 import * as FileSystem from 'expo-file-system/legacy';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { useAuthStore } from '../store/useAuthStore';
+import { registerUploadForegroundService, uploadFileInBackground, cancelActiveUpload } from '../services/uploadManager';
+
+registerUploadForegroundService();
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL || 'http://192.168.x.x:5000/api';
 
@@ -179,76 +182,47 @@ const MyVideosScreen = () => {
         setActiveUpload({ uri: fileToUpload.uri, title: titleToUpload, progress: 0 });
 
         try {
-            const initRes = await axios.post(`${BACKEND_URL}/media/get-upload-url`, {
+            const { publicUrl, key } = await uploadFileInBackground({
+                localFileUri: fileToUpload.uri,
                 filename: fileToUpload.name,
-                type: fileToUpload.mimeType || 'video/mp4',
-                size: fileToUpload.size
+                mimeType: fileToUpload.mimeType || 'video/mp4',
+                fileSize: fileToUpload.size,
+                title: titleToUpload,
+                onProgress: (progress) => {
+                    setActiveUpload(prev => prev ? { ...prev, progress } : null);
+                }
             });
 
-            const { uploadUrl, publicUrl, key } = initRes.data;
+            const durationSec = uploadDurationRef.current;
+            const formattedDuration = formatDuration(durationSec);
 
-            const uploadTask = FileSystem.createUploadTask(
-                uploadUrl,
-                fileToUpload.uri,
-                {
-                    httpMethod: 'PUT',
-                    headers: { 'Content-Type': fileToUpload.mimeType || 'video/mp4' },
-                },
-                (data) => {
-                    if (data.totalBytesExpectedToSend > 0) {
-                        const rawProgress = (data.totalBytesSent / data.totalBytesExpectedToSend) * 100;
-                        const safeProgress = Math.max(0, Math.min(100, Math.floor(rawProgress)));
-                        setActiveUpload(prev => prev ? { ...prev, progress: safeProgress } : null);
-                    }
-                }
-            );
+            const saveRes = await axios.post(`${BACKEND_URL}/media/confirm-upload`, {
+                title: titleToUpload,
+                url: publicUrl,
+                r2Key: key,
+                userId: user._id,
+                duration: formattedDuration
+            });
 
-            uploadTaskRef.current = uploadTask;
-            const uploadResult = await uploadTask.uploadAsync();
-
-            if (!uploadTaskRef.current) return;
-
-            if (uploadResult.status === 200) {
-                const durationSec = uploadDurationRef.current;
-                const formattedDuration = formatDuration(durationSec);
-
-                const saveRes = await axios.post(`${BACKEND_URL}/media/confirm-upload`, {
-                    title: titleToUpload,
-                    url: publicUrl,
-                    r2Key: key,
-                    userId: user._id,
-                    duration: formattedDuration
-                });
-
-                Toast.show({ type: 'hotstarInfo', text1: 'Video uploaded successfully!' });
-                setMyVideos(prev => [saveRes.data, ...prev]);
-            } else {
-                throw new Error('Server rejected the upload');
-            }
+            Toast.show({ type: 'hotstarInfo', text1: 'Video uploaded successfully!' });
+            setMyVideos(prev => [saveRes.data, ...prev]);
         } catch (error) {
-            if (!uploadTaskRef.current) return;
-            console.error("Upload confirm error:", error);
-            if (error.response?.status === 403) {
-                Toast.show({ type: 'hotstarError', text1: 'Storage Full', text2: error.response.data.error });
+            if (error.message === 'CANCELLED') {
+                Toast.show({ type: 'hotstarInfo', text1: 'Upload cancelled' });
             } else {
+                console.error("Upload error:", error);
                 Toast.show({ type: 'hotstarError', text1: 'Upload failed', text2: 'Please try again.' });
             }
         } finally {
             setActiveUpload(null);
-            uploadTaskRef.current = null;
             uploadDurationRef.current = 0;
         }
     };
 
-    const cancelUpload = async () => {
-        if (uploadTaskRef.current) {
-            try { await uploadTaskRef.current.cancelAsync(); } catch (e) { console.log(e); }
-        }
-        uploadTaskRef.current = null;
-        setActiveUpload(null);
-        uploadDurationRef.current = 0;
-        Toast.show({ type: 'hotstarInfo', text1: 'Upload cancelled' });
-    };
+    const cancelUpload = () => {
+        cancelActiveUpload();
+        Toast.show({ type: 'hotstarInfo', text1: 'Cancelling upload…' });
+    }; 
 
     const requestDelete = (videoId) => {
         setVideoToDelete(videoId);
