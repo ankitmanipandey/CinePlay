@@ -18,20 +18,27 @@ import { useRouter } from 'expo-router';
 import * as DocumentPicker from 'expo-document-picker';
 import Toast from 'react-native-toast-message';
 import axios from 'axios';
-import * as FileSystem from 'expo-file-system/legacy';
 import { useVideoPlayer, VideoView } from 'expo-video';
-import { useAuthStore } from '../store/useAuthStore';
-import { registerUploadForegroundService, uploadFileInBackground, cancelActiveUpload } from '../services/uploadManager';
 
-registerUploadForegroundService();
+import { useAuthStore } from '../store/useAuthStore';
+import { useUploadStore } from '../store/useUploadStore';
+import { uploadFileInBackground, cancelActiveUpload } from '../services/uploadManager';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL || 'http://192.168.x.x:5000/api';
+
+const MAX_STORAGE_BYTES = 10 * 1024 * 1024 * 1024; // 10 GB
 
 const formatDuration = (seconds) => {
     if (!seconds || isNaN(seconds)) return "0:00";
     const m = Math.floor(seconds / 60);
     const s = Math.floor(seconds % 60);
     return `${m}:${s < 10 ? '0' : ''}${s}`;
+};
+
+const formatBytes = (bytes) => {
+    if (bytes === 0) return '0 GB';
+    const gb = bytes / (1024 * 1024 * 1024);
+    return `${gb.toFixed(2)} GB`;
 };
 
 const VideoListItem = ({ item, onDeleteRequest, onPlayRequest }) => {
@@ -42,7 +49,6 @@ const VideoListItem = ({ item, onDeleteRequest, onPlayRequest }) => {
 
     return (
         <View style={styles.videoItem}>
-            {/* Thumbnail */}
             <TouchableOpacity
                 style={styles.listThumbnailContainer}
                 activeOpacity={0.8}
@@ -63,14 +69,11 @@ const VideoListItem = ({ item, onDeleteRequest, onPlayRequest }) => {
                 </View>
             </TouchableOpacity>
 
-            {/* Video Info */}
             <View style={styles.videoInfo}>
                 <Text style={styles.videoTitle} numberOfLines={2}>{item.title}</Text>
             </View>
 
-            {/* Action Buttons Container */}
             <View style={styles.actionButtonsRow}>
-                {/* Play Button */}
                 <TouchableOpacity
                     style={styles.playButtonWrapper}
                     activeOpacity={0.8}
@@ -86,7 +89,6 @@ const VideoListItem = ({ item, onDeleteRequest, onPlayRequest }) => {
                     </LinearGradient>
                 </TouchableOpacity>
 
-                {/* Trash Button */}
                 <TouchableOpacity
                     onPress={() => onDeleteRequest(item._id)}
                     style={styles.trashBtn}
@@ -103,12 +105,15 @@ const MyVideosScreen = () => {
     const router = useRouter();
     const { user } = useAuthStore();
 
+    const activeUpload = useUploadStore((state) => state.activeUpload);
+    const setActiveUpload = useUploadStore((state) => state.setActiveUpload);
+    const updateProgress = useUploadStore((state) => state.updateProgress);
+    const clearActiveUpload = useUploadStore((state) => state.clearActiveUpload);
+
     const [isUploadModalVisible, setIsUploadModalVisible] = useState(false);
     const [videoTitle, setVideoTitle] = useState('');
     const [selectedFile, setSelectedFile] = useState(null);
 
-    const [activeUpload, setActiveUpload] = useState(null);
-    const uploadTaskRef = useRef(null);
     const uploadDurationRef = useRef(0);
 
     const [deleteModalVisible, setDeleteModalVisible] = useState(false);
@@ -116,24 +121,30 @@ const MyVideosScreen = () => {
     const [isDeleting, setIsDeleting] = useState(false);
 
     const [myVideos, setMyVideos] = useState([]);
+    const [storageUsed, setStorageUsed] = useState(0);
     const [isLoading, setIsLoading] = useState(true);
 
-    const fetchMyVideos = useCallback(async () => {
+    const fetchData = useCallback(async (silent = false) => {
         if (!user?._id) return;
+        if (!silent) setIsLoading(true);
         try {
-            const res = await axios.get(`${BACKEND_URL}/media/my-videos/${user._id}`);
-            setMyVideos(res.data);
+            const [videosRes, storageRes] = await Promise.all([
+                axios.get(`${BACKEND_URL}/media/my-videos/${user._id}`),
+                axios.get(`${BACKEND_URL}/media/storage-usage`).catch(() => ({ data: { usedBytes: 0 } }))
+            ]);
+            setMyVideos(videosRes.data);
+            setStorageUsed(storageRes.data.usedBytes || 0);
         } catch (error) {
-            console.log("Error fetching videos:", error);
-            Toast.show({ type: 'hotstarError', text1: 'Failed to load your videos' });
+            console.log("Error fetching data:", error);
+            if (!silent) Toast.show({ type: 'hotstarError', text1: 'Failed to load your videos' });
         } finally {
-            setIsLoading(false);
+            if (!silent) setIsLoading(false);
         }
     }, [user]);
 
     useEffect(() => {
-        fetchMyVideos();
-    }, [fetchMyVideos]);
+        fetchData();
+    }, [fetchData]);
 
     const handleBrowseFiles = async () => {
         try {
@@ -179,33 +190,38 @@ const MyVideosScreen = () => {
         setIsUploadModalVisible(false);
         setVideoTitle('');
         setSelectedFile(null);
+
         setActiveUpload({ uri: fileToUpload.uri, title: titleToUpload, progress: 0 });
 
         try {
-            const { publicUrl, key } = await uploadFileInBackground({
+            const { publicUrl, key, thumbnailUrl, thumbnailKey } = await uploadFileInBackground({
                 localFileUri: fileToUpload.uri,
                 filename: fileToUpload.name,
                 mimeType: fileToUpload.mimeType || 'video/mp4',
                 fileSize: fileToUpload.size,
                 title: titleToUpload,
                 onProgress: (progress) => {
-                    setActiveUpload(prev => prev ? { ...prev, progress } : null);
+                    updateProgress(progress);
                 }
             });
 
             const durationSec = uploadDurationRef.current;
             const formattedDuration = formatDuration(durationSec);
 
-            const saveRes = await axios.post(`${BACKEND_URL}/media/confirm-upload`, {
+            await axios.post(`${BACKEND_URL}/media/confirm-upload`, {
                 title: titleToUpload,
                 url: publicUrl,
                 r2Key: key,
+                thumbnailUrl,
+                thumbnailKey,
                 userId: user._id,
                 duration: formattedDuration
             });
 
             Toast.show({ type: 'hotstarInfo', text1: 'Video uploaded successfully!' });
-            setMyVideos(prev => [saveRes.data, ...prev]);
+
+            // Silently refresh the list and the storage bar
+            fetchData(true);
         } catch (error) {
             if (error.message === 'CANCELLED') {
                 Toast.show({ type: 'hotstarInfo', text1: 'Upload cancelled' });
@@ -214,15 +230,16 @@ const MyVideosScreen = () => {
                 Toast.show({ type: 'hotstarError', text1: 'Upload failed', text2: 'Please try again.' });
             }
         } finally {
-            setActiveUpload(null);
+            clearActiveUpload();
             uploadDurationRef.current = 0;
         }
     };
 
     const cancelUpload = () => {
         cancelActiveUpload();
+        clearActiveUpload();
         Toast.show({ type: 'hotstarInfo', text1: 'Cancelling upload…' });
-    }; 
+    };
 
     const requestDelete = (videoId) => {
         setVideoToDelete(videoId);
@@ -234,9 +251,11 @@ const MyVideosScreen = () => {
         setIsDeleting(true);
         try {
             await axios.delete(`${BACKEND_URL}/media/delete/${videoToDelete}`);
-            setMyVideos(prev => prev.filter(vid => vid._id !== videoToDelete));
             Toast.show({ type: 'hotstarInfo', text1: 'Video deleted successfully' });
             setDeleteModalVisible(false);
+
+            // Silently refresh the list and the storage bar
+            fetchData(true);
         } catch (error) {
             Toast.show({ type: 'hotstarError', text1: 'Failed to delete video' });
         } finally {
@@ -258,6 +277,13 @@ const MyVideosScreen = () => {
         });
     };
 
+    // Calculate Storage Bar Color and Width
+    const storagePercentRaw = (storageUsed / MAX_STORAGE_BYTES) * 100;
+    const storagePercent = Math.min(storagePercentRaw, 100);
+    let progressColor = '#00E5FF'; // Safe (Cyan)
+    if (storagePercent > 90) progressColor = '#E53935'; // Danger (Red)
+    else if (storagePercent > 75) progressColor = '#F2C94C'; // Warning (Orange)
+
     return (
         <View style={styles.container}>
             <SafeAreaView style={styles.safeArea}>
@@ -267,6 +293,22 @@ const MyVideosScreen = () => {
                     </TouchableOpacity>
                     <Text style={styles.headerTitle}>My Videos</Text>
                     <View style={{ width: 24 }} />
+                </View>
+
+                {/* --- STORAGE INDICATOR --- */}
+                <View style={styles.storageCard}>
+                    <View style={styles.storageHeaderRow}>
+                        <View style={styles.storageLabelWrap}>
+                            <Ionicons name="cloud-done" size={16} color="#8F98A0" />
+                            <Text style={styles.storageLabel}>Cloud Storage</Text>
+                        </View>
+                        <Text style={styles.storageText}>
+                            {formatBytes(storageUsed)} <Text style={{ color: '#8F98A0' }}>/ 10 GB</Text>
+                        </Text>
+                    </View>
+                    <View style={styles.storageBarContainer}>
+                        <View style={[styles.storageBarFill, { width: `${storagePercent}%`, backgroundColor: progressColor }]} />
+                    </View>
                 </View>
 
                 {!isLoading && myVideos.length === 0 && !activeUpload ? (
@@ -378,17 +420,61 @@ const styles = StyleSheet.create({
     header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.05)' },
     backButton: { padding: 4 },
     headerTitle: { color: '#FFFFFF', fontSize: 18, fontWeight: 'bold' },
+
+    // --- STORAGE INDICATOR STYLES ---
+    storageCard: {
+        marginHorizontal: 20,
+        marginTop: 16,
+        backgroundColor: '#16161A',
+        padding: 16,
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.06)'
+    },
+    storageHeaderRow: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: 12
+    },
+    storageLabelWrap: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6
+    },
+    storageLabel: {
+        color: '#8F98A0',
+        fontSize: 13,
+        fontWeight: 'bold',
+        textTransform: 'uppercase',
+        letterSpacing: 0.5
+    },
+    storageText: {
+        color: '#FFF',
+        fontSize: 14,
+        fontWeight: 'bold'
+    },
+    storageBarContainer: {
+        height: 6,
+        backgroundColor: '#2A2A30',
+        borderRadius: 3,
+        overflow: 'hidden'
+    },
+    storageBarFill: {
+        height: '100%',
+        borderRadius: 3
+    },
+
     emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40 },
     emptyText: { color: '#FFFFFF', fontSize: 18, fontWeight: 'bold', marginTop: 16, marginBottom: 8 },
     emptySubText: { color: '#8F98A0', fontSize: 14, textAlign: 'center' },
     listContent: { padding: 20, paddingBottom: 100 },
 
-    // --- IMPROVED VIDEO ITEM STYLES ---
     videoItem: {
         flexDirection: 'row',
         alignItems: 'center',
-        backgroundColor: '#16161A', // Slightly lifted background
-        padding: 16, // Increased padding
+        backgroundColor: '#16161A',
+        padding: 16,
         borderRadius: 16,
         marginBottom: 16,
         borderWidth: 1,
@@ -400,7 +486,7 @@ const styles = StyleSheet.create({
         elevation: 4
     },
     listThumbnailContainer: {
-        width: 100, // Slightly wider
+        width: 100,
         height: 64,
         borderRadius: 10,
         overflow: 'hidden',
@@ -416,14 +502,14 @@ const styles = StyleSheet.create({
     videoInfo: {
         flex: 1,
         marginLeft: 16,
-        marginRight: 12, // Prevents text from touching buttons
+        marginRight: 12,
         justifyContent: 'center'
     },
     videoTitle: {
         color: '#FFFFFF',
         fontSize: 15,
         fontWeight: '600',
-        lineHeight: 22 // Better readability for multiline titles
+        lineHeight: 22
     },
 
     actionButtonsRow: {
@@ -431,7 +517,7 @@ const styles = StyleSheet.create({
         alignItems: 'center'
     },
     playButtonWrapper: {
-        width: 44, // Generous touch target
+        width: 44,
         height: 44,
         borderRadius: 22,
         elevation: 8,
@@ -451,7 +537,7 @@ const styles = StyleSheet.create({
         width: 40,
         height: 40,
         borderRadius: 20,
-        backgroundColor: 'rgba(229, 57, 53, 0.1)', // Subtle red background
+        backgroundColor: 'rgba(229, 57, 53, 0.1)',
         justifyContent: 'center',
         alignItems: 'center',
     },

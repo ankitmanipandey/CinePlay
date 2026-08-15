@@ -1,5 +1,6 @@
 import * as Device from 'expo-device';
 import * as Notifications from 'expo-notifications';
+import notifee, { EventType } from '@notifee/react-native';
 import Constants from 'expo-constants';
 import axios from 'axios';
 import React, { useEffect, useState, useRef } from 'react';
@@ -15,7 +16,12 @@ import { ThemeProvider, DarkTheme } from 'expo-router/react-navigation';
 import { useAuthStore } from '../store/useAuthStore';
 import { useGlobalSocket } from '../store/useGlobalSocket';
 
-// Get screen width to calculate the starting position off-screen to the right
+// --- SERVICES ---
+import { registerUploadForegroundService } from '../services/uploadManager';
+
+// Execute registerUploadForegroundService unconditionally at the top level.
+registerUploadForegroundService();
+
 const { width } = Dimensions.get('window');
 
 // --- PUSH NOTIFICATION CONFIGURATION ---
@@ -27,7 +33,6 @@ Notifications.setNotificationHandler({
   }),
 });
 
-// Helper function to ask permissions and generate the token
 async function registerForPushNotificationsAsync() {
   let token;
 
@@ -82,7 +87,6 @@ async function registerForPushNotificationsAsync() {
   return token;
 }
 
-// --- REUSABLE ANIMATED TOAST COMPONENT ---
 const AnimatedToast = ({ text1, text2, colors, iconName, onPress }) => {
   const slideAnim = useRef(new Animated.Value(width)).current;
 
@@ -114,7 +118,6 @@ const AnimatedToast = ({ text1, text2, colors, iconName, onPress }) => {
   );
 };
 
-// --- TOAST CONFIG ---
 const toastConfig = {
   hotstarSuccess: ({ text1, text2, onPress }) => (
     <AnimatedToast text1={text1} text2={text2} onPress={onPress} colors={['#1F80E0', '#D63484']} iconName="checkmark-circle" />
@@ -164,7 +167,7 @@ export default function RootLayout() {
     checkUserAuth();
   }, []);
 
-  // 2. Global Socket Connection & Push Notification Manager (WITH STABILITY DELAY)
+  // 2. Global Socket Connection & Push Notification Manager
   useEffect(() => {
     if (token && user?._id) {
       connectGlobalSocket(user._id);
@@ -178,7 +181,6 @@ export default function RootLayout() {
         })
         .catch(err => { });
 
-      // 🕒 Added a 1.5s delay so the UI window is fully loaded before triggering the native OS prompt
       const timer = setTimeout(() => {
         registerForPushNotificationsAsync().then(async (pushToken) => {
           if (pushToken) {
@@ -208,25 +210,21 @@ export default function RootLayout() {
         handledNotificationId.current = responseId;
         const data = lastNotificationResponse.notification.request.content.data;
 
-        // Route Theatre Invites
         if (data?.type === 'THEATRE_INVITE' && data?.roomId) {
           setTimeout(() => {
             router.push(`/theatre?roomId=${data.roomId}&isHost=false`);
           }, 800);
         }
-        // Route Direct Messages straight to ChatScreen
         else if (data?.type === 'NEW_CHAT' && data?.buddyId) {
           setTimeout(() => {
             router.push(`/chat?buddyId=${data.buddyId}`);
           }, 800);
         }
-        // Route Accepted Cinerequest straight to ChatScreen with the new buddy
         else if (data?.type === 'CINEREQUEST_ACCEPTED' && data?.buddyId) {
           setTimeout(() => {
             router.push(`/chat?buddyId=${data.buddyId}`);
           }, 800);
         }
-        // Route Incoming Requests / Rejections to Notifications tab
         else if (data?.type === 'CINEREQUEST' || data?.type === 'REJECTED_ALERT') {
           setTimeout(() => {
             router.push('/notifications');
@@ -236,41 +234,50 @@ export default function RootLayout() {
     }
   }, [lastNotificationResponse, isLoading, user]);
 
-  // 4. Double Back to Exit Manager (Properly at the Root Level)
+  // 3.5. Deep Linking for Notifee Background Uploads (Cold Start)
+  useEffect(() => {
+    if (!isLoading && user) {
+      notifee.getInitialNotification().then((initial) => {
+        // Tightened check to only trigger for our specific active-upload notification
+        if (initial?.notification?.id === 'active-upload') {
+          setTimeout(() => {
+            router.push('/my-videos');
+          }, 800);
+        }
+      });
+    }
+  }, [isLoading, user]);
+
+  // 4. Double Back to Exit Manager
   useEffect(() => {
     let backPressCount = 0;
 
     const onBackPress = () => {
-      // If there are screens to pop (like returning from Player to Home), let the system handle it normally
       if (router.canGoBack()) {
         return false;
       }
 
-      // If we can't go back, we are at the root. Check if they already pressed back once.
       if (backPressCount === 1) {
         BackHandler.exitApp();
         return true;
       }
 
-      // First time pressing back at the root screen
       backPressCount = 1;
 
       Toast.show({
         type: 'hotstarInfo',
         text1: 'Press back again to exit',
         position: 'bottom',
-        bottomOffset: 100, // Brings the toast up above the bottom navigation bar
+        bottomOffset: 100,
       });
 
-      // Reset the counter after 2 seconds
       setTimeout(() => {
         backPressCount = 0;
       }, 2000);
 
-      return true; // Block the default immediate exit
+      return true;
     };
 
-    // Attach the listener
     const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
 
     return () => subscription.remove();
@@ -290,7 +297,6 @@ export default function RootLayout() {
         screenOptions={{
           headerShown: false,
           contentStyle: { backgroundColor: '#0A0A0C' },
-          // --- NATIVE SLIDE NAVIGATION ---
           animation: 'slide_from_right',
           gestureEnabled: true,
           gestureDirection: 'horizontal',
@@ -309,16 +315,16 @@ const styles = StyleSheet.create({
   },
   toastWrapper: {
     width: '100%',
-    alignItems: 'center', // Centers the toast on the screen
-    paddingHorizontal: 16, // Keeps it from touching the left/right edges
+    alignItems: 'center',
+    paddingHorizontal: 16,
   },
   toastContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    width: '100%', // Ensures it fills the safe area but respects the padding above
+    width: '100%',
     paddingVertical: 12,
     paddingHorizontal: 16,
-    borderRadius: 16, // Slightly tighter radius looks better for full-width toasts
+    borderRadius: 16,
     elevation: 5,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
@@ -327,7 +333,7 @@ const styles = StyleSheet.create({
   },
   toastTextContainer: {
     marginLeft: 12,
-    flex: 1, // THIS IS THE FIX: Forces long text to wrap inside the container
+    flex: 1,
   },
   toastText: {
     color: '#FFFFFF',
@@ -336,8 +342,8 @@ const styles = StyleSheet.create({
   },
   toastSubText: {
     color: '#E0E0E0',
-    fontSize: 13, // Slightly bumped up for readability
+    fontSize: 13,
     marginTop: 4,
-    lineHeight: 18, // Adds breathing room for multi-line text
+    lineHeight: 18,
   }
 });

@@ -6,7 +6,8 @@ const {
     CreateMultipartUploadCommand,
     UploadPartCommand,
     CompleteMultipartUploadCommand,
-    AbortMultipartUploadCommand
+    AbortMultipartUploadCommand,
+    PutObjectCommand
 } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const crypto = require('crypto');
@@ -164,12 +165,14 @@ mediaRouter.post('/multipart/abort', async (req, res) => {
 // Save Video to DB after R2 upload completes
 mediaRouter.post('/confirm-upload', async (req, res) => {
     try {
-        const { title, url, r2Key, userId, duration } = req.body;
+        const { title, url, r2Key, thumbnailUrl, thumbnailKey, userId, duration } = req.body;
 
         const newMedia = new Media({
             title,
             url,
             r2Key,
+            thumbnailUrl,
+            thumbnailKey,
             duration,
             user: userId
         });
@@ -199,17 +202,69 @@ mediaRouter.delete('/delete/:videoId', async (req, res) => {
         const media = await Media.findById(req.params.videoId);
         if (!media) return res.status(404).json({ error: "Video not found" });
 
-        const command = new DeleteObjectCommand({
-            Bucket: BUCKET_NAME,
-            Key: media.r2Key,
-        });
-        await s3Client.send(command);
+        const keysToDelete = [media.r2Key, media.thumbnailKey].filter(Boolean);
+        await Promise.all(keysToDelete.map(Key =>
+            s3Client.send(new DeleteObjectCommand({ Bucket: BUCKET_NAME, Key }))
+        ));
 
         await Media.findByIdAndDelete(req.params.videoId);
         res.status(200).json({ message: "Video deleted successfully" });
     } catch (error) {
         console.error("Delete video error:", error);
         res.status(500).json({ error: "Failed to delete video" });
+    }
+});
+
+
+// Get Total Storage Usage
+mediaRouter.get('/storage-usage', async (req, res) => {
+    try {
+        let totalSize = 0;
+        let isTruncated = true;
+        let continuationToken = undefined;
+
+        while (isTruncated) {
+            const listCommand = new ListObjectsV2Command({
+                Bucket: BUCKET_NAME,
+                ContinuationToken: continuationToken,
+            });
+            const response = await s3Client.send(listCommand);
+
+            if (response.Contents) {
+                response.Contents.forEach(item => totalSize += item.Size);
+            }
+            isTruncated = response.IsTruncated;
+            continuationToken = response.NextContinuationToken;
+        }
+
+        res.status(200).json({ usedBytes: totalSize });
+    } catch (error) {
+        console.error("Storage fetch error:", error);
+        res.status(500).json({ error: "Failed to fetch storage usage" });
+    }
+});
+
+mediaRouter.post('/thumbnail-upload-url', async (req, res) => {
+    try {
+        const { filename, type } = req.body;
+        const key = `thumbnails/${Date.now()}_${crypto.randomUUID()}.jpg`;
+
+        const command = new PutObjectCommand({
+            Bucket: BUCKET_NAME,
+            Key: key,
+            ContentType: type || 'image/jpeg',
+        });
+
+        const uploadUrl = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
+
+        res.json({
+            uploadUrl,
+            publicUrl: `${R2_PUBLIC_BASE}/${key}`,
+            key, // <-- NEW: return the key so it can be threaded through and saved
+        });
+    } catch (err) {
+        console.error('Thumbnail upload url error:', err);
+        res.status(500).json({ error: 'Failed to get thumbnail upload url' });
     }
 });
 
