@@ -10,6 +10,7 @@ const serverAwake = require('../jobs/serverAwake');
 const buddyRouter = require('../routes/buddyRouter');
 const chatRouter = require('../routes/chatRouter');
 const User = require('../models/User');
+const mediaRouter = require('../routes/mediaRouter');
 
 const app = express();
 
@@ -30,6 +31,7 @@ app.use('/api/user', userRouter);
 app.use('/api/ai', aiRouter);
 app.use('/api/buddies', buddyRouter);
 app.use('/api/chat', chatRouter);
+app.use('/api/media', mediaRouter);
 
 // =========================================================
 // 1. THEATRE MODE SOCKET NAMESPACE (/api)

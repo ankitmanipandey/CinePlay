@@ -190,6 +190,17 @@ const ProfileScreen = () => {
                     </View>
 
                     <View style={styles.menuSection}>
+                        <Text style={styles.sectionTitle}>My Content</Text>
+                        <View style={styles.menuCard}>
+                            <MenuRow
+                                icon="videocam-outline"
+                                title="My Videos"
+                                onPress={() => handleProtectedNavigation('/my-videos')}
+                            />
+                        </View>
+                    </View>
+
+                    <View style={styles.menuSection}>
                         <Text style={styles.sectionTitle}>Social</Text>
                         <View style={styles.menuCard}>
                             <MenuRow
