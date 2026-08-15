@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
     StyleSheet,
     Text,
@@ -8,7 +8,8 @@ import {
     Modal,
     TextInput,
     KeyboardAvoidingView,
-    Platform
+    Platform,
+    ActivityIndicator
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -18,19 +19,82 @@ import * as DocumentPicker from 'expo-document-picker';
 import Toast from 'react-native-toast-message';
 import axios from 'axios';
 import * as FileSystem from 'expo-file-system/legacy';
+import { useVideoPlayer, VideoView } from 'expo-video';
+import { useAuthStore } from '../store/useAuthStore';
 
-// Ensure this matches your network setup
 const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL || 'http://192.168.x.x:5000/api';
+
+const formatDuration = (seconds) => {
+    if (!seconds || isNaN(seconds)) return "0:00";
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${s < 10 ? '0' : ''}${s}`;
+};
+
+const VideoListItem = ({ item, onDeleteRequest }) => {
+    const player = useVideoPlayer(item.url, (player) => {
+        player.muted = true;
+        player.pause();
+    });
+
+    return (
+        <View style={styles.videoItem}>
+            <View style={styles.listThumbnailContainer}>
+                <VideoView
+                    player={player}
+                    style={styles.listThumbnailVideo}
+                    contentFit="cover"
+                    nativeControls={false}
+                />
+                <View style={styles.durationBadge}>
+                    <Text style={styles.durationText}>{item.duration || "0:00"}</Text>
+                </View>
+            </View>
+            <View style={styles.videoInfo}>
+                <Text style={styles.videoTitle} numberOfLines={2}>{item.title}</Text>
+            </View>
+            <TouchableOpacity onPress={() => onDeleteRequest(item._id)} style={styles.trashBtn}>
+                <Ionicons name="trash-outline" size={22} color="#E53935" />
+            </TouchableOpacity>
+        </View>
+    );
+};
 
 const MyVideosScreen = () => {
     const router = useRouter();
+    const { user } = useAuthStore();
+
     const [isUploadModalVisible, setIsUploadModalVisible] = useState(false);
     const [videoTitle, setVideoTitle] = useState('');
     const [selectedFile, setSelectedFile] = useState(null);
-    const [uploadProgress, setUploadProgress] = useState(0);
-    const [isUploading, setIsUploading] = useState(false);
+
+    const [activeUpload, setActiveUpload] = useState(null);
+    const uploadTaskRef = useRef(null);
+    const uploadDurationRef = useRef(0); // --- NEW: Track duration safely outside the closure ---
+
+    const [deleteModalVisible, setDeleteModalVisible] = useState(false);
+    const [videoToDelete, setVideoToDelete] = useState(null);
+    const [isDeleting, setIsDeleting] = useState(false);
 
     const [myVideos, setMyVideos] = useState([]);
+    const [isLoading, setIsLoading] = useState(true);
+
+    const fetchMyVideos = useCallback(async () => {
+        if (!user?._id) return;
+        try {
+            const res = await axios.get(`${BACKEND_URL}/media/my-videos/${user._id}`);
+            setMyVideos(res.data);
+        } catch (error) {
+            console.log("Error fetching videos:", error);
+            Toast.show({ type: 'hotstarError', text1: 'Failed to load your videos' });
+        } finally {
+            setIsLoading(false);
+        }
+    }, [user]);
+
+    useEffect(() => {
+        fetchMyVideos();
+    }, [fetchMyVideos]);
 
     const handleBrowseFiles = async () => {
         try {
@@ -43,7 +107,7 @@ const MyVideosScreen = () => {
                 const file = result.assets[0];
                 setSelectedFile(file);
                 if (!videoTitle) {
-                    setVideoTitle(file.name.split('.')[0]); // Auto-fill title
+                    setVideoTitle(file.name.split('.')[0]);
                 }
             }
         } catch (err) {
@@ -51,66 +115,145 @@ const MyVideosScreen = () => {
         }
     };
 
-    const handleUpload = async () => {
-        if (!selectedFile) return;
-        setIsUploading(true);
-        setUploadProgress(0);
+    const ghostPlayer = useVideoPlayer(activeUpload?.uri, (player) => {
+        player.loop = true;
+        player.muted = true;
+        player.play();
+    });
 
-        try {
-            // 1. Ask Backend for the URL (and pass the 9.5GB check)
-            const initRes = await axios.post(`${BACKEND_URL}/media/get-upload-url`, {
-                filename: selectedFile.name,
-                type: selectedFile.mimeType || 'video/mp4',
-                size: selectedFile.size
-            });
+    // --- NEW: Safely capture the video duration when the player is ready ---
+    useEffect(() => {
+        if (!ghostPlayer) return;
 
-            const { uploadUrl, publicUrl } = initRes.data;
-
-            // 2. Create the Expo File System Upload Task
-            const uploadTask = FileSystem.createUploadTask(
-                uploadUrl,
-                selectedFile.uri,
-                {
-                    httpMethod: 'PUT',
-                    headers: {
-                        'Content-Type': selectedFile.mimeType || 'video/mp4',
-                    },
-                },
-                (data) => {
-                    // 3. Calculate and set progress
-                    const progress = Math.round((data.totalBytesSent / data.totalBytesExpectedToSend) * 100);
-                    setUploadProgress(progress);
-                }
-            );
-
-            // 4. Execute the upload using native threads
-            const uploadResult = await uploadTask.uploadAsync();
-
-            if (uploadResult.status === 200) {
-                Toast.show({ type: 'success', text1: 'Video uploaded successfully!' });
-                setMyVideos(prev => [...prev, { title: videoTitle, url: publicUrl }]);
-                closeAndResetModal();
-            } else {
-                throw new Error('Upload failed on the server side');
+        const sub = ghostPlayer.addListener('statusChange', (status) => {
+            if (status.status === 'readyToPlay' && ghostPlayer.duration) {
+                uploadDurationRef.current = ghostPlayer.duration;
             }
+        });
 
-        } catch (error) {
-            if (error.response?.status === 403) {
-                Toast.show({ type: 'error', text1: 'Storage Full', text2: error.response.data.error });
-            } else {
-                Toast.show({ type: 'error', text1: 'Upload failed', text2: 'Please try again.' });
-                console.error(error);
-            }
-        } finally {
-            setIsUploading(false);
+        // Fallback in case it initializes faster than the listener attaches
+        if (ghostPlayer.duration) {
+            uploadDurationRef.current = ghostPlayer.duration;
         }
-    };
 
-    const closeAndResetModal = () => {
-        if (isUploading) return; // Prevent closing while uploading
+        return () => sub.remove();
+    }, [ghostPlayer]);
+
+    const handleUpload = async () => {
+        if (!selectedFile || !user) return;
+
+        const fileToUpload = selectedFile;
+        const titleToUpload = videoTitle;
+
         setIsUploadModalVisible(false);
         setVideoTitle('');
         setSelectedFile(null);
+
+        setActiveUpload({
+            uri: fileToUpload.uri,
+            title: titleToUpload,
+            progress: 0
+        });
+
+        try {
+            const initRes = await axios.post(`${BACKEND_URL}/media/get-upload-url`, {
+                filename: fileToUpload.name,
+                type: fileToUpload.mimeType || 'video/mp4',
+                size: fileToUpload.size
+            });
+
+            const { uploadUrl, publicUrl, key } = initRes.data;
+
+            const uploadTask = FileSystem.createUploadTask(
+                uploadUrl,
+                fileToUpload.uri,
+                {
+                    httpMethod: 'PUT',
+                    headers: { 'Content-Type': fileToUpload.mimeType || 'video/mp4' },
+                },
+                (data) => {
+                    if (data.totalBytesExpectedToSend > 0) {
+                        const rawProgress = (data.totalBytesSent / data.totalBytesExpectedToSend) * 100;
+                        const safeProgress = Math.max(0, Math.min(100, Math.floor(rawProgress)));
+                        setActiveUpload(prev => prev ? { ...prev, progress: safeProgress } : null);
+                    }
+                }
+            );
+
+            uploadTaskRef.current = uploadTask;
+            const uploadResult = await uploadTask.uploadAsync();
+
+            if (!uploadTaskRef.current) return;
+
+            if (uploadResult.status === 200) {
+                // --- FIXED: Read the duration from the safe ref, not the stale closure ---
+                const durationSec = uploadDurationRef.current;
+                const formattedDuration = formatDuration(durationSec);
+
+                const saveRes = await axios.post(`${BACKEND_URL}/media/confirm-upload`, {
+                    title: titleToUpload,
+                    url: publicUrl,
+                    r2Key: key,
+                    userId: user._id,
+                    duration: formattedDuration
+                });
+
+                Toast.show({ type: 'hotstarInfo', text1: 'Video uploaded successfully!' });
+                setMyVideos(prev => [saveRes.data, ...prev]);
+            } else {
+                throw new Error('Server rejected the upload');
+            }
+
+        } catch (error) {
+            if (!uploadTaskRef.current) return;
+            // --- FIXED: Add error logging back in ---
+            console.error("Upload confirm error:", error);
+
+            if (error.response?.status === 403) {
+                Toast.show({ type: 'hotstarError', text1: 'Storage Full', text2: error.response.data.error });
+            } else {
+                Toast.show({ type: 'hotstarError', text1: 'Upload failed', text2: 'Please try again.' });
+            }
+        } finally {
+            setActiveUpload(null);
+            uploadTaskRef.current = null;
+            uploadDurationRef.current = 0; // Reset the ref for the next upload
+        }
+    };
+
+    const cancelUpload = async () => {
+        if (uploadTaskRef.current) {
+            try {
+                await uploadTaskRef.current.cancelAsync();
+            } catch (e) {
+                console.log("Error cancelling task:", e);
+            }
+        }
+        uploadTaskRef.current = null;
+        setActiveUpload(null);
+        uploadDurationRef.current = 0;
+        Toast.show({ type: 'hotstarInfo', text1: 'Upload cancelled' });
+    };
+
+    const requestDelete = (videoId) => {
+        setVideoToDelete(videoId);
+        setDeleteModalVisible(true);
+    };
+
+    const confirmDelete = async () => {
+        if (!videoToDelete) return;
+        setIsDeleting(true);
+        try {
+            await axios.delete(`${BACKEND_URL}/media/delete/${videoToDelete}`);
+            setMyVideos(prev => prev.filter(vid => vid._id !== videoToDelete));
+            Toast.show({ type: 'hotstarInfo', text1: 'Video deleted successfully' });
+            setDeleteModalVisible(false);
+        } catch (error) {
+            Toast.show({ type: 'hotstarError', text1: 'Failed to delete video' });
+        } finally {
+            setIsDeleting(false);
+            setVideoToDelete(null);
+        }
     };
 
     return (
@@ -124,100 +267,120 @@ const MyVideosScreen = () => {
                     <View style={{ width: 24 }} />
                 </View>
 
-                {myVideos.length === 0 ? (
+                {!isLoading && myVideos.length === 0 && !activeUpload ? (
                     <View style={styles.emptyContainer}>
                         <Ionicons name="cloud-offline-outline" size={64} color="#2A2A30" />
                         <Text style={styles.emptyText}>No videos uploaded yet.</Text>
                         <Text style={styles.emptySubText}>Tap the + button to upload your first video.</Text>
                     </View>
                 ) : (
-                    <FlatList
-                        data={myVideos}
-                        keyExtractor={(item, index) => index.toString()}
-                        contentContainerStyle={styles.listContent}
-                        renderItem={({ item }) => (
-                            <View style={styles.videoItem}>
-                                <Ionicons name="videocam" size={24} color="#00E5FF" style={{ marginRight: 12 }} />
-                                <Text style={styles.videoTitle}>{item.title}</Text>
+                    <View style={{ flex: 1 }}>
+                        {activeUpload && (
+                            <View style={styles.ghostCard}>
+                                <View style={styles.thumbnailContainer}>
+                                    <VideoView player={ghostPlayer} style={styles.thumbnailVideo} contentFit="cover" nativeControls={false} />
+                                    <View style={[styles.thumbnailOverlay, { opacity: 1 - (activeUpload.progress / 100) }]} />
+                                    <TouchableOpacity style={styles.cancelUploadBtn} onPress={cancelUpload}>
+                                        <View style={styles.cancelUploadBg}>
+                                            <Ionicons name="close" size={16} color="#FFF" />
+                                        </View>
+                                    </TouchableOpacity>
+                                </View>
+                                <View style={styles.ghostCardInfo}>
+                                    <Text style={styles.ghostCardTitle} numberOfLines={2}>
+                                        {activeUpload.title}
+                                    </Text>
+                                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                                        <Text style={styles.ghostCardSubtitle}>Uploading to Cloudflare...</Text>
+                                        <Text style={{ color: '#00E5FF', fontSize: 13, fontWeight: 'bold' }}>
+                                            {activeUpload.progress}%
+                                        </Text>
+                                    </View>
+                                    <View style={styles.ghostCardProgressBarBg}>
+                                        <View style={[styles.ghostCardProgressBarFill, { width: `${activeUpload.progress}%` }]} />
+                                    </View>
+                                </View>
                             </View>
                         )}
-                    />
+
+                        <FlatList
+                            data={myVideos}
+                            keyExtractor={(item, index) => item._id || index.toString()}
+                            contentContainerStyle={styles.listContent}
+                            renderItem={({ item }) => (
+                                <VideoListItem item={item} onDeleteRequest={requestDelete} />
+                            )}
+                        />
+                    </View>
                 )}
 
-                <TouchableOpacity
-                    style={styles.fab}
-                    activeOpacity={0.8}
-                    onPress={() => setIsUploadModalVisible(true)}
-                >
-                    <LinearGradient
-                        colors={['#00E5FF', '#9B51E0', '#FF007A']}
-                        start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
-                        style={styles.fabGradient}
-                    >
+                <TouchableOpacity style={styles.fab} activeOpacity={0.8} onPress={() => setIsUploadModalVisible(true)}>
+                    <LinearGradient colors={['#00E5FF', '#9B51E0', '#FF007A']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.fabGradient}>
                         <Ionicons name="add" size={32} color="#FFF" />
                     </LinearGradient>
                 </TouchableOpacity>
             </SafeAreaView>
 
-            <Modal visible={isUploadModalVisible} transparent={true} animationType="fade" onRequestClose={closeAndResetModal}>
+            {/* --- UPLOAD MODAL --- */}
+            <Modal visible={isUploadModalVisible} transparent={true} animationType="fade" onRequestClose={() => setIsUploadModalVisible(false)}>
                 <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === "ios" ? "padding" : "height"}>
                     <View style={styles.modalContainer}>
-                        {!isUploading && (
-                            <TouchableOpacity style={styles.modalCloseBtn} onPress={closeAndResetModal}>
-                                <Ionicons name="close" size={24} color="#8F98A0" />
-                            </TouchableOpacity>
-                        )}
-
-                        <Text style={styles.modalTitle}>Upload Video</Text>
-
-                        <Text style={styles.inputLabel}>Video Title</Text>
-                        <TextInput
-                            style={styles.input}
-                            placeholder="Enter a catchy title..."
-                            placeholderTextColor="#8F98A0"
-                            value={videoTitle}
-                            onChangeText={setVideoTitle}
-                            selectionColor="#00E5FF"
-                            editable={!isUploading}
-                        />
-
-                        <TouchableOpacity
-                            style={[styles.browseButton, selectedFile && { borderColor: '#00E5FF', backgroundColor: 'rgba(0, 229, 255, 0.15)' }]}
-                            activeOpacity={0.8}
-                            onPress={handleBrowseFiles}
-                            disabled={isUploading}
-                        >
-                            <Ionicons name={selectedFile ? "checkmark-circle" : "folder-open-outline"} size={20} color="#00E5FF" />
-                            <Text style={styles.browseButtonText} numberOfLines={1}>
-                                {selectedFile ? selectedFile.name : "Browse Files"}
-                            </Text>
+                        <TouchableOpacity style={styles.modalCloseBtn} onPress={() => setIsUploadModalVisible(false)}>
+                            <Ionicons name="close" size={24} color="#8F98A0" />
                         </TouchableOpacity>
-
-                        {isUploading ? (
-                            <View style={styles.progressContainer}>
-                                <Text style={styles.progressText}>Uploading... {uploadProgress}%</Text>
-                                <View style={styles.progressBarBackground}>
-                                    <View style={[styles.progressBarFill, { width: `${uploadProgress}%` }]} />
-                                </View>
-                            </View>
-                        ) : (
-                            <TouchableOpacity
-                                style={[styles.uploadBtnContainer, (!videoTitle || !selectedFile) && styles.btnDisabled]}
-                                activeOpacity={0.8}
-                                onPress={handleUpload}
-                                disabled={!videoTitle || !selectedFile}
-                            >
-                                <LinearGradient
-                                    colors={videoTitle && selectedFile ? ['#00E5FF', '#9B51E0', '#FF007A'] : ['#2A2A30', '#2A2A30']}
-                                    start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                                    style={styles.uploadGradient}
-                                >
-                                    <Text style={[styles.uploadText, (!videoTitle || !selectedFile) && { color: '#8F98A0' }]}>Upload</Text>
-                                </LinearGradient>
-                            </TouchableOpacity>
-                        )}
+                        <Text style={styles.modalTitle}>Upload Video</Text>
+                        <Text style={styles.inputLabel}>Video Title</Text>
+                        <TextInput style={styles.input} placeholder="Enter a catchy title..." placeholderTextColor="#8F98A0" value={videoTitle} onChangeText={setVideoTitle} selectionColor="#00E5FF" />
+                        <TouchableOpacity style={[styles.browseButton, selectedFile && { borderColor: '#00E5FF', backgroundColor: 'rgba(0, 229, 255, 0.15)' }]} activeOpacity={0.8} onPress={handleBrowseFiles}>
+                            <Ionicons name={selectedFile ? "checkmark-circle" : "folder-open-outline"} size={20} color="#00E5FF" />
+                            <Text style={styles.browseButtonText} numberOfLines={1}>{selectedFile ? selectedFile.name : "Browse Files"}</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={[styles.uploadBtnContainer, (!videoTitle || !selectedFile) && styles.btnDisabled]} activeOpacity={0.8} onPress={handleUpload} disabled={!videoTitle || !selectedFile}>
+                            <LinearGradient colors={videoTitle && selectedFile ? ['#00E5FF', '#9B51E0', '#FF007A'] : ['#2A2A30', '#2A2A30']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.uploadGradient}>
+                                <Text style={[styles.uploadText, (!videoTitle || !selectedFile) && { color: '#8F98A0' }]}>Start Upload</Text>
+                            </LinearGradient>
+                        </TouchableOpacity>
                     </View>
                 </KeyboardAvoidingView>
+            </Modal>
+
+            {/* --- CUSTOM DELETE MODAL --- */}
+            <Modal visible={deleteModalVisible} transparent={true} animationType="fade" onRequestClose={() => !isDeleting && setDeleteModalVisible(false)}>
+                <View style={styles.modalOverlay}>
+                    <View style={styles.deleteModalContainer}>
+                        <View style={styles.warningIconBg}>
+                            <Ionicons name="trash" size={32} color="#E53935" />
+                        </View>
+                        <Text style={styles.deleteModalTitle}>Delete Video?</Text>
+                        <Text style={styles.deleteModalSub}>
+                            This video will be permanently removed from your storage. This action cannot be undone.
+                        </Text>
+
+                        <View style={styles.deleteModalBtnRow}>
+                            <TouchableOpacity
+                                style={styles.deleteCancelBtn}
+                                activeOpacity={0.7}
+                                onPress={() => setDeleteModalVisible(false)}
+                                disabled={isDeleting}
+                            >
+                                <Text style={styles.deleteCancelBtnText}>Cancel</Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity
+                                style={styles.deleteConfirmBtn}
+                                activeOpacity={0.8}
+                                onPress={confirmDelete}
+                                disabled={isDeleting}
+                            >
+                                {isDeleting ? (
+                                    <ActivityIndicator color="#FFF" size="small" />
+                                ) : (
+                                    <Text style={styles.deleteConfirmBtnText}>Delete</Text>
+                                )}
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+                </View>
             </Modal>
         </View>
     );
@@ -231,14 +394,31 @@ const styles = StyleSheet.create({
     header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.05)' },
     backButton: { padding: 4 },
     headerTitle: { color: '#FFFFFF', fontSize: 18, fontWeight: 'bold' },
-
     emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40 },
     emptyText: { color: '#FFFFFF', fontSize: 18, fontWeight: 'bold', marginTop: 16, marginBottom: 8 },
     emptySubText: { color: '#8F98A0', fontSize: 14, textAlign: 'center' },
+    listContent: { padding: 20, paddingBottom: 100 },
 
-    listContent: { padding: 20 },
-    videoItem: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#17171C', padding: 16, borderRadius: 12, marginBottom: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
-    videoTitle: { color: '#FFF', fontSize: 16, fontWeight: '500', flex: 1 },
+    videoItem: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#17171C', padding: 12, borderRadius: 12, marginBottom: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
+    listThumbnailContainer: { width: 90, height: 60, borderRadius: 8, overflow: 'hidden', backgroundColor: '#0A0A0C', position: 'relative' },
+    listThumbnailVideo: { width: '100%', height: '100%' },
+    durationBadge: { position: 'absolute', bottom: 4, right: 4, backgroundColor: 'rgba(0,0,0,0.85)', paddingHorizontal: 4, paddingVertical: 2, borderRadius: 4 },
+    durationText: { color: '#FFF', fontSize: 10, fontWeight: 'bold' },
+    videoInfo: { flex: 1, marginLeft: 12, justifyContent: 'center' },
+    videoTitle: { color: '#FFF', fontSize: 15, fontWeight: '500' },
+    trashBtn: { padding: 8 },
+
+    ghostCard: { flexDirection: 'row', backgroundColor: '#121216', marginHorizontal: 20, marginTop: 20, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(0, 229, 255, 0.3)' },
+    thumbnailContainer: { width: 100, height: 70, borderRadius: 8, overflow: 'hidden', position: 'relative' },
+    thumbnailVideo: { width: '100%', height: '100%' },
+    thumbnailOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.85)' },
+    cancelUploadBtn: { position: 'absolute', top: 4, right: 4 },
+    cancelUploadBg: { backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 12, padding: 2 },
+    ghostCardInfo: { flex: 1, marginLeft: 16, justifyContent: 'center' },
+    ghostCardTitle: { color: '#FFF', fontSize: 15, fontWeight: 'bold', marginBottom: 6 },
+    ghostCardSubtitle: { color: '#8F98A0', fontSize: 12 },
+    ghostCardProgressBarBg: { height: 4, backgroundColor: '#2A2A30', borderRadius: 2, overflow: 'hidden' },
+    ghostCardProgressBarFill: { height: '100%', backgroundColor: '#00E5FF' },
 
     fab: { position: 'absolute', bottom: 30, right: 30, shadowColor: '#9B51E0', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 8 },
     fabGradient: { width: 60, height: 60, borderRadius: 30, justifyContent: 'center', alignItems: 'center' },
@@ -247,20 +427,22 @@ const styles = StyleSheet.create({
     modalContainer: { backgroundColor: '#1E1E24', borderRadius: 20, width: '100%', padding: 24, position: 'relative', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
     modalCloseBtn: { position: 'absolute', top: 16, right: 16, zIndex: 10, padding: 4 },
     modalTitle: { color: '#FFFFFF', fontSize: 20, fontWeight: 'bold', marginBottom: 24 },
-
     inputLabel: { color: '#8F98A0', fontSize: 12, fontWeight: 'bold', textTransform: 'uppercase', marginBottom: 8, letterSpacing: 1 },
     input: { backgroundColor: '#0A0A0C', color: '#FFFFFF', borderRadius: 10, height: 50, paddingHorizontal: 16, fontSize: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)', marginBottom: 20 },
-
     browseButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0, 229, 255, 0.05)', borderWidth: 1, borderColor: 'rgba(0, 229, 255, 0.3)', borderRadius: 10, height: 50, marginBottom: 24, gap: 8, paddingHorizontal: 12 },
     browseButtonText: { color: '#00E5FF', fontSize: 16, fontWeight: '600' },
-
     uploadBtnContainer: { borderRadius: 10, overflow: 'hidden' },
     btnDisabled: { opacity: 0.9 },
     uploadGradient: { paddingVertical: 16, alignItems: 'center', justifyContent: 'center' },
     uploadText: { color: '#FFFFFF', fontSize: 16, fontWeight: 'bold' },
 
-    progressContainer: { marginTop: 10 },
-    progressText: { color: '#00E5FF', fontSize: 14, fontWeight: 'bold', marginBottom: 8, textAlign: 'center' },
-    progressBarBackground: { height: 8, backgroundColor: '#2A2A30', borderRadius: 4, overflow: 'hidden' },
-    progressBarFill: { height: '100%', backgroundColor: '#00E5FF' }
+    deleteModalContainer: { backgroundColor: '#1E1E24', borderRadius: 24, width: '85%', padding: 24, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(229, 57, 53, 0.2)' },
+    warningIconBg: { width: 64, height: 64, borderRadius: 32, backgroundColor: 'rgba(229, 57, 53, 0.1)', justifyContent: 'center', alignItems: 'center', marginBottom: 16 },
+    deleteModalTitle: { color: '#FFFFFF', fontSize: 22, fontWeight: 'bold', marginBottom: 12 },
+    deleteModalSub: { color: '#8F98A0', fontSize: 14, textAlign: 'center', marginBottom: 24, lineHeight: 20 },
+    deleteModalBtnRow: { flexDirection: 'row', width: '100%', gap: 12 },
+    deleteCancelBtn: { flex: 1, backgroundColor: 'rgba(255,255,255,0.05)', paddingVertical: 14, borderRadius: 12, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+    deleteCancelBtnText: { color: '#FFF', fontSize: 15, fontWeight: '600' },
+    deleteConfirmBtn: { flex: 1, backgroundColor: '#E53935', paddingVertical: 14, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+    deleteConfirmBtnText: { color: '#FFF', fontSize: 15, fontWeight: 'bold' }
 });
