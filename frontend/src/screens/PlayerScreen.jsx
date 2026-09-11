@@ -277,6 +277,36 @@ export default function PlayerScreen() {
         }
     };
 
+    // --- NEW: Create Watch Party Shortcut ---
+    const handleCreateWatchParty = () => {
+        handleAuthAction(() => {
+            const newRoomId = Math.floor(10000 + Math.random() * 90000).toString();
+            let vidId = '';
+
+            // Map the current media directly into the Vidking Room Format
+            if (id && type) {
+                vidId = type === 'tv'
+                    ? `VIDKING:tv:${id}:${selectedSeason}:${selectedEpisode}`
+                    : `VIDKING:movie:${id}`;
+            } else {
+                // Fallback to youtube trailer if it's just a raw YT search
+                vidId = trailerKey || ytId;
+            }
+
+            setIsPlaying(false); // Pause current player
+
+            router.push({
+                pathname: '/theatre',
+                params: {
+                    roomId: newRoomId,
+                    isHost: 'true',
+                    initialYtId: vidId,
+                    initialTitle: mediaDetails?.title || mediaDetails?.name || 'Watch Party'
+                }
+            });
+        });
+    };
+
     const toggleFullScreen = async () => {
         if (isFullScreen) {
             await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
@@ -368,7 +398,7 @@ export default function PlayerScreen() {
                                 style={{ flex: 1, backgroundColor: '#000' }}
                                 javaScriptEnabled={true}
                                 allowsFullscreenVideo={false}
-                                mediaPlaybackRequiresUserAction={false} // Allow immediate autoplay
+                                mediaPlaybackRequiresUserAction={false}
                                 allowsInlineMediaPlayback={true}
                                 setSupportMultipleWindows={false}
                                 onMessage={(event) => {
@@ -386,13 +416,11 @@ export default function PlayerScreen() {
                                     return true;
                                 }}
                                 injectedJavaScript={`
-                                    // 1. Hide unwanted overlays & native fullscreen icons
                                     window.open = function() { return null; };
                                     const style = document.createElement('style');
                                     style.innerHTML = 'iframe[src*="ads"], .ad-overlay, .jw-ad, .jw-icon-fullscreen, .vjs-fullscreen-control, [aria-label="Fullscreen"], [title="Fullscreen"] { display: none !important; }';
                                     document.head.appendChild(style);
 
-                                    // 2. Automated instant play trigger
                                     const triggerPlay = () => {
                                         const v = document.querySelector('video');
                                         if (v) {
@@ -405,7 +433,6 @@ export default function PlayerScreen() {
                                     setTimeout(triggerPlay, 1200);
                                     setTimeout(triggerPlay, 2500);
 
-                                    // 3. User interaction listener to wake up native fullscreen exit button
                                     ['click', 'touchstart'].forEach(evt => {
                                         document.addEventListener(evt, () => {
                                             if (window.ReactNativeWebView) {
@@ -458,7 +485,6 @@ export default function PlayerScreen() {
                             </View>
                         )}
 
-                        {/* --- AUTO-HIDING FULLSCREEN CLOSE BUTTON --- */}
                         {isFullScreen && (
                             <Animated.View
                                 style={[
@@ -473,7 +499,6 @@ export default function PlayerScreen() {
                             </Animated.View>
                         )}
 
-                        {/* Top-left wake hotspot when cross button is faded out */}
                         {isFullScreen && !showFsExitBtn && (
                             <TouchableOpacity
                                 style={styles.fsWakeHotspot}
@@ -495,18 +520,29 @@ export default function PlayerScreen() {
                             </TouchableOpacity>
                         </View>
 
-                        {id && (
-                            <View style={styles.externalRightControls}>
-                                <TouchableOpacity onPress={() => handleAuthAction(() => handleToggleAction(id, type, 'watchlist'))} style={styles.externalBtn}>
-                                    <Ionicons name={isCurrentInWatchlist ? "bookmark" : "bookmark-outline"} size={22} color={isCurrentInWatchlist ? "#F5C518" : "#FFFFFF"} />
-                                    <Text style={[styles.externalBtnText, isCurrentInWatchlist && { color: '#F5C518' }]}>Save</Text>
+                        <View style={{ flex: 1, paddingLeft: 12 }}>
+                            {/* --- UPDATED: ACTION BAR WITH WATCH PARTY BUTTON --- */}
+                            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.externalRightControls} bounces={false}>
+
+                                <TouchableOpacity onPress={handleCreateWatchParty} style={[styles.externalBtn, { borderColor: '#00E5FF', borderWidth: 1, backgroundColor: 'rgba(0, 229, 255, 0.1)' }]}>
+                                    <Ionicons name="people-circle" size={18} color="#00E5FF" />
+                                    <Text style={[styles.externalBtnText, { color: '#00E5FF' }]}>Watch Party</Text>
                                 </TouchableOpacity>
-                                <TouchableOpacity onPress={() => handleAuthAction(() => handleToggleAction(id, type, 'watched'))} style={styles.externalBtn}>
-                                    <Ionicons name="checkmark-done" size={22} color={isCurrentInWatched ? "#1F80E0" : "#FFFFFF"} />
-                                    <Text style={[styles.externalBtnText, isCurrentInWatched && { color: '#1F80E0' }]}>Watched</Text>
-                                </TouchableOpacity>
-                            </View>
-                        )}
+
+                                {id && (
+                                    <>
+                                        <TouchableOpacity onPress={() => handleAuthAction(() => handleToggleAction(id, type, 'watchlist'))} style={styles.externalBtn}>
+                                            <Ionicons name={isCurrentInWatchlist ? "bookmark" : "bookmark-outline"} size={20} color={isCurrentInWatchlist ? "#F5C518" : "#FFFFFF"} />
+                                            <Text style={[styles.externalBtnText, isCurrentInWatchlist && { color: '#F5C518' }]}>Save</Text>
+                                        </TouchableOpacity>
+                                        <TouchableOpacity onPress={() => handleAuthAction(() => handleToggleAction(id, type, 'watched'))} style={styles.externalBtn}>
+                                            <Ionicons name="checkmark-done" size={20} color={isCurrentInWatched ? "#1F80E0" : "#FFFFFF"} />
+                                            <Text style={[styles.externalBtnText, isCurrentInWatched && { color: '#1F80E0' }]}>Watched</Text>
+                                        </TouchableOpacity>
+                                    </>
+                                )}
+                            </ScrollView>
+                        </View>
                     </View>
                 )}
 
@@ -713,7 +749,7 @@ const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#0A0A0C' },
     scrollContent: {},
 
-    playerContainer: { backgroundColor: '#000', position: 'relative' },
+    playerContainer: { position: 'relative', backgroundColor: '#000' },
     videoThumbnail: { width: '100%', height: '100%', position: 'absolute' },
     playerOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'center', alignItems: 'center', zIndex: 5 },
     centerPlayButton: { width: 64, height: 64, borderRadius: 32, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center' },
@@ -739,8 +775,10 @@ const styles = StyleSheet.create({
 
     externalControlBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#14141A', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.08)' },
     externalLeftControls: { flexDirection: 'row', gap: 12 },
+
+    // --- UPDATED ACTION BAR STYLES ---
+    externalRightControls: { flexDirection: 'row', gap: 10, alignItems: 'center' },
     externalBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(255,255,255,0.08)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
-    externalRightControls: { flexDirection: 'row', gap: 10 },
     externalBtnText: { color: '#FFFFFF', fontSize: 13, fontWeight: '600' },
 
     detailsContainer: { paddingHorizontal: 16, paddingTop: 20 },

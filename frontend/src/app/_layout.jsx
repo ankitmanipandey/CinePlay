@@ -5,7 +5,7 @@ import Constants from 'expo-constants';
 import axios from 'axios';
 import React, { useEffect, useState, useRef } from 'react';
 import { View, Text, StyleSheet, ActivityIndicator, Animated, Dimensions, Platform, PermissionsAndroid, Linking, BackHandler } from 'react-native';
-import { Stack, useRouter } from 'expo-router';
+import { Stack, useRouter, usePathname } from 'expo-router'; // <-- Added usePathname
 import Toast from 'react-native-toast-message';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -132,7 +132,9 @@ const toastConfig = {
 
 export default function RootLayout() {
   const [isLoading, setIsLoading] = useState(true);
+
   const router = useRouter();
+  const pathname = usePathname(); // <-- Track the current route
 
   const restoreSession = useAuthStore((state) => state.restoreSession);
   const token = useAuthStore((state) => state.token);
@@ -238,7 +240,6 @@ export default function RootLayout() {
   useEffect(() => {
     if (!isLoading && user) {
       notifee.getInitialNotification().then((initial) => {
-        // Tightened check to only trigger for our specific active-upload notification
         if (initial?.notification?.id === 'active-upload') {
           setTimeout(() => {
             router.push('/my-videos');
@@ -248,15 +249,23 @@ export default function RootLayout() {
     }
   }, [isLoading, user]);
 
-  // 4. Double Back to Exit Manager
+  // 4. Double Back to Exit Manager (WITH HOME FALLBACK)
   useEffect(() => {
     let backPressCount = 0;
 
     const onBackPress = () => {
+      // 1. If we can naturally go back in the stack, let it happen
       if (router.canGoBack()) {
         return false;
       }
 
+      // 2. If we are at the root, but NOT on the Home tab -> Go to Home
+      if (pathname !== '/tabs/home') {
+        router.replace('/tabs/home');
+        return true;
+      }
+
+      // 3. We are on the Home tab and have no history -> Double back to exit
       if (backPressCount === 1) {
         BackHandler.exitApp();
         return true;
@@ -281,7 +290,7 @@ export default function RootLayout() {
     const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
 
     return () => subscription.remove();
-  }, [router]);
+  }, [router, pathname]); // <-- Added pathname to dependencies
 
   if (isLoading) {
     return (
