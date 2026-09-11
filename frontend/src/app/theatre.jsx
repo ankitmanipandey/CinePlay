@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
     StyleSheet,
     Text,
@@ -17,7 +17,6 @@ import {
     Modal,
     BackHandler,
     Animated,
-    Pressable,
     PanResponder
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -28,9 +27,12 @@ import * as ScreenOrientation from 'expo-screen-orientation';
 import Toast from 'react-native-toast-message';
 import { LinearGradient } from 'expo-linear-gradient';
 import axios from 'axios';
+import { WebView } from 'react-native-webview';
 
 import TheatrePlayer from '../screens/TheatrePlayer';
 import { useAuthStore } from '../store/useAuthStore';
+import { tmdbService } from '../services/tmdbService';
+import { getImageUrl } from '../constants/config';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL;
 const SOCKET_URL = BACKEND_URL;
@@ -237,6 +239,14 @@ export default function TheatreScreen() {
     const playerRef = useRef(null);
     const isPlayingRef = useRef(false);
 
+    // --- Vidking (WebView) specific refs ---
+    const webViewRef = useRef(null);
+    const vidkingTimeRef = useRef(0);
+    const lastVidkingEmitRef = useRef(0);
+    const isVidkingRef = useRef(false);
+
+    const [searchType, setSearchType] = useState('youtube');
+
     const [searchInput, setSearchInput] = useState('');
     const [searchResults, setSearchResults] = useState([]);
     const [isSearching, setIsSearching] = useState(false);
@@ -259,22 +269,112 @@ export default function TheatreScreen() {
     const [showFloatingMessages, setShowFloatingMessages] = useState(true);
     const [activeFloatingMessages, setActiveFloatingMessages] = useState([]);
 
-    // --- overlayVisible controls this screen's OWN overlay elements
-    // (reaction button, chat toggle, live-viewer badge, fullscreen exit btn).
-    // It is intentionally NOT governed by its own independent timer anymore.
-    // The single 6-second auto-hide clock lives inside TheatrePlayer; this
-    // state simply mirrors it via the onControlsToggle callback below, so
-    // every visible overlay element (the player's own bars AND this
-    // screen's buttons) shows and hides at exactly the same moment. ---
     const [overlayVisible, setOverlayVisible] = useState(true);
+    const [tvDetails, setTvDetails] = useState(null);
 
-    // Whether the currently loaded video is a locally-uploaded/custom video
-    // (as opposed to a plain YouTube video). Custom videos get their tap
-    // handling from TheatrePlayer's own internal gesture layer, so this
-    // screen must NOT also try to toggle controls on every touch — that
-    // would fight the player's own toggle and cause flicker/inconsistent
-    // show-hide behavior.
     const isCustomVideo = !!ytId && ytId.startsWith('CUSTOM:');
+    const isVidking = !!ytId && ytId.startsWith('VIDKING:');
+
+    useEffect(() => { isVidkingRef.current = isVidking; }, [isVidking]);
+
+    const vidkingParts = isVidking ? ytId.split(':') : [];
+    const vidkingType = vidkingParts[1] || 'movie';
+    const vidkingId = vidkingParts[2];
+    const vidkingSeason = vidkingParts[3] ? parseInt(vidkingParts[3], 10) : 1;
+    const vidkingEpisode = vidkingParts[4] ? parseInt(vidkingParts[4], 10) : 1;
+
+    // --- Vidking Auto-Hide Timer Logic ---
+    const vidkingOverlayTimer = useRef(null);
+
+    const wakeVidkingOverlay = useCallback(() => {
+        if (!isVidking) return;
+        setOverlayVisible(true);
+        if (vidkingOverlayTimer.current) clearTimeout(vidkingOverlayTimer.current);
+        vidkingOverlayTimer.current = setTimeout(() => {
+            setOverlayVisible(false);
+        }, 4000); // UI auto-hides after 4 seconds of inactivity
+    }, [isVidking]);
+
+    // --- Vidking real-time sync: host relays real player events, viewer enforces them ---
+    const handleVidkingPlayerEvent = useCallback((eventData) => {
+        if (!eventData) return;
+        const { event: evt, currentTime } = eventData;
+        if (typeof currentTime === 'number') vidkingTimeRef.current = currentTime;
+
+        // Only the host broadcasts sync — viewers never emit from their own player events.
+        if (!isHostBool || !socket) return;
+
+        if (evt === 'play') {
+            setIsPlaying(true);
+            socket.emit('sync_action', { roomId, action: 'play', timestamp: currentTime });
+        } else if (evt === 'pause') {
+            setIsPlaying(false);
+            socket.emit('sync_action', { roomId, action: 'pause', timestamp: currentTime });
+        } else if (evt === 'seeked') {
+            socket.emit('sync_action', { roomId, action: isPlayingRef.current ? 'play' : 'pause', timestamp: currentTime });
+        } else if (evt === 'timeupdate') {
+            // Throttle to ~1/sec so we don't flood the socket with every tick.
+            const now = Date.now();
+            if (now - lastVidkingEmitRef.current > 1000) {
+                lastVidkingEmitRef.current = now;
+                socket.emit('sync_action', { roomId, action: isPlayingRef.current ? 'play' : 'pause', timestamp: currentTime });
+            }
+        }
+    }, [isHostBool, socket, roomId]);
+
+    // Viewer-side: drive the real <video> element inside the WebView directly,
+    // since Vidking has no documented inbound postMessage command API.
+    const applyVidkingRemoteSync = useCallback((data) => {
+        if (!webViewRef.current) return;
+        const t = typeof data.timestamp === 'number' ? data.timestamp : 0;
+        const shouldPlay = data.action !== 'pause';
+        const js = `
+            (function() {
+                try {
+                    var v = document.querySelector('video');
+                    if (v) {
+                        if (Math.abs(v.currentTime - (${t})) > 1.5) { v.currentTime = ${t}; }
+                        if (${shouldPlay}) { v.play().catch(function(){}); }
+                        else { v.pause(); }
+                    }
+                } catch (e) {}
+            })();
+            true;
+        `;
+        webViewRef.current.injectJavaScript(js);
+    }, []);
+
+    useEffect(() => {
+        if (ytId) {
+            if (isVidking) {
+                wakeVidkingOverlay();
+            } else {
+                setOverlayVisible(true);
+                extendOverlayTimer();
+            }
+        }
+        return () => {
+            if (vidkingOverlayTimer.current) clearTimeout(vidkingOverlayTimer.current);
+        };
+    }, [ytId, isVidking, wakeVidkingOverlay]);
+
+    // Ensure TV Details fetch updates correctly
+    useEffect(() => {
+        if (isVidking && vidkingType === 'tv' && vidkingId) {
+            tmdbService.getDetails(vidkingId, 'tv')
+                .then(details => {
+                    if (details) setTvDetails(details);
+                })
+                .catch(() => { });
+        } else {
+            setTvDetails(null);
+        }
+    }, [isVidking, vidkingType, vidkingId]);
+
+    const tvSeasons = tvDetails?.seasons?.filter(s => s.season_number > 0) || [];
+    const currentSeasonData = tvSeasons.find(s => s.season_number === vidkingSeason) || tvSeasons[0];
+    const episodeCount = currentSeasonData?.episode_count || 1;
+    const episodesArray = Array.from({ length: episodeCount }, (_, i) => i + 1);
 
     useEffect(() => {
         isPlayingRef.current = isPlaying;
@@ -284,8 +384,6 @@ export default function TheatreScreen() {
         const keyboardDidShowListener = Keyboard.addListener('keyboardDidShow', () => setIsKeyboardVisible(true));
         const keyboardDidHideListener = Keyboard.addListener('keyboardDidHide', () => setIsKeyboardVisible(false));
         return () => {
-            // FIXED: was removing keyboardDidHideListener twice, leaking the
-            // keyboardDidShow listener across re-mounts.
             keyboardDidShowListener.remove();
             keyboardDidHideListener.remove();
         };
@@ -299,14 +397,6 @@ export default function TheatreScreen() {
         const backHandler = BackHandler.addEventListener('hardwareBackPress', onHardwareBackPress);
         return () => backHandler.remove();
     }, [isFullScreen, isHostBool, socket, roomId]);
-
-    useEffect(() => {
-        if (ytId) {
-            setOverlayVisible(true);
-            extendOverlayTimer();
-        }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [ytId]);
 
     // --- SOCKET SETUP ---
     useEffect(() => {
@@ -374,10 +464,15 @@ export default function TheatreScreen() {
 
         newSocket.on('remote_sync', (data) => {
             if (isHostBool) return;
+
+            if (isVidkingRef.current) {
+                setIsPlaying(data.action !== 'pause');
+                applyVidkingRemoteSync(data);
+                return;
+            }
+
             playerRef.current?.getCurrentTime().then(viewerTime => {
                 const timeDiff = Math.abs(viewerTime - data.timestamp);
-
-                // --- FIXED: Joinee plays but is instantly muted to maintain sync ---
                 if (data.action === 'pause') {
                     setIsMuted(true);
                     setIsPlaying(true);
@@ -398,7 +493,6 @@ export default function TheatreScreen() {
                 const newFloatMsg = { id: data.id, sender: data.sender, text: data.text };
                 setActiveFloatingMessages(prev => [...prev, newFloatMsg]);
             }
-
             setMessages(prev => [...prev, data]);
             setTimeout(() => { chatListRef.current?.scrollToEnd({ animated: true }); }, 100);
         });
@@ -415,11 +509,11 @@ export default function TheatreScreen() {
             newSocket.disconnect();
             ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
         };
-    }, [roomId, isHostBool, user, initialYtId, initialTitle]);
+    }, [roomId, isHostBool, user, initialYtId, initialTitle, applyVidkingRemoteSync]);
 
-    // --- HOST SYNC ENGINE ---
+    // --- HOST SYNC ENGINE (YouTube / custom video only — Vidking is event-driven via handleVidkingPlayerEvent) ---
     useEffect(() => {
-        if (!isHostBool || !socket || !ytId) return;
+        if (!isHostBool || !socket || !ytId || isVidking) return;
         let lastTime = 0;
         const interval = setInterval(() => {
             playerRef.current?.getCurrentTime().then(currentTime => {
@@ -432,7 +526,7 @@ export default function TheatreScreen() {
             }).catch(() => { });
         }, 1000);
         return () => clearInterval(interval);
-    }, [isHostBool, socket, ytId, roomId]);
+    }, [isHostBool, socket, ytId, roomId, isVidking]);
 
     const onPlayerStateChange = (state) => {
         if (!isHostBool) return;
@@ -447,7 +541,6 @@ export default function TheatreScreen() {
         }).catch(() => { });
     };
 
-    // --- REACTION LOGIC ---
     const sendReaction = (emoji) => {
         const msgData = {
             id: Date.now().toString(),
@@ -461,69 +554,53 @@ export default function TheatreScreen() {
         socket.emit('send_chat', msgData);
     };
 
-    const removeReaction = (id) => {
-        setActiveReactions(prev => prev.filter(r => r.id !== id));
-    };
+    const removeReaction = (id) => setActiveReactions(prev => prev.filter(r => r.id !== id));
+    const removeFloatingMessage = (id) => setActiveFloatingMessages(prev => prev.filter(m => m.id !== id));
+    const toggleDistractionFree = () => setShowFloatingEmojis(prev => !prev);
 
-    const removeFloatingMessage = (id) => {
-        setActiveFloatingMessages(prev => prev.filter(m => m.id !== id));
-    };
-
-    const toggleDistractionFree = () => {
-        setShowFloatingEmojis(prev => !prev);
-    };
-
-    // --- UI TOGGLE SYNC LOGIC ---
-    // extendOverlayTimer: SHOWS controls and resets the single 6s clock.
-    // Used by any button press (chat toggle, reaction picker, etc.) that
-    // should keep the overlay visible without toggling it off.
+    // Extends timer for UI buttons based on the active player type
     const extendOverlayTimer = () => {
-        playerRef.current?.extendControls?.();
+        if (isVidking) {
+            wakeVidkingOverlay();
+        } else {
+            playerRef.current?.extendControls?.();
+        }
     };
 
-    // handleVideoTap: only relevant for plain YouTube playback, where
-    // TheatrePlayer renders no bars/gesture-layer of its own (it relies on
-    // YouTube's native controls). We ask the player to TOGGLE its shared
-    // visibility state, which — via onControlsToggle — updates this
-    // screen's own overlayVisible too, so the reaction/chat buttons and
-    // badge appear/disappear in lockstep.
-    //
-    // For custom (uploaded) videos we deliberately do nothing here:
-    // TheatrePlayer's own internal pan responder already detects taps on
-    // empty video space and calls toggleControlsRef itself. If we also
-    // toggled from here on every touch-start, the two toggles would race
-    // and the overlay would flicker or appear to "never" hide, since a
-    // touch-down (this handler) and the matching touch-up (the player's
-    // gesture) could each flip the state, effectively canceling out.
     const handleVideoTap = () => {
-        if (!isCustomVideo) {
+        if (!isCustomVideo && !isVidking) {
             playerRef.current?.toggleControls?.();
         }
     };
 
-    // --- NORMAL CHAT LOGIC ---
     const handleSendMessage = () => {
         if (!chatInput.trim()) return;
         const msgData = { id: Date.now().toString(), roomId, sender: username, text: chatInput.trim(), isReaction: false };
         setMessages(prev => [...prev, msgData]);
-
         setActiveFloatingMessages(prev => [...prev, { id: msgData.id, sender: username, text: msgData.text }]);
-
         socket.emit('send_chat', msgData);
         setChatInput('');
     };
 
-    // --- YT SEARCH & ROOM CONTROLS ---
     const handleSearch = async () => {
         if (!searchInput.trim()) return;
         Keyboard.dismiss();
         setIsSearching(true);
         try {
-            const searchUrlTemplate = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(searchInput)}&type=video&maxResults=10&key=__API_KEY__`;
-            const data = await fetchYouTubeWithRetry(searchUrlTemplate);
-            if (data.error) Toast.show({ type: 'hotstarError', text1: data.error.message });
-            else if (data.items) setSearchResults(data.items);
-        } catch (error) { } finally { setIsSearching(false); }
+            if (searchType === 'youtube') {
+                const searchUrlTemplate = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(searchInput)}&type=video&maxResults=10&key=__API_KEY__`;
+                const data = await fetchYouTubeWithRetry(searchUrlTemplate);
+                if (data.error) Toast.show({ type: 'hotstarError', text1: data.error.message });
+                else if (data.items) setSearchResults(data.items);
+            } else {
+                const tmdbResults = await tmdbService.smartSearch(searchInput, 1);
+                setSearchResults(tmdbResults || []);
+            }
+        } catch (error) {
+            Toast.show({ type: 'hotstarError', text1: 'Search failed' });
+        } finally {
+            setIsSearching(false);
+        }
     };
 
     const handleSelectVideo = (selectedYtId, selectedTitle) => {
@@ -531,18 +608,39 @@ export default function TheatreScreen() {
         setVideoTitle(selectedTitle);
         setIsPlaying(true);
         socket.emit('change_video', { roomId, ytId: selectedYtId, title: selectedTitle });
-
         setSearchResults([]);
         setSearchInput('');
+    };
+
+    const handleSeasonChange = (seasonNum) => {
+        if (!isHostBool) {
+            Toast.show({ type: 'hotstarInfo', text1: 'Only the host can change episodes' });
+            return;
+        }
+        const newYtId = `VIDKING:tv:${vidkingId}:${seasonNum}:1`;
+        setYtId(newYtId);
+        socket?.emit('change_video', { roomId, ytId: newYtId, title: videoTitle });
+    };
+
+    const handleEpisodeChange = (epNum) => {
+        if (!isHostBool) {
+            Toast.show({ type: 'hotstarInfo', text1: 'Only the host can change episodes' });
+            return;
+        }
+        const newYtId = `VIDKING:tv:${vidkingId}:${vidkingSeason}:${epNum}`;
+        setYtId(newYtId);
+        socket?.emit('change_video', { roomId, ytId: newYtId, title: videoTitle });
     };
 
     const toggleFullScreen = async () => {
         if (isFullScreen) {
             await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
             setIsFullScreen(false);
+            extendOverlayTimer();
         } else {
             await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
             setIsFullScreen(true);
+            extendOverlayTimer();
         }
     };
 
@@ -574,7 +672,6 @@ export default function TheatreScreen() {
         Toast.show({ type: 'hotstarSuccess', text1: `${selectedUserToMod} was blocked.` });
     };
 
-    // --- INVITES ---
     const openShareModal = async () => {
         if (!user) { Toast.show({ type: 'hotstarInfo', text1: 'Log in to invite friends!' }); return; }
         setIsShareModalVisible(true);
@@ -600,19 +697,34 @@ export default function TheatreScreen() {
             setIsShareModalVisible(false);
             setSelectedFriends([]);
         } catch (error) {
-            const msg = error.response?.data?.message || 'Failed to send some invites.';
-            Toast.show({ type: 'hotstarError', text1: msg });
+            Toast.show({ type: 'hotstarError', text1: 'Failed to send some invites.' });
         }
     };
 
-    // --- RENDERERS ---
-    const renderSearchResult = ({ item }) => (
-        <TouchableOpacity style={styles.resultCard} activeOpacity={0.8} onPress={() => handleSelectVideo(item.id.videoId, item.snippet?.title)}>
-            <Image source={{ uri: item.snippet?.thumbnails?.medium?.url }} style={styles.resultImage} />
-            <View style={styles.resultPlayIcon}><Ionicons name="play-circle" size={32} color="rgba(255,255,255,0.8)" /></View>
-            <Text style={styles.resultTitle} numberOfLines={2}>{item.snippet?.title}</Text>
-        </TouchableOpacity>
-    );
+    const renderSearchResult = ({ item }) => {
+        if (searchType === 'youtube') {
+            return (
+                <TouchableOpacity style={styles.resultCard} activeOpacity={0.8} onPress={() => handleSelectVideo(item.id.videoId, item.snippet?.title)}>
+                    <Image source={{ uri: item.snippet?.thumbnails?.medium?.url }} style={styles.resultImage} />
+                    <View style={styles.resultPlayIcon}><Ionicons name="play-circle" size={32} color="rgba(255,255,255,0.8)" /></View>
+                    <Text style={styles.resultTitle} numberOfLines={2}>{item.snippet?.title}</Text>
+                </TouchableOpacity>
+            );
+        } else {
+            const title = item.title || item.name;
+            const mediaType = item.media_type || (item.first_air_date ? 'tv' : 'movie');
+            const vidId = mediaType === 'tv'
+                ? `VIDKING:tv:${item.id}:1:1`
+                : `VIDKING:movie:${item.id}`;
+            return (
+                <TouchableOpacity style={styles.resultCard} activeOpacity={0.8} onPress={() => handleSelectVideo(vidId, title)}>
+                    <Image source={{ uri: getImageUrl(item.backdrop_path || item.poster_path, 'w500') }} style={[styles.resultImage, { backgroundColor: '#25252A' }]} />
+                    <View style={styles.resultPlayIcon}><Ionicons name="play-circle" size={32} color="rgba(255,255,255,0.8)" /></View>
+                    <Text style={styles.resultTitle} numberOfLines={2}>{title}</Text>
+                </TouchableOpacity>
+            );
+        }
+    };
 
     const renderChatMessage = ({ item }) => {
         if (item.isReaction) {
@@ -671,6 +783,7 @@ export default function TheatreScreen() {
         );
     }
 
+    // Controls visibility logic cleanly respects the timer states
     const showOverlayUI = ytId && overlayVisible;
 
     return (
@@ -678,7 +791,7 @@ export default function TheatreScreen() {
             <KeyboardAvoidingView style={styles.container} behavior="padding" keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 24}>
                 <StatusBar hidden={isFullScreen} showHideTransition="slide" barStyle="light-content" backgroundColor="#000" translucent={false} />
 
-                {/* --- VIDEO CONTAINER (With synced tap listener) --- */}
+                {/* --- VIDEO CONTAINER --- */}
                 <View
                     style={[
                         styles.playerContainer,
@@ -686,37 +799,142 @@ export default function TheatreScreen() {
                         isFullScreen && { position: 'absolute', top: 0, left: 0, zIndex: 9999, elevation: 9999, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' }
                     ]}
                     onStartShouldSetResponderCapture={() => {
-                        if (ytId) {
+                        if (ytId && !isVidking) {
                             handleVideoTap();
                         }
                         return false;
                     }}
                 >
-                    <TheatrePlayer
-                        ref={playerRef}
-                        ytId={ytId}
-                        isPlaying={isPlaying}
-                        isMuted={isMuted}
-                        isHostBool={isHostBool}
-                        onPlayerStateChange={onPlayerStateChange}
-                        width={innerVideoWidth}
-                        height={innerVideoHeight}
-                        isFullScreen={isFullScreen}
-                        onExit={handleBackPress}
-                        onToggleOrientation={async () => {
-                            const current = await ScreenOrientation.getOrientationAsync();
-                            if (current === ScreenOrientation.Orientation.PORTRAIT_UP) {
-                                await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
-                            } else {
-                                await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
-                            }
-                        }}
-                        onControlsToggle={(visible) => {
-                            setOverlayVisible(visible);
-                        }}
-                    />
+                    {isVidking ? (
+                        <View style={{ width: innerVideoWidth, height: innerVideoHeight, backgroundColor: '#000', position: 'relative' }}>
+                            <WebView
+                                ref={webViewRef}
+                                key={`vidking-theatre-${vidkingId}-${vidkingSeason}-${vidkingEpisode}`}
+                                source={{
+                                    uri: `https://www.vidking.net/embed/${vidkingType === 'tv'
+                                        ? `tv/${vidkingId}/${vidkingSeason}/${vidkingEpisode}`
+                                        : `movie/${vidkingId}`
+                                        }?autoPlay=true`
+                                }}
+                                style={{ width: '100%', height: '100%', backgroundColor: '#000' }}
+                                javaScriptEnabled={true}
+                                allowsFullscreenVideo={false}
+                                mediaPlaybackRequiresUserAction={false}
+                                allowsInlineMediaPlayback={true}
+                                setSupportMultipleWindows={false}
+                                onMessage={(event) => {
+                                    try {
+                                        const data = JSON.parse(event.nativeEvent.data);
+                                        if (data.type === 'USER_TOUCH') {
+                                            wakeVidkingOverlay();
+                                        } else if (data.type === 'PLAYER_EVENT') {
+                                            handleVidkingPlayerEvent(data.data);
+                                        }
+                                    } catch (e) { }
+                                }}
+                                onShouldStartLoadWithRequest={(request) => {
+                                    if (!request.url.includes('vidking.net') && !request.url.includes('about:blank')) {
+                                        return false;
+                                    }
+                                    return true;
+                                }}
+                                injectedJavaScript={`
+                (function() {
+                    window.open = function() { return null; };
+                    var restrictJoinee = ${!isHostBool};
 
-                    {/* --- FIXED: Removed orientation button from overlay --- */}
+                    var rules = [
+                        'iframe[src*="ads"], .ad-overlay, .jw-ad, .jw-icon-fullscreen, .vjs-fullscreen-control, [aria-label="Fullscreen"], [title="Fullscreen"] { display: none !important; }'
+                    ];
+
+                    // Joinees keep full access to volume, captions, settings, quality/language,
+                    // and can still tap to reveal the controlbar/progress — only the actual
+                    // play/pause toggle and the seek/scrub bar are made inert.
+                    if (restrictJoinee) {
+                        rules.push(
+                            '.jw-display-icon-container, .jw-icon-playback, .jw-icon-display, ' +
+                            '.jw-progress, .jw-rail, .jw-buffer, .jw-knob, ' +
+                            '.jw-slider-time, .jw-slider-horizontal, .jw-rail-group ' +
+                            '{ pointer-events: none !important; }'
+                        );
+                    }
+
+                    var style = document.createElement('style');
+                    style.innerHTML = rules.join(' ');
+                    document.head.appendChild(style);
+
+                    var triggerPlay = function() {
+                        var v = document.querySelector('video');
+                        if (v) v.play().catch(function(){});
+                        var playBtn = document.querySelector('.play-btn, .jw-display-icon-container, [aria-label="Play"]');
+                        if (playBtn) playBtn.click();
+                    };
+                    setTimeout(triggerPlay, 400);
+                    setTimeout(triggerPlay, 1200);
+                    setTimeout(triggerPlay, 2500);
+
+                    ['click', 'touchstart'].forEach(function(evt) {
+                        document.addEventListener(evt, function(e) {
+                            if (!e.isTrusted) return;
+                            if (window.ReactNativeWebView) {
+                                window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'USER_TOUCH' }));
+                            }
+                        }, { passive: true });
+                    });
+
+                    window.addEventListener('message', function(event) {
+                        try {
+                            var msg = event.data;
+                            if (typeof msg === 'string') {
+                                try { msg = JSON.parse(msg); } catch (e2) {}
+                            }
+                            if (msg && msg.type === 'PLAYER_EVENT' && msg.data && window.ReactNativeWebView) {
+                                window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'PLAYER_EVENT', data: msg.data }));
+                            }
+                        } catch (e) {}
+                    });
+
+                    true;
+                })();
+            `}
+                            />
+
+                            {/* Fallback wake hotspot when overlays are hidden */}
+                            {!overlayVisible && (
+                                <TouchableOpacity
+                                    style={styles.fsWakeHotspot}
+                                    onPress={wakeVidkingOverlay}
+                                    activeOpacity={1}
+                                />
+                            )}
+                        </View>
+                    ) : (
+                        <TheatrePlayer
+                            ref={playerRef}
+                            ytId={ytId}
+                            isPlaying={isPlaying}
+                            isMuted={isMuted}
+                            isHostBool={isHostBool}
+                            onPlayerStateChange={onPlayerStateChange}
+                            width={innerVideoWidth}
+                            height={innerVideoHeight}
+                            isFullScreen={isFullScreen}
+                            onExit={handleBackPress}
+                            onToggleOrientation={async () => {
+                                const current = await ScreenOrientation.getOrientationAsync();
+                                if (current === ScreenOrientation.Orientation.PORTRAIT_UP) {
+                                    await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+                                } else {
+                                    await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+                                }
+                            }}
+                            onControlsToggle={(visible) => {
+                                setOverlayVisible(visible);
+                            }}
+                        />
+                    )}
+
+                    {/* Uniform fullscreen exit button for both modes */}
                     {isFullScreen && showOverlayUI && (
                         <TouchableOpacity style={[styles.fullscreenExitBtn, { zIndex: 100000, elevation: 10 }]} onPress={toggleFullScreen} activeOpacity={0.7}>
                             <Ionicons name="close" size={26} color="#FFFFFF" />
@@ -779,10 +997,11 @@ export default function TheatreScreen() {
                     <>
                         {videoTitle !== '' && (
                             <View style={styles.nowPlayingBar}>
-                                <Ionicons name="play" size={14} color="#00E5FF" />
+                                <Ionicons name={isVidking ? "film" : "play"} size={14} color={isVidking ? "#FF007A" : "#00E5FF"} />
                                 <Text style={styles.nowPlayingText} numberOfLines={1}>
                                     <Text style={{ color: '#8F98A0', fontWeight: 'bold' }}>Now Playing: </Text>
                                     {videoTitle}
+                                    {isVidking && vidkingType === 'tv' ? ` (S${vidkingSeason} E${vidkingEpisode})` : ''}
                                 </Text>
                             </View>
                         )}
@@ -810,6 +1029,48 @@ export default function TheatreScreen() {
                                 </View>
                             </ScrollView>
                         </View>
+
+                        {/* --- TV SHOW SEASONS & EPISODES SELECTOR BAR --- */}
+                        {isVidking && vidkingType === 'tv' && tvSeasons.length > 0 && (
+                            <View style={styles.theatreTvBar}>
+                                <View style={styles.theatreTvHeader}>
+                                    <Text style={styles.theatreTvTitle}>
+                                        Season {vidkingSeason} • Episode {vidkingEpisode}
+                                    </Text>
+                                    {!isHostBool && (
+                                        <Text style={styles.theatreTvHostOnly}>(Controlled by Host)</Text>
+                                    )}
+                                </View>
+
+                                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.theatreTvRow}>
+                                    {tvSeasons.map((season) => (
+                                        <TouchableOpacity
+                                            key={`theatre-s-${season.season_number}`}
+                                            style={[styles.tvChip, vidkingSeason === season.season_number && styles.tvChipActive]}
+                                            onPress={() => handleSeasonChange(season.season_number)}
+                                        >
+                                            <Text style={[styles.tvChipText, vidkingSeason === season.season_number && styles.tvChipTextActive]}>
+                                                S{season.season_number}
+                                            </Text>
+                                        </TouchableOpacity>
+                                    ))}
+
+                                    <View style={styles.tvChipDivider} />
+
+                                    {episodesArray.map((ep) => (
+                                        <TouchableOpacity
+                                            key={`theatre-ep-${ep}`}
+                                            style={[styles.tvChip, vidkingEpisode === ep && styles.tvChipActive]}
+                                            onPress={() => handleEpisodeChange(ep)}
+                                        >
+                                            <Text style={[styles.tvChipText, vidkingEpisode === ep && styles.tvChipTextActive]}>
+                                                Ep {ep}
+                                            </Text>
+                                        </TouchableOpacity>
+                                    ))}
+                                </ScrollView>
+                            </View>
+                        )}
 
                         {isHostBool && roomUsers.filter(u => u !== username).length > 0 && (
                             <View style={styles.viewersBar}>
@@ -854,23 +1115,60 @@ export default function TheatreScreen() {
 
                         {isHostBool && activeTab === 'search' ? (
                             <View style={styles.hostPanel}>
+
+                                {/* Search Toggle */}
+                                <View style={styles.searchToggleRow}>
+                                    <TouchableOpacity
+                                        style={[styles.searchToggleBtn, searchType === 'youtube' && styles.searchToggleBtnActiveYt]}
+                                        onPress={() => { setSearchType('youtube'); setSearchResults([]); setSearchInput(''); }}
+                                    >
+                                        <Ionicons name="logo-youtube" size={16} color={searchType === 'youtube' ? "#FF007A" : "#8F98A0"} />
+                                        <Text style={[styles.searchToggleText, searchType === 'youtube' && { color: '#FF007A' }]}>YouTube</Text>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                        style={[styles.searchToggleBtn, searchType === 'movie' && styles.searchToggleBtnActiveMovie]}
+                                        onPress={() => { setSearchType('movie'); setSearchResults([]); setSearchInput(''); }}
+                                    >
+                                        <Ionicons name="film" size={16} color={searchType === 'movie' ? "#00E5FF" : "#8F98A0"} />
+                                        <Text style={[styles.searchToggleText, searchType === 'movie' && { color: '#00E5FF' }]}>Movies / Shows</Text>
+                                    </TouchableOpacity>
+                                </View>
+
                                 <View style={styles.searchRow}>
-                                    <TextInput style={styles.searchInput} placeholder="Search YouTube..." placeholderTextColor="#8F98A0" value={searchInput} onChangeText={setSearchInput} onSubmitEditing={handleSearch} returnKeyType="search" selectionColor="#9B51E0" />
+                                    <TextInput
+                                        style={styles.searchInput}
+                                        placeholder={searchType === 'youtube' ? "Search YouTube..." : "Search TMDB Movies / Shows..."}
+                                        placeholderTextColor="#8F98A0"
+                                        value={searchInput}
+                                        onChangeText={setSearchInput}
+                                        onSubmitEditing={handleSearch}
+                                        returnKeyType="search"
+                                        selectionColor={searchType === 'youtube' ? "#FF007A" : "#00E5FF"}
+                                    />
                                     <TouchableOpacity style={styles.pushBtnContainer} onPress={handleSearch}>
                                         <LinearGradient colors={['#00E5FF', '#9B51E0', '#FF007A']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.pushBtnGradient}>
                                             {isSearching ? <ActivityIndicator size="small" color="#FFF" /> : <Ionicons name="search" size={24} color="#FFF" />}
                                         </LinearGradient>
                                     </TouchableOpacity>
                                 </View>
+
                                 {searchResults.length > 0 ? (
                                     <View style={styles.resultsContainer}>
                                         <Text style={styles.resultsHeader}>Select a video to play:</Text>
-                                        <FlatList data={searchResults} horizontal showsHorizontalScrollIndicator={false} keyExtractor={(item) => item.id.videoId} renderItem={renderSearchResult} contentContainerStyle={{ gap: 12, paddingVertical: 10 }} keyboardShouldPersistTaps="handled" />
+                                        <FlatList
+                                            data={searchResults}
+                                            horizontal
+                                            showsHorizontalScrollIndicator={false}
+                                            keyExtractor={(item, index) => item.id?.videoId || String(item.id) || String(index)}
+                                            renderItem={renderSearchResult}
+                                            contentContainerStyle={{ gap: 12, paddingVertical: 10 }}
+                                            keyboardShouldPersistTaps="handled"
+                                        />
                                     </View>
                                 ) : (
                                     <View style={styles.emptyState}>
                                         <Ionicons name="search" size={40} color="#2A2A30" />
-                                        <Text style={styles.emptyStateText}>Search for a video to sync with the room.</Text>
+                                        <Text style={styles.emptyStateText}>Search for a title to sync with the room.</Text>
                                     </View>
                                 )}
                             </View>
@@ -989,7 +1287,9 @@ const styles = StyleSheet.create({
     safeArea: { flex: 1, backgroundColor: '#000' },
     container: { flex: 1, backgroundColor: '#0A0A0C' },
     playerContainer: { position: 'relative', backgroundColor: '#000' },
+
     fullscreenExitBtn: { position: 'absolute', top: 15, left: 20, backgroundColor: 'rgba(0,0,0,0.7)', padding: 8, borderRadius: 20 },
+    fsWakeHotspot: { position: 'absolute', top: 0, left: 0, width: 100, height: 100, zIndex: 99998 },
 
     rightOverlayWrapper: { position: 'absolute', bottom: 15, right: 15, zIndex: 99999, pointerEvents: 'box-none' },
     rightActionButtons: { flexDirection: 'column', alignItems: 'flex-end', pointerEvents: 'box-none' },
@@ -1039,6 +1339,65 @@ const styles = StyleSheet.create({
     externalRightControls: { flexDirection: 'row', gap: 8, alignItems: 'center' },
     externalBtnText: { color: '#FFFFFF', fontSize: 13, fontWeight: '600' },
 
+    theatreTvBar: {
+        backgroundColor: '#121217',
+        paddingVertical: 10,
+        paddingHorizontal: 16,
+        borderBottomWidth: 1,
+        borderBottomColor: 'rgba(255,255,255,0.06)'
+    },
+    theatreTvHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        marginBottom: 8
+    },
+    theatreTvTitle: {
+        color: '#00E5FF',
+        fontSize: 12,
+        fontWeight: 'bold',
+        textTransform: 'uppercase',
+        letterSpacing: 0.5
+    },
+    theatreTvHostOnly: {
+        color: '#8F98A0',
+        fontSize: 11,
+        fontStyle: 'italic'
+    },
+    theatreTvRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        paddingVertical: 2
+    },
+    tvChip: {
+        paddingHorizontal: 12,
+        paddingVertical: 6,
+        borderRadius: 14,
+        backgroundColor: 'rgba(255,255,255,0.08)',
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.1)'
+    },
+    tvChipActive: {
+        backgroundColor: 'rgba(0, 229, 255, 0.2)',
+        borderColor: '#00E5FF'
+    },
+    tvChipText: {
+        color: '#8F98A0',
+        fontSize: 12,
+        fontWeight: '600'
+    },
+    tvChipTextActive: {
+        color: '#00E5FF',
+        fontWeight: 'bold'
+    },
+    tvChipDivider: {
+        width: 1,
+        height: 20,
+        backgroundColor: 'rgba(255,255,255,0.15)',
+        marginHorizontal: 4
+    },
+
     controlsContainer: { flex: 1, padding: 16 },
 
     tabContainer: { flexDirection: 'row', backgroundColor: '#17171C', borderRadius: 12, padding: 4, marginBottom: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
@@ -1048,6 +1407,13 @@ const styles = StyleSheet.create({
     tabTextActive: { color: '#FFF' },
 
     hostPanel: { flex: 1 },
+
+    searchToggleRow: { flexDirection: 'row', gap: 12, marginBottom: 12 },
+    searchToggleBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#17171C', paddingVertical: 10, borderRadius: 10, gap: 6, borderWidth: 1, borderColor: 'transparent' },
+    searchToggleBtnActiveYt: { backgroundColor: 'rgba(255, 0, 122, 0.1)', borderColor: '#FF007A' },
+    searchToggleBtnActiveMovie: { backgroundColor: 'rgba(0, 229, 255, 0.1)', borderColor: '#00E5FF' },
+    searchToggleText: { color: '#8F98A0', fontSize: 13, fontWeight: '600' },
+
     searchRow: { flexDirection: 'row', gap: 12, marginBottom: 10 },
     searchInput: { flex: 1, backgroundColor: '#17171C', color: '#FFF', borderRadius: 10, paddingHorizontal: 16, height: 56, fontSize: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
 
