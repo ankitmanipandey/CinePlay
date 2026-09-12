@@ -1,8 +1,8 @@
 import { tmdbClient } from './apiClient';
 
 // --- VALIDATION ENGINE ---
-// Helper to filter out items without thumbnails or YouTube trailers
-const filterValidMedia = async (items) => {
+// Exported just in case other files (like SearchScreen) import it
+export const filterValidMedia = async (items) => {
     if (!items || !Array.isArray(items)) return [];
 
     // Step 1: Remove items missing both poster and backdrop images
@@ -29,6 +29,13 @@ const filterValidMedia = async (items) => {
 
     const validatedResults = await Promise.all(validationPromises);
     return validatedResults.filter(Boolean); // Remove null entries
+};
+
+// --- NEW: FAST FILTER FOR HOME SCREEN ---
+// Removes the N+1 API bottleneck by only checking if the item has an image
+const fastFilter = (items) => {
+    if (!items || !Array.isArray(items)) return [];
+    return items.filter(item => item && (item.poster_path || item.backdrop_path));
 };
 
 // --- MASTER FILTER LOGIC ENGINE ---
@@ -58,7 +65,7 @@ const getFilterParams = (filters) => {
 };
 
 export const tmdbService = {
-    // --- SEARCH ENGINES ---
+    // --- SEARCH ENGINES (Keeps strict validation for search accuracy) ---
     searchMulti: async (query, page = 1) => {
         try {
             if (!query) return [];
@@ -82,7 +89,7 @@ export const tmdbService = {
             const response = await tmdbClient.get('/trending/all/day', {
                 params: { language: 'en-US', page: page }
             });
-            return await filterValidMedia(response.data.results);
+            return fastFilter(response.data.results);
         } catch (error) {
             console.error('Error fetching trending:', error);
             return [];
@@ -116,7 +123,8 @@ export const tmdbService = {
             responses.forEach(res => { results = [...results, ...res]; });
 
             const sortedResults = results.sort((a, b) => (b.popularity || 0) - (a.popularity || 0));
-            return await filterValidMedia(sortedResults);
+            // FIXED: Using fastFilter to bypass N+1 API calls on the Home Screen
+            return fastFilter(sortedResults);
         } catch (error) {
             console.error('Error fetching section:', error);
             return [];
@@ -157,7 +165,7 @@ export const tmdbService = {
     getSimilar: async (id, type = 'movie') => {
         try {
             const response = await tmdbClient.get(`/${type}/${id}/similar`);
-            return await filterValidMedia(response.data.results);
+            return fastFilter(response.data.results);
         } catch (error) {
             console.error('Error fetching similar:', error);
             return [];
@@ -176,7 +184,8 @@ export const tmdbService = {
                 }
             });
             const formattedResults = response.data.results.map(item => ({ ...item, media_type: 'movie' }));
-            return await filterValidMedia(formattedResults);
+            // FIXED: Using fastFilter instead of undefined sortResults
+            return fastFilter(formattedResults);
         } catch (error) {
             console.error('Error fetching genre:', error);
             return [];

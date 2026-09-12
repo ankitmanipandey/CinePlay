@@ -78,33 +78,38 @@ export const useMovieStore = create((set, get) => ({
     fetchAllData: async () => {
         set({ isLoading: true });
         const f = get().filters;
-
         const today = new Date().toISOString().split('T')[0];
 
         try {
-            const [
-                trending, topRated, latest, action, comedy, thriller,
-                horror, romance, scifi, feelGood, biopics
-            ] = await Promise.all([
+            // 1. Fetch ONLY the top 3 critical rows first
+            const [trending, topRated, latest] = await Promise.all([
                 tmdbService.fetchSection(f, {}, {}),
                 tmdbService.fetchSection(f, { 'vote_count.gte': 500, sort_by: 'vote_average.desc' }, { 'vote_count.gte': 250, sort_by: 'vote_average.desc' }),
-                tmdbService.fetchSection(f, { 'primary_release_date.lte': today, sort_by: 'primary_release_date.desc', 'vote_count.gte': 5 }, { 'first_air_date.lte': today, sort_by: 'first_air_date.desc', 'vote_count.gte': 5 }),
+                tmdbService.fetchSection(f, { 'primary_release_date.lte': today, sort_by: 'primary_release_date.desc', 'vote_count.gte': 5 }, { 'first_air_date.lte': today, sort_by: 'first_air_date.desc', 'vote_count.gte': 5 })
+            ]);
+
+            // 2. Immediately render the screen!
+            set({
+                trendingList: trending,
+                topRatedList: topRated,
+                latestList: latest,
+                isLoading: false // Hide the spinner right now
+            });
+
+            // 3. Fetch the heavy genre lists silently in the background
+            const [action, comedy, thriller, horror, romance, scifi, feelGood, biopics] = await Promise.all([
                 tmdbService.fetchSection(f, { with_genres: '28' }, { with_genres: '10759' }),
                 tmdbService.fetchSection(f, { with_genres: '35' }, { with_genres: '35' }),
                 tmdbService.fetchSection(f, { with_genres: '53' }, { with_genres: '9648' }),
                 tmdbService.fetchSection(f, { with_genres: '27' }, { with_genres: '10765' }),
                 tmdbService.fetchSection(f, { with_genres: '10749' }, { with_genres: '10749' }),
                 tmdbService.fetchSection(f, { with_genres: '878' }, { with_genres: '10765' }),
-
-                // EXCLUDE ANIMATION (16) to stop cartoons showing up
                 tmdbService.fetchSection(f, { with_genres: '35', without_genres: '16' }, { with_genres: '35', without_genres: '16' }),
                 tmdbService.fetchSection(f, { with_keywords: '3205', without_genres: '16' }, { with_keywords: '3205', without_genres: '16' })
             ]);
 
+            // 4. Update the state with the rest of the data
             set({
-                trendingList: trending,
-                topRatedList: topRated,
-                latestList: latest,
                 actionList: action,
                 comedyList: comedy,
                 thrillerList: thriller,
@@ -112,9 +117,9 @@ export const useMovieStore = create((set, get) => ({
                 romanceList: romance,
                 scifiList: scifi,
                 feelGoodList: feelGood,
-                biopicsList: biopics,
-                isLoading: false
+                biopicsList: biopics
             });
+
         } catch (error) {
             console.error(error);
             set({ isLoading: false });
