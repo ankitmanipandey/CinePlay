@@ -277,7 +277,6 @@ export default function PlayerScreen() {
         }
     };
 
-    // --- NEW: Create Watch Party Shortcut ---
     const handleCreateWatchParty = () => {
         handleAuthAction(() => {
             const newRoomId = Math.floor(10000 + Math.random() * 90000).toString();
@@ -521,7 +520,6 @@ export default function PlayerScreen() {
                         </View>
 
                         <View style={{ flex: 1, paddingLeft: 12 }}>
-                            {/* --- UPDATED: ACTION BAR WITH WATCH PARTY BUTTON --- */}
                             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.externalRightControls} bounces={false}>
 
                                 <TouchableOpacity onPress={handleCreateWatchParty} style={[styles.externalBtn, { borderColor: '#00E5FF', borderWidth: 1, backgroundColor: 'rgba(0, 229, 255, 0.1)' }]}>
@@ -554,7 +552,23 @@ export default function PlayerScreen() {
                     <View style={styles.detailsContainer}>
                         <Text style={styles.mediaTitle}>{title}</Text>
 
-                        {!ytId && (
+                        {/* --- NEW: RENDER SPECIFIC BUTTON BASED ON IF IT'S YOUTUBE OR TMDB --- */}
+                        {ytId ? (
+                            <TouchableOpacity
+                                style={styles.watchToggleBtn}
+                                activeOpacity={0.8}
+                                onPress={handleCreateWatchParty}
+                            >
+                                <LinearGradient
+                                    colors={['#00E5FF', '#9B51E0', '#FF007A']}
+                                    start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+                                    style={styles.watchToggleGradient}
+                                >
+                                    <Ionicons name="people-circle" size={24} color="#FFF" style={{ marginRight: 8 }} />
+                                    <Text style={styles.watchToggleText}>Start YouTube Watch Party</Text>
+                                </LinearGradient>
+                            </TouchableOpacity>
+                        ) : (
                             <TouchableOpacity
                                 style={styles.watchToggleBtn}
                                 activeOpacity={0.8}

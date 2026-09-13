@@ -13,10 +13,10 @@ import {
     FlatList,
     Easing,
     ActivityIndicator,
-    LayoutAnimation,
     Platform,
     UIManager
 } from 'react-native';
+import ReAnimated, { FadeIn, FadeOut, LinearTransition } from 'react-native-reanimated';
 
 import Svg, { Defs, LinearGradient as SvgLinearGradient, Stop, Circle, Path } from 'react-native-svg';
 
@@ -27,7 +27,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import Toast from 'react-native-toast-message';
 
-// Enable LayoutAnimation on Android
+// Enable LayoutAnimation on Android (kept for any other future use; not used for the filter panel anymore)
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
     UIManager.setLayoutAnimationEnabledExperimental(true);
 }
@@ -51,7 +51,7 @@ const MOCK_LANGUAGES = [
     { id: 'l3', title: 'Tamil', code: 'ta', subtitle: 'தமிழ்', fallbackImage: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=300&q=60', color: '#4A3428' },
     { id: 'l4', title: 'Telugu', code: 'te', subtitle: 'తెలుగు', fallbackImage: 'https://images.unsplash.com/photo-1542909168-82c3e7fdca5c?w=300&q=60', color: '#2C3E50' },
     { id: 'l5', title: 'Punjabi', code: 'pa', subtitle: 'ਪੰਜਾਬੀ', fallbackImage: 'https://images.unsplash.com/photo-1517423440428-a5a00ad493e8?w=300&q=60', color: '#4A4A28' },
-    { id: 'l6', title: 'Malayalam', code: 'ml', subtitle: 'മലയാളം', fallbackImage: 'https://images.unsplash.com/photo-1524492412937-b28074a5d7da?w=300&q=60', color: '#284A3B' },
+    { id: 'l6', title: 'Malayalam', code: 'ml', subtitle: 'മലയാളం', fallbackImage: 'https://images.unsplash.com/photo-1524492412937-b28074a5d7da?w=300&q=60', color: '#284A3B' },
 ];
 
 const FilterDropdown = ({ filters, setFilter }) => {
@@ -59,10 +59,24 @@ const FilterDropdown = ({ filters, setFilter }) => {
     const typeOptions = [{ l: 'All', v: 'all' }, { l: 'Movies', v: 'movie' }, { l: 'TV Shows / Web Series', v: 'tv' }];
     const langOptions = [{ l: 'Any', v: 'any' }, { l: 'Hindi', v: 'hi' }, { l: 'English', v: 'en' }, { l: 'Punjabi', v: 'pa' }, { l: 'Tamil', v: 'ta' }, { l: 'Others', v: 'others' }];
 
+    // TMDB Provider IDs for India (IN)
+    const platformOptions = [
+        { l: 'Any', v: 'any' },
+        { l: 'Netflix', v: '8' },
+        { l: 'Prime Video', v: '119' },
+        { l: 'JioHotstar', v: '122|220|337' },
+        { l: 'SonyLIV', v: '237' },
+        { l: 'Zee5', v: '232' }
+    ];
+
     const renderGroup = (title, options, activeValue, filterKey) => (
         <View style={styles.filterGroup}>
             <Text style={styles.filterGroupTitle}>{title}</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterScroll}>
+            <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.filterScroll}
+            >
                 {options.map(opt => {
                     const isActive = activeValue === opt.v;
                     return (
@@ -95,6 +109,7 @@ const FilterDropdown = ({ filters, setFilter }) => {
 
     return (
         <View style={styles.filterDropdownContainer}>
+            {renderGroup("Platform", platformOptions, filters.platform || 'any', 'platform')}
             {renderGroup("Region", regionOptions, filters.region, 'region')}
             {renderGroup("Type", typeOptions, filters.type, 'type')}
             {renderGroup("Language", langOptions, filters.language, 'language')}
@@ -319,7 +334,10 @@ const HomeScreen = () => {
     const { token } = useAuthStore();
 
     const [currentIndex, setCurrentIndex] = useState(0);
+
+    // --- Filter panel toggle (Reanimated handles the transition) ---
     const [showFilters, setShowFilters] = useState(false);
+    const toggleFilterMenu = () => setShowFilters(prev => !prev);
 
     const [pan, setPan] = useState(() => new Animated.ValueXY());
     const isDragging = useRef(false);
@@ -364,11 +382,6 @@ const HomeScreen = () => {
 
         syncUserLists();
     }, [token]);
-
-    const toggleFilterMenu = () => {
-        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-        setShowFilters(!showFilters);
-    };
 
     const handleAuthAction = useCallback((actionCallback) => {
         if (!token) {
@@ -628,9 +641,18 @@ const HomeScreen = () => {
                         </TouchableOpacity>
                     </View>
 
-                    {showFilters && <FilterDropdown filters={filters} setFilter={setFilter} />}
+                    {/* --- Reanimated: smooth fade in/out for the filter panel, UI-thread driven --- */}
+                    {showFilters && (
+                        <ReAnimated.View
+                            entering={FadeIn.duration(220)}
+                            exiting={FadeOut.duration(160)}
+                        >
+                            <FilterDropdown filters={filters} setFilter={setFilter} />
+                        </ReAnimated.View>
+                    )}
 
-                    <View style={styles.categoriesWrapper}>
+                    {/* --- Reanimated: smoothly shifts position as the panel above grows/shrinks --- */}
+                    <ReAnimated.View layout={LinearTransition.duration(280)} style={styles.categoriesWrapper}>
                         {isLoading ? (
                             <ActivityIndicator size="large" color="#00E5FF" style={{ marginTop: 40, marginBottom: 80 }} />
                         ) : (
@@ -647,7 +669,7 @@ const HomeScreen = () => {
                                 />
                             ))
                         )}
-                    </View>
+                    </ReAnimated.View>
 
                     <LanguageRow router={router} />
                     <GenreRow router={router} lists={{ actionList, thrillerList, scifiList, romanceList, comedyList, horrorList }} />
@@ -664,14 +686,14 @@ const styles = StyleSheet.create({
     background: { flex: 1 },
     container: { flex: 1 },
     header: { paddingVertical: 12, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-    logoContainer: { flexDirection: 'row', alignItems: 'center', gap: 6 }, // Reduced gap from 10 to 6
-    maskedView: { height: 32, flexDirection: 'row', alignItems: 'center' }, // Bounds the mask to fix alignment
+    logoContainer: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+    maskedView: { height: 32, flexDirection: 'row', alignItems: 'center' },
     appName: {
         fontSize: 26,
         fontWeight: '900',
         letterSpacing: 0.5,
         lineHeight: 32,
-        includeFontPadding: false // Fixes Android vertical alignment offset
+        includeFontPadding: false
     },
     headerRightBtn: { padding: 4 },
     scrollContent: { paddingBottom: 60 },
@@ -679,19 +701,19 @@ const styles = StyleSheet.create({
     sectionTitle: { color: '#FFFFFF', fontSize: 18, fontWeight: 'bold' },
     deckArea: { height: 440, alignItems: 'center', justifyContent: 'center', marginBottom: 10 },
 
-    // FILTER UI STYLES
     filterBarHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, marginBottom: 14 },
     filterTitle: { color: '#FFFFFF', fontSize: 18, fontWeight: 'bold' },
     funnelBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.1)', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)' },
-    funnelBtnActive: { backgroundColor: 'rgba(0, 229, 255, 0.15)', borderColor: '#00E5FF' }, // Glowing Cyan border
+    funnelBtnActive: { backgroundColor: 'rgba(0, 229, 255, 0.15)', borderColor: '#00E5FF' },
+
     filterDropdownContainer: { backgroundColor: 'rgba(20, 15, 30, 0.8)', paddingVertical: 14, borderTopWidth: 1, borderBottomWidth: 1, borderColor: 'rgba(255,255,255,0.1)', marginBottom: 20 },
+
     filterGroup: { marginBottom: 16 },
     filterGroupTitle: { color: '#808085', fontSize: 11, fontWeight: 'bold', textTransform: 'uppercase', paddingHorizontal: 16, marginBottom: 8, letterSpacing: 1 },
     filterScroll: { paddingHorizontal: 16, gap: 10 },
 
-    // NEW Filter Chip Gradient Styles
     filterChipContainer: { borderRadius: 20, overflow: 'hidden' },
-    filterChipActive: { paddingHorizontal: 16, paddingVertical: 8, justifyContent: 'center', alignItems: 'center' },
+    filterChipActive: { paddingHorizontal: 16, paddingVertical: 8, justifyContent: 'center', alignItems: 'center', borderRadius: 20, },
     filterChipInactive: { paddingHorizontal: 16, paddingVertical: 8, backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)', borderRadius: 20 },
     filterText: { color: '#A0A0A5', fontSize: 13, fontWeight: '600' },
     activeFilterText: { color: '#FFFFFF', fontSize: 13, fontWeight: 'bold' },
@@ -714,7 +736,6 @@ const styles = StyleSheet.create({
     actionButtonsWrapper: { position: 'absolute', bottom: 18, right: 14, alignItems: 'center', gap: 12 },
     iconActionBtn: { width: 52, height: 52, borderRadius: 26, backgroundColor: 'rgba(30, 30, 35, 0.65)', justifyContent: 'center', alignItems: 'center', borderWidth: 1.2, borderColor: 'rgba(255, 255, 255, 0.35)' },
 
-    // NEW Themed Play Button
     playButtonWrapper: { width: 54, height: 54, borderRadius: 27, overflow: 'hidden', elevation: 6, shadowColor: '#FF007A', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.35, shadowRadius: 4 },
     playButtonGradient: { flex: 1, justifyContent: 'center', alignItems: 'center' },
 

@@ -7,7 +7,8 @@ export const useMovieStore = create((set, get) => ({
     filters: {
         region: 'all',
         type: 'all',
-        language: 'any'
+        language: 'any',
+        platform: 'any'
     },
 
     // --- Standard Category States ---

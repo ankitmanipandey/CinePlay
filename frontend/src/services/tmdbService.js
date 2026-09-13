@@ -40,7 +40,7 @@ const fastFilter = (items) => {
 
 // --- MASTER FILTER LOGIC ENGINE ---
 const getFilterParams = (filters) => {
-    const { region, language } = filters;
+    const { region, language, platform } = filters;
     let params = {};
 
     // 1. Region Logic
@@ -59,6 +59,12 @@ const getFilterParams = (filters) => {
         }
     } else if (region === 'indian') {
         params.with_original_language = 'hi|ta|te|ml|kn|pa|bn|mr';
+    }
+
+    // 3. Platform/Provider Logic
+    if (platform && platform !== 'any') {
+        params.with_watch_providers = platform;
+        params.watch_region = 'IN'; // TMDB requires a region when querying providers
     }
 
     return params;
