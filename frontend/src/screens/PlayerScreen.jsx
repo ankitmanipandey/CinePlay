@@ -22,6 +22,9 @@ import YoutubePlayer from 'react-native-youtube-iframe';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { WebView } from 'react-native-webview';
 
+// --- NEW: expo-video for Live TV Streams ---
+import { useVideoPlayer, VideoView } from 'expo-video';
+
 // --- Global State & Config ---
 import { tmdbService } from '../services/tmdbService';
 import { getImageUrl } from '../constants/config';
@@ -61,7 +64,7 @@ export default function PlayerScreen() {
     const insets = useSafeAreaInsets();
     const { width, height } = useWindowDimensions();
 
-    const { id, type, ytId } = useLocalSearchParams();
+    const { id, type, ytId, streamUrl, channelName } = useLocalSearchParams();
 
     const [isLoading, setIsLoading] = useState(true);
     const [mediaDetails, setMediaDetails] = useState(null);
@@ -74,47 +77,50 @@ export default function PlayerScreen() {
     const [isPlaying, setIsPlaying] = useState(false);
     const [isFullScreen, setIsFullScreen] = useState(false);
 
-    // --- Vidking States ---
-    const [activeMediaView, setActiveMediaView] = useState('trailer'); // 'trailer' | 'movie'
+    const [activeMediaView, setActiveMediaView] = useState('trailer');
     const [isVidkingAvailable, setIsVidkingAvailable] = useState(null);
 
-    // --- Season & Episode States ---
     const [selectedSeason, setSelectedSeason] = useState(1);
     const [selectedEpisode, setSelectedEpisode] = useState(1);
 
-    // --- Fullscreen Cross Auto-Hide State & Anim ---
-    const [showFsExitBtn, setShowFsExitBtn] = useState(true);
-    const fsExitFadeAnim = useRef(new Animated.Value(1)).current;
-    const fsExitTimer = useRef(null);
+    // --- Unified Auto-Hide UI State & Anim ---
+    const [showControls, setShowControls] = useState(true);
+    const controlsFadeAnim = useRef(new Animated.Value(1)).current;
+    const controlsTimer = useRef(null);
 
     const { watchlist, watched, toggleWatchlist, toggleWatched } = useUserListStore();
     const { token } = useAuthStore();
 
     const TAB_BAR_HEIGHT = (Platform.OS === 'ios' ? 88 : 65) + insets.bottom;
 
+    const livePlayer = useVideoPlayer(streamUrl || null, (player) => {
+        if (streamUrl) {
+            player.play();
+        }
+    });
+
+    const resetControlsTimer = useCallback(() => {
+        if (controlsTimer.current) clearTimeout(controlsTimer.current);
+        setShowControls(true);
+        Animated.timing(controlsFadeAnim, { toValue: 1, duration: 150, useNativeDriver: true }).start();
+
+        controlsTimer.current = setTimeout(() => {
+            Animated.timing(controlsFadeAnim, { toValue: 0, duration: 400, useNativeDriver: true }).start(() => {
+                setShowControls(false);
+            });
+        }, 3000);
+    }, [controlsFadeAnim]);
+
     useEffect(() => {
+        resetControlsTimer();
         return () => {
             ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
-            if (fsExitTimer.current) clearTimeout(fsExitTimer.current);
+            if (controlsTimer.current) clearTimeout(controlsTimer.current);
         };
-    }, []);
+    }, [resetControlsTimer]);
 
-    // Fullscreen Cross Auto-Hide Controller
-    const resetFsExitTimer = useCallback(() => {
-        if (fsExitTimer.current) clearTimeout(fsExitTimer.current);
-        setShowFsExitBtn(true);
-        Animated.timing(fsExitFadeAnim, { toValue: 1, duration: 150, useNativeDriver: true }).start();
-
-        fsExitTimer.current = setTimeout(() => {
-            Animated.timing(fsExitFadeAnim, { toValue: 0, duration: 400, useNativeDriver: true }).start(() => {
-                setShowFsExitBtn(false);
-            });
-        }, 3500);
-    }, [fsExitFadeAnim]);
-
-    // Availability Checker
     useEffect(() => {
-        if (id && type && !ytId) {
+        if (id && type && !ytId && !streamUrl) {
             const checkVidking = async () => {
                 try {
                     const url = type === 'tv'
@@ -135,19 +141,30 @@ export default function PlayerScreen() {
             };
             checkVidking();
         }
-    }, [id, type, ytId]);
+    }, [id, type, ytId, streamUrl]);
 
     useEffect(() => {
-        if (!id && !ytId) return;
+        if (!id && !ytId && !streamUrl) return;
 
         const fetchAllData = async () => {
             setIsLoading(true);
             try {
+                if (streamUrl) {
+                    setMediaDetails({
+                        title: channelName || "Live TV Broadcast",
+                        overview: "Streaming live broadcast...",
+                        vote_average: 0
+                    });
+                    setHasStarted(true);
+                    setIsPlaying(true);
+                    setIsLoading(false);
+                    return;
+                }
+
                 let videoTitle = "";
 
                 if (ytId) {
                     setTrailerKey(ytId);
-                    setHasStarted(true);
                     setIsPlaying(true);
 
                     if (ACTIVE_YT_KEYS.length > 0) {
@@ -163,7 +180,8 @@ export default function PlayerScreen() {
                                         title: snippet.title,
                                         overview: "",
                                         vote_average: 0,
-                                        spoken_languages: [{ english_name: snippet.channelTitle }]
+                                        spoken_languages: [{ english_name: snippet.channelTitle }],
+                                        ytThumbnail: snippet.thumbnails?.high?.url
                                     });
                                 }
                             }
@@ -190,8 +208,7 @@ export default function PlayerScreen() {
                     setTrailerKey(trailer ? trailer.key : null);
 
                     if (trailer) {
-                        setHasStarted(true);
-                        setIsPlaying(true);
+                        setIsPlaying(true); // Automatically trigger playback on load
                     }
 
                     setMediaDetails(details);
@@ -223,7 +240,7 @@ export default function PlayerScreen() {
         };
 
         fetchAllData();
-    }, [id, type, ytId]);
+    }, [id, type, ytId, streamUrl]);
 
     const handleAuthAction = (actionCallback) => {
         if (!token) {
@@ -282,17 +299,15 @@ export default function PlayerScreen() {
             const newRoomId = Math.floor(10000 + Math.random() * 90000).toString();
             let vidId = '';
 
-            // Map the current media directly into the Vidking Room Format
             if (id && type) {
                 vidId = type === 'tv'
                     ? `VIDKING:tv:${id}:${selectedSeason}:${selectedEpisode}`
                     : `VIDKING:movie:${id}`;
             } else {
-                // Fallback to youtube trailer if it's just a raw YT search
                 vidId = trailerKey || ytId;
             }
 
-            setIsPlaying(false); // Pause current player
+            setIsPlaying(false);
 
             router.push({
                 pathname: '/theatre',
@@ -310,13 +325,11 @@ export default function PlayerScreen() {
         if (isFullScreen) {
             await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
             setIsFullScreen(false);
-            if (fsExitTimer.current) clearTimeout(fsExitTimer.current);
-            setShowFsExitBtn(true);
-            fsExitFadeAnim.setValue(1);
+            resetControlsTimer();
         } else {
             await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
             setIsFullScreen(true);
-            resetFsExitTimer();
+            resetControlsTimer();
         }
     };
 
@@ -384,9 +397,68 @@ export default function PlayerScreen() {
                         backgroundColor: '#000', justifyContent: 'center', alignItems: 'center'
                     }
                 ]}>
-                    <View style={{ width: innerVideoWidth, height: innerVideoHeight, backgroundColor: '#000', position: 'relative' }}>
+                    <View
+                        style={{ width: innerVideoWidth, height: innerVideoHeight, backgroundColor: '#000', position: 'relative' }}
+                        onStartShouldSetResponderCapture={() => {
+                            resetControlsTimer();
+                            return false;
+                        }}
+                    >
 
-                        {activeMediaView === 'movie' ? (
+                        {streamUrl ? (
+                            // --- 1. LIVE TV STREAM WITH PERFECT OVERLAP AND AUTO-HIDE UI ---
+                            <>
+                                <VideoView
+                                    player={livePlayer}
+                                    style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }}
+                                    contentFit="contain"
+                                    nativeControls={false}
+                                />
+
+                                {/* Custom Gradient Controls Overlay */}
+                                <Animated.View
+                                    style={[styles.liveStreamOverlay, { opacity: controlsFadeAnim }]}
+                                    pointerEvents={showControls ? 'box-none' : 'none'}
+                                >
+                                    {/* Live Badge Top Left */}
+                                    <View style={styles.liveBadgeContainer}>
+                                        <View style={styles.liveDot} />
+                                        <Text style={styles.liveBadgeText}>LIVE</Text>
+                                    </View>
+
+                                    {/* Gradient Play/Pause Button perfectly centered */}
+                                    <TouchableOpacity
+                                        style={styles.gradientPlayWrapper}
+                                        activeOpacity={0.8}
+                                        onPress={() => {
+                                            resetControlsTimer();
+                                            if (isPlaying) {
+                                                livePlayer.pause();
+                                                setIsPlaying(false);
+                                            } else {
+                                                livePlayer.play();
+                                                setIsPlaying(true);
+                                            }
+                                        }}
+                                    >
+                                        <LinearGradient
+                                            colors={['#00E5FF', '#9B51E0', '#FF007A']}
+                                            start={{ x: 0, y: 0 }}
+                                            end={{ x: 1, y: 1 }}
+                                            style={styles.gradientPlayInner}
+                                        >
+                                            <Ionicons
+                                                name={isPlaying ? "pause" : "play"}
+                                                size={24}
+                                                color="#FFFFFF"
+                                                style={!isPlaying ? { marginLeft: 4 } : {}}
+                                            />
+                                        </LinearGradient>
+                                    </TouchableOpacity>
+                                </Animated.View>
+                            </>
+                        ) : activeMediaView === 'movie' ? (
+                            // --- 2. VIDKING MOVIES (WebView) ---
                             <WebView
                                 key={`vidking-${selectedSeason}-${selectedEpisode}`}
                                 source={{
@@ -404,14 +476,12 @@ export default function PlayerScreen() {
                                     try {
                                         const data = JSON.parse(event.nativeEvent.data);
                                         if (data.type === 'USER_TOUCH' && isFullScreen) {
-                                            resetFsExitTimer();
+                                            resetControlsTimer();
                                         }
                                     } catch (e) { }
                                 }}
                                 onShouldStartLoadWithRequest={(request) => {
-                                    if (!request.url.includes('vidking.net') && !request.url.includes('about:blank')) {
-                                        return false;
-                                    }
+                                    if (!request.url.includes('vidking.net') && !request.url.includes('about:blank')) return false;
                                     return true;
                                 }}
                                 injectedJavaScript={`
@@ -422,9 +492,7 @@ export default function PlayerScreen() {
 
                                     const triggerPlay = () => {
                                         const v = document.querySelector('video');
-                                        if (v) {
-                                            v.play().catch(() => {});
-                                        }
+                                        if (v) v.play().catch(() => {});
                                         const playBtn = document.querySelector('.play-btn, .jw-display-icon-container, [aria-label="Play"]');
                                         if (playBtn) playBtn.click();
                                     };
@@ -443,67 +511,52 @@ export default function PlayerScreen() {
                                 `}
                             />
                         ) : trailerKey ? (
+                            // --- 3. YOUTUBE TRAILERS (Iframe directly with no overlay) ---
                             <YoutubePlayer
                                 height={innerVideoHeight}
                                 width={innerVideoWidth}
                                 play={isPlaying}
                                 videoId={trailerKey}
-                                webViewProps={{ allowsFullscreenVideo: false }}
-                                initialPlayerParams={{ controls: 1, modestbranding: 1, rel: 0, iv_load_policy: 3, fs: 0 }}
+                                onReady={() => setIsPlaying(true)}
+                                webViewProps={{ allowsFullscreenVideo: false, mediaPlaybackRequiresUserAction: false, allowsInlineMediaPlayback: true }}
+                                initialPlayerParams={{ controls: 1, modestbranding: 1, rel: 0, iv_load_policy: 3, fs: 0, autoplay: 1 }}
                                 onChangeState={(state) => {
-                                    if (state === 'playing') setIsPlaying(true);
+                                    if (state === 'playing') {
+                                        setIsPlaying(true);
+                                        setHasStarted(true);
+                                    }
                                     if (state === 'paused' || state === 'ended') setIsPlaying(false);
                                 }}
                             />
-                        ) : null}
-
-                        {!hasStarted && activeMediaView === 'trailer' && (
+                        ) : (
+                            // --- 4. NO VIDEO AVAILABLE FALLBACK ---
                             <View style={[StyleSheet.absoluteFill, { zIndex: 10 }]}>
-                                {mediaDetails.backdrop_path && (
+                                {(mediaDetails.backdrop_path || mediaDetails.ytThumbnail) && (
                                     <Image
-                                        source={{ uri: getImageUrl(mediaDetails.backdrop_path, 'original') }}
+                                        source={{
+                                            uri: mediaDetails.backdrop_path
+                                                ? getImageUrl(mediaDetails.backdrop_path, 'original')
+                                                : mediaDetails.ytThumbnail
+                                        }}
                                         style={styles.videoThumbnail}
                                     />
                                 )}
                                 <View style={styles.playerOverlay}>
-                                    {trailerKey ? (
-                                        <TouchableOpacity
-                                            style={styles.centerPlayButton}
-                                            activeOpacity={0.7}
-                                            onPress={() => {
-                                                setHasStarted(true);
-                                                setIsPlaying(true);
-                                            }}
-                                        >
-                                            <Ionicons name="play" size={38} color="#FFFFFF" style={{ marginLeft: 4 }} />
-                                        </TouchableOpacity>
-                                    ) : (
-                                        <Text style={styles.noTrailerText}>No Video Available</Text>
-                                    )}
+                                    <Text style={styles.noTrailerText}>No Video Available</Text>
                                 </View>
                             </View>
                         )}
 
+                        {/* Fullscreen Close Button tied to the same Auto-Hide animation */}
                         {isFullScreen && (
                             <Animated.View
-                                style={[
-                                    styles.fullscreenExitBtn,
-                                    { opacity: fsExitFadeAnim }
-                                ]}
-                                pointerEvents={showFsExitBtn ? 'auto' : 'none'}
+                                style={[styles.fullscreenExitBtn, { opacity: controlsFadeAnim }]}
+                                pointerEvents={showControls ? 'auto' : 'none'}
                             >
                                 <TouchableOpacity onPress={handleBackPress} activeOpacity={0.7}>
                                     <Ionicons name="close" size={26} color="#FFFFFF" />
                                 </TouchableOpacity>
                             </Animated.View>
-                        )}
-
-                        {isFullScreen && !showFsExitBtn && (
-                            <TouchableOpacity
-                                style={styles.fsWakeHotspot}
-                                onPress={resetFsExitTimer}
-                                activeOpacity={1}
-                            />
                         )}
                     </View>
                 </View>
@@ -521,14 +574,13 @@ export default function PlayerScreen() {
 
                         <View style={{ flex: 1, paddingLeft: 12 }}>
                             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.externalRightControls} bounces={false}>
-
-                                <TouchableOpacity onPress={handleCreateWatchParty} style={[styles.externalBtn, { borderColor: '#00E5FF', borderWidth: 1, backgroundColor: 'rgba(0, 229, 255, 0.1)' }]}>
-                                    <Ionicons name="people-circle" size={18} color="#00E5FF" />
-                                    <Text style={[styles.externalBtnText, { color: '#00E5FF' }]}>Watch Party</Text>
-                                </TouchableOpacity>
-
-                                {id && (
+                                {id && !streamUrl && (
                                     <>
+                                        {/* Watch Party button specifically injected for Movie/TV Cards */}
+                                        <TouchableOpacity onPress={handleCreateWatchParty} style={[styles.externalBtn, { borderColor: '#00E5FF', borderWidth: 1, backgroundColor: 'rgba(0, 229, 255, 0.1)' }]}>
+                                            <Ionicons name="people-circle" size={18} color="#00E5FF" />
+                                            <Text style={[styles.externalBtnText, { color: '#00E5FF' }]}>Watch Party</Text>
+                                        </TouchableOpacity>
                                         <TouchableOpacity onPress={() => handleAuthAction(() => handleToggleAction(id, type, 'watchlist'))} style={styles.externalBtn}>
                                             <Ionicons name={isCurrentInWatchlist ? "bookmark" : "bookmark-outline"} size={20} color={isCurrentInWatchlist ? "#F5C518" : "#FFFFFF"} />
                                             <Text style={[styles.externalBtnText, isCurrentInWatchlist && { color: '#F5C518' }]}>Save</Text>
@@ -552,63 +604,49 @@ export default function PlayerScreen() {
                     <View style={styles.detailsContainer}>
                         <Text style={styles.mediaTitle}>{title}</Text>
 
-                        {/* --- NEW: RENDER SPECIFIC BUTTON BASED ON IF IT'S YOUTUBE OR TMDB --- */}
-                        {ytId ? (
-                            <TouchableOpacity
-                                style={styles.watchToggleBtn}
-                                activeOpacity={0.8}
-                                onPress={handleCreateWatchParty}
-                            >
-                                <LinearGradient
-                                    colors={['#00E5FF', '#9B51E0', '#FF007A']}
-                                    start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                                    style={styles.watchToggleGradient}
+                        {!streamUrl && (
+                            ytId ? (
+                                <TouchableOpacity style={styles.watchToggleBtn} activeOpacity={0.8} onPress={handleCreateWatchParty}>
+                                    <LinearGradient colors={['#00E5FF', '#9B51E0', '#FF007A']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.watchToggleGradient}>
+                                        <Ionicons name="people-circle" size={24} color="#FFF" style={{ marginRight: 8 }} />
+                                        <Text style={styles.watchToggleText}>Start YouTube Watch Party</Text>
+                                    </LinearGradient>
+                                </TouchableOpacity>
+                            ) : (
+                                <TouchableOpacity
+                                    style={styles.watchToggleBtn}
+                                    activeOpacity={0.8}
+                                    disabled={activeMediaView === 'trailer' && isVidkingAvailable === false}
+                                    onPress={() => {
+                                        if (activeMediaView === 'trailer') setIsPlaying(false);
+                                        setActiveMediaView(prev => prev === 'trailer' ? 'movie' : 'trailer');
+                                    }}
                                 >
-                                    <Ionicons name="people-circle" size={24} color="#FFF" style={{ marginRight: 8 }} />
-                                    <Text style={styles.watchToggleText}>Start YouTube Watch Party</Text>
-                                </LinearGradient>
-                            </TouchableOpacity>
-                        ) : (
-                            <TouchableOpacity
-                                style={styles.watchToggleBtn}
-                                activeOpacity={0.8}
-                                disabled={activeMediaView === 'trailer' && isVidkingAvailable === false}
-                                onPress={() => {
-                                    if (activeMediaView === 'trailer') setIsPlaying(false);
-                                    setActiveMediaView(prev => prev === 'trailer' ? 'movie' : 'trailer');
-                                }}
-                            >
-                                <LinearGradient
-                                    colors={
-                                        activeMediaView === 'movie' ? ['#2A2A30', '#2A2A30'] :
-                                            isVidkingAvailable === false ? ['#2A2A30', '#2A2A30'] :
-                                                ['#00E5FF', '#9B51E0', '#FF007A']
-                                    }
-                                    start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                                    style={styles.watchToggleGradient}
-                                >
-                                    {isVidkingAvailable === null ? (
-                                        <Text style={styles.watchToggleText}>Checking availability...</Text>
-                                    ) : activeMediaView === 'movie' ? (
-                                        <>
-                                            <Ionicons name="logo-youtube" size={20} color="#FFF" style={{ marginRight: 8 }} />
-                                            <Text style={styles.watchToggleText}>Show Trailer</Text>
-                                        </>
-                                    ) : (
-                                        <>
-                                            <Ionicons name={isVidkingAvailable ? "play" : "close-circle"} size={20} color="#FFF" style={{ marginRight: 8 }} />
-                                            <Text style={styles.watchToggleText}>
-                                                {isVidkingAvailable
-                                                    ? (type === 'tv' ? 'Watch Show' : 'Watch Movie')
-                                                    : (type === 'tv' ? 'Show Not Available' : 'Movie Not Available')}
-                                            </Text>
-                                        </>
-                                    )}
-                                </LinearGradient>
-                            </TouchableOpacity>
+                                    <LinearGradient
+                                        colors={activeMediaView === 'movie' ? ['#2A2A30', '#2A2A30'] : isVidkingAvailable === false ? ['#2A2A30', '#2A2A30'] : ['#00E5FF', '#9B51E0', '#FF007A']}
+                                        start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.watchToggleGradient}
+                                    >
+                                        {isVidkingAvailable === null ? (
+                                            <Text style={styles.watchToggleText}>Checking availability...</Text>
+                                        ) : activeMediaView === 'movie' ? (
+                                            <>
+                                                <Ionicons name="logo-youtube" size={20} color="#FFF" style={{ marginRight: 8 }} />
+                                                <Text style={styles.watchToggleText}>Show Trailer</Text>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <Ionicons name={isVidkingAvailable ? "play" : "close-circle"} size={20} color="#FFF" style={{ marginRight: 8 }} />
+                                                <Text style={styles.watchToggleText}>
+                                                    {isVidkingAvailable ? (type === 'tv' ? 'Watch Show' : 'Watch Movie') : (type === 'tv' ? 'Show Not Available' : 'Movie Not Available')}
+                                                </Text>
+                                            </>
+                                        )}
+                                    </LinearGradient>
+                                </TouchableOpacity>
+                            )
                         )}
 
-                        {activeMediaView === 'movie' && type === 'tv' && tvSeasons.length > 0 && (
+                        {activeMediaView === 'movie' && type === 'tv' && tvSeasons.length > 0 && !streamUrl && (
                             <View style={styles.tvControlsContainer}>
                                 <Text style={styles.tvControlsLabel}>Select Season</Text>
                                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tvControlsRow}>
@@ -648,7 +686,7 @@ export default function PlayerScreen() {
                         <View style={styles.metaRow}>
                             {year ? <Text style={styles.metaText}>{year}</Text> : null}
                             {year && languages ? <Text style={styles.metaDot}>•</Text> : null}
-                            <Text style={styles.metaText}>{languages}</Text>
+                            <Text style={styles.metaText}>{languages !== 'Unknown' ? languages : ''}</Text>
                             {mediaDetails.vote_average > 0 && (
                                 <>
                                     <Text style={styles.metaDot}>•</Text>
@@ -660,7 +698,7 @@ export default function PlayerScreen() {
                             )}
                         </View>
 
-                        {streamingPlatforms.length > 0 && (
+                        {streamingPlatforms.length > 0 && !streamUrl && (
                             <View style={styles.providersContainer}>
                                 <Text style={styles.providersTitle}>Available to Stream on:</Text>
                                 <View style={styles.providerIconsRow}>
@@ -680,7 +718,7 @@ export default function PlayerScreen() {
                         ) : null}
                     </View>
 
-                    {!ytId && relatedYtClips.length > 0 && (
+                    {!ytId && !streamUrl && relatedYtClips.length > 0 && (
                         <View style={styles.sectionContainer}>
                             <Text style={styles.sectionTitle}>Related on YouTube</Text>
                             <FlatList
@@ -696,7 +734,7 @@ export default function PlayerScreen() {
                                         onPress={() => {
                                             setActiveMediaView('trailer');
                                             setTrailerKey(item.id.videoId);
-                                            setHasStarted(true);
+                                            setHasStarted(false);
                                             setIsPlaying(true);
                                         }}
                                     >
@@ -711,7 +749,7 @@ export default function PlayerScreen() {
                         </View>
                     )}
 
-                    {similarMedia.length > 0 && (
+                    {!streamUrl && similarMedia.length > 0 && (
                         <View style={styles.sectionContainer}>
                             <Text style={styles.sectionTitle}>More Like This</Text>
                             <FlatList
@@ -766,7 +804,7 @@ const styles = StyleSheet.create({
     playerContainer: { position: 'relative', backgroundColor: '#000' },
     videoThumbnail: { width: '100%', height: '100%', position: 'absolute' },
     playerOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'center', alignItems: 'center', zIndex: 5 },
-    centerPlayButton: { width: 64, height: 64, borderRadius: 32, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center' },
+
     noTrailerText: { color: '#FFFFFF', fontSize: 16, fontWeight: 'bold', backgroundColor: 'rgba(0,0,0,0.5)', padding: 10, borderRadius: 8 },
 
     fullscreenExitBtn: {
@@ -778,19 +816,10 @@ const styles = StyleSheet.create({
         padding: 8,
         borderRadius: 20
     },
-    fsWakeHotspot: {
-        position: 'absolute',
-        top: 0,
-        left: 0,
-        width: 100,
-        height: 100,
-        zIndex: 99998
-    },
 
     externalControlBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#14141A', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.08)' },
     externalLeftControls: { flexDirection: 'row', gap: 12 },
 
-    // --- UPDATED ACTION BAR STYLES ---
     externalRightControls: { flexDirection: 'row', gap: 10, alignItems: 'center' },
     externalBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(255,255,255,0.08)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
     externalBtnText: { color: '#FFFFFF', fontSize: 13, fontWeight: '600' },
@@ -837,5 +866,60 @@ const styles = StyleSheet.create({
     ytCard: { width: 180, marginRight: 12 },
     ytCardImage: { width: '100%', height: 101, borderRadius: 8, backgroundColor: '#1E1428' },
     ytPlayIconOverlay: { position: 'absolute', top: 35, left: 74, zIndex: 2 },
-    ytCardTitle: { color: '#D0D0D5', fontSize: 13, marginTop: 8, fontWeight: '500' }
+    ytCardTitle: { color: '#D0D0D5', fontSize: 13, marginTop: 8, fontWeight: '500' },
+
+    // --- CUSTOM LIVE STREAM UI STYLES ---
+    liveStreamOverlay: {
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        width: '100%',
+        height: '100%',
+        backgroundColor: 'rgba(0,0,0,0.15)',
+        justifyContent: 'center',
+        alignItems: 'center',
+        zIndex: 10,
+    },
+    liveBadgeContainer: {
+        position: 'absolute',
+        top: 20,
+        left: 20,
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: 'rgba(255, 0, 122, 0.15)',
+        paddingHorizontal: 10,
+        paddingVertical: 5,
+        borderRadius: 6,
+        borderWidth: 1,
+        borderColor: 'rgba(255, 0, 122, 0.5)'
+    },
+    liveDot: {
+        width: 8,
+        height: 8,
+        borderRadius: 4,
+        backgroundColor: '#FF007A',
+        marginRight: 6
+    },
+    liveBadgeText: {
+        color: '#FF007A',
+        fontSize: 12,
+        fontWeight: '900',
+        letterSpacing: 1
+    },
+    gradientPlayWrapper: {
+        width: 56,
+        height: 56,
+        borderRadius: 28,
+        elevation: 8,
+        shadowColor: '#FF007A',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.5,
+        shadowRadius: 8,
+    },
+    gradientPlayInner: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+        borderRadius: 28
+    }
 });
