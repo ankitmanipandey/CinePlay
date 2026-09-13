@@ -4,7 +4,7 @@ const mongoose = require('mongoose');
 const notificationSchema = new mongoose.Schema({
     type: {
         type: String,
-        enum: ['CINEREQUEST', 'THEATRE_INVITE', 'REJECTED_ALERT','ACCEPTED_ALERT'],
+        enum: ['CINEREQUEST', 'THEATRE_INVITE', 'REJECTED_ALERT', 'ACCEPTED_ALERT'],
         required: true
     },
     senderId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
@@ -53,6 +53,10 @@ const userSchema = new mongoose.Schema(
         watched: [{
             type: String
         }],
+        likedSongs: [{ type: String }],
+        dislikedSongs: [{ type: String }],
+        musicHistory: [{ type: String }],
+        favoriteArtists: [{ type: String }],
         // --- NEW CINEBUDDIES FIELDS ---
         friends: [{
             type: mongoose.Schema.Types.ObjectId,

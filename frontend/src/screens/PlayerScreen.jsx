@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
     StyleSheet,
     Text,
@@ -6,12 +6,12 @@ import {
     TouchableOpacity,
     ScrollView,
     Image,
-    FlatList,
     StatusBar,
     ActivityIndicator,
     useWindowDimensions,
     Platform,
-    Animated
+    Animated,
+    PanResponder
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -21,20 +21,24 @@ import Toast from 'react-native-toast-message';
 import YoutubePlayer from 'react-native-youtube-iframe';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { WebView } from 'react-native-webview';
-
-// --- NEW: expo-video for Live TV Streams ---
 import { useVideoPlayer, VideoView } from 'expo-video';
 
-// --- Global State & Config ---
+// --- Global State, Config & API ---
 import { tmdbService } from '../services/tmdbService';
 import { getImageUrl } from '../constants/config';
 import { useUserListStore } from '../store/useUserListStore';
 import { useAuthStore } from '../store/useAuthStore';
+import { safeFetchJson, mapSaavnSong } from '../services/jioSaavnApi';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL;
-
 const RAW_KEYS = process.env.EXPO_PUBLIC_YOUTUBE_API_KEYS || process.env.EXPO_PUBLIC_YOUTUBE_API_KEY || '';
 let ACTIVE_YT_KEYS = RAW_KEYS.split(',').map(k => k.trim()).filter(Boolean);
+
+// STRICT DEDUPLICATION HELPER
+const normalizeString = (str) => {
+    if (!str) return '';
+    return str.replace(/\([^)]*\)/g, '').replace(/\[[^\]]*\]/g, '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase().trim();
+};
 
 const fetchYouTubeWithRetry = async (urlTemplate) => {
     while (ACTIVE_YT_KEYS.length > 0) {
@@ -59,12 +63,19 @@ const fetchYouTubeWithRetry = async (urlTemplate) => {
     return { error: { code: 429, message: 'All YouTube API keys have exhausted their daily quota.' } };
 };
 
+const formatTime = (seconds) => {
+    if (!seconds || isNaN(seconds)) return "0:00";
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${s < 10 ? '0' : ''}${s}`;
+};
+
 export default function PlayerScreen() {
     const router = useRouter();
     const insets = useSafeAreaInsets();
     const { width, height } = useWindowDimensions();
 
-    const { id, type, ytId, streamUrl, channelName } = useLocalSearchParams();
+    const { id, type, ytId, streamUrl, channelName, artworkUrl } = useLocalSearchParams();
 
     const [isLoading, setIsLoading] = useState(true);
     const [mediaDetails, setMediaDetails] = useState(null);
@@ -83,21 +94,222 @@ export default function PlayerScreen() {
     const [selectedSeason, setSelectedSeason] = useState(1);
     const [selectedEpisode, setSelectedEpisode] = useState(1);
 
-    // --- Unified Auto-Hide UI State & Anim ---
     const [showControls, setShowControls] = useState(true);
     const controlsFadeAnim = useRef(new Animated.Value(1)).current;
+    const playingTrackId = useRef(null);
     const controlsTimer = useRef(null);
+
+    const [musicQueue, setMusicQueue] = useState([]);
+    const [currentMusicIndex, setCurrentMusicIndex] = useState(0);
+    const [musicPrefs, setMusicPrefs] = useState({});
+
+    const [musicProgress, setMusicProgress] = useState(0);
+    const [musicDuration, setMusicDuration] = useState(0);
+    const [barWidth, setBarWidth] = useState(0);
+    const scrollY = useRef(new Animated.Value(0)).current;
+    const playRequestId = useRef(0);
+    const isFetchingQueue = useRef(false);
 
     const { watchlist, watched, toggleWatchlist, toggleWatched } = useUserListStore();
     const { token } = useAuthStore();
+    useEffect(() => {
+        if (token) {
+            fetch(`${BACKEND_URL}/user/lists`, { headers: { Authorization: `Bearer ${token}` } })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.likedSongs) {
+                        const initialPrefs = {};
+                        // Pre-fill the hearts for all previously liked songs
+                        data.likedSongs.forEach(id => { initialPrefs[id] = 'like'; });
+                        setMusicPrefs(initialPrefs);
+                    }
+                })
+                .catch(err => console.log("Failed to sync liked songs:", err));
+        }
+    }, [token]);
 
     const TAB_BAR_HEIGHT = (Platform.OS === 'ios' ? 88 : 65) + insets.bottom;
 
-    const livePlayer = useVideoPlayer(streamUrl || null, (player) => {
-        if (streamUrl) {
-            player.play();
-        }
+    const livePlayer = useVideoPlayer(null, (player) => {
+        player.loop = false;
+        player.staysActiveInBackground = true;
     });
+
+    const handleMusicAction = async (songId, action) => {
+        if (action === 'listen' && !token) return;
+
+        if (!token) {
+            Toast.show({
+                type: 'hotstarInfo',
+                text1: 'Log in for personalization',
+                position: 'top',
+                topOffset: insets.top > 0 ? insets.top + 10 : 50,
+                visibilityTime: 2500
+            });
+            return;
+        }
+
+        let finalAction = action;
+        if (action === 'toggleLike') {
+            finalAction = musicPrefs[songId] === 'like' ? 'removeLike' : 'like';
+        }
+
+        // 🛑 FIX: Only update the local UI state if the action is like/dislike
+        if (action !== 'listen') {
+            setMusicPrefs(prev => ({ ...prev, [songId]: finalAction === 'removeLike' ? null : finalAction }));
+        }
+
+        try {
+            await fetch(`${BACKEND_URL}/user/music/interact`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                body: JSON.stringify({ songId, action: finalAction })
+            });
+
+            if (finalAction === 'like') {
+                Toast.show({ type: 'hotstarSuccess', text1: 'Saved to Liked Songs' });
+            } else if (finalAction === 'dislike') {
+                Toast.show({ type: 'hotstarSuccess', text1: 'We will recommend less of this' });
+                if (currentMusicIndex < musicQueue.length - 1) {
+                    setCurrentMusicIndex(prev => prev + 1);
+                }
+            }
+        } catch (error) {
+            console.error('Failed to register interaction:', error);
+        }
+    };
+
+    useEffect(() => {
+        if (type === 'music' && currentMusicIndex >= 0 && musicQueue[currentMusicIndex]) {
+            handleMusicAction(musicQueue[currentMusicIndex].id, 'listen');
+        }
+    }, [currentMusicIndex, type, musicQueue]);
+
+    const extendQueueIfNeeded = useCallback(async (index, queue) => {
+        const thresholdIndex = Math.floor(queue.length * 0.70);
+
+        if (queue.length < 5 || index < thresholdIndex || isFetchingQueue.current) return;
+
+        const seed = queue[index];
+        if (!seed) return;
+
+        isFetchingQueue.current = true;
+
+        try {
+            let newTracks = [];
+            if (token) {
+                const res = await fetch(`${BACKEND_URL}/user/music/recommendations?seedSongId=${seed.id}&seedArtist=${encodeURIComponent(seed.artist)}`, {
+                    headers: { Authorization: `Bearer ${token}` }
+                });
+                const json = await res.json();
+
+                if (json.data) {
+                    newTracks = json.data.map(mapSaavnSong).filter(t => t.url);
+                }
+            } else {
+                const searchQ = encodeURIComponent(seed.artist || 'Trending');
+                const randomPage = Math.floor(Math.random() * 8) + 1;
+                const json = await safeFetchJson(`/search/songs?query=${searchQ}&page=${randomPage}&limit=15`);
+
+                if (json?.success && json.data?.results) {
+                    newTracks = json.data.results.map(mapSaavnSong).filter(t => t.url);
+                }
+            }
+
+            if (newTracks.length > 0) {
+                setMusicQueue(prev => {
+                    const existingNames = new Set(prev.map(t => normalizeString(t.title)));
+                    const filteredTracks = newTracks.filter(s => {
+                        const normName = normalizeString(s.title);
+                        if (!s.url || existingNames.has(normName)) return false;
+                        existingNames.add(normName);
+                        return true;
+                    });
+
+                    const finalTracks = filteredTracks.slice(0, 10);
+                    // 🛑 CRITICAL FIX: Stop infinite loop if all fetched tracks were duplicates
+                    if (finalTracks.length === 0) return prev;
+
+                    return [...prev, ...finalTracks];
+                });
+            }
+        } catch (e) {
+            console.log("Queue extend error:", e);
+        } finally {
+            isFetchingQueue.current = false;
+        }
+    }, [token]);
+
+    useEffect(() => {
+        if (type !== 'music' || currentMusicIndex < 0 || !musicQueue[currentMusicIndex]) return;
+
+        const track = musicQueue[currentMusicIndex];
+
+        // 🛑 CRITICAL FIX: Guard MUST be called before extendQueueIfNeeded
+        if (playingTrackId.current === track.id) return;
+        playingTrackId.current = track.id;
+
+        // Now it is safe to check for extension
+        extendQueueIfNeeded(currentMusicIndex, musicQueue);
+
+        const requestId = ++playRequestId.current;
+
+        if (!track.url) {
+            console.warn('Track has no url, skipping:', track.title);
+            if (currentMusicIndex < musicQueue.length - 1) {
+                setCurrentMusicIndex(prev => prev + 1);
+            }
+            return;
+        }
+
+        (async () => {
+            try {
+                setIsPlaying(false);
+                setMusicProgress(0);
+                await livePlayer.replaceAsync(track.url);
+                if (requestId !== playRequestId.current) return;
+                livePlayer.play();
+                setIsPlaying(true);
+            } catch (err) {
+                if (requestId !== playRequestId.current) return;
+                console.error('Failed to load track:', track.title, err?.message || err);
+                setIsPlaying(false);
+                Toast.show({ type: 'error', text1: `Couldn't play "${track.title}", skipping...` });
+                if (currentMusicIndex < musicQueue.length - 1) {
+                    setCurrentMusicIndex(prev => prev + 1);
+                }
+            }
+        })();
+    }, [currentMusicIndex, musicQueue, type, livePlayer, extendQueueIfNeeded]);
+
+    useEffect(() => {
+        if (type !== 'music') return;
+        const interval = setInterval(() => {
+            if (isPlaying && livePlayer) {
+                setMusicProgress(livePlayer.currentTime);
+                setMusicDuration(livePlayer.duration);
+            }
+        }, 1000);
+
+        const sub = livePlayer.addListener('playToEnd', async () => {
+            setIsPlaying(false);
+            if (currentMusicIndex < musicQueue.length - 1) {
+                setCurrentMusicIndex(prev => prev + 1);
+            }
+        });
+
+        return () => { clearInterval(interval); sub?.remove(); };
+    }, [livePlayer, currentMusicIndex, musicQueue, isPlaying, type]);
+
+    const handleSeek = (event) => {
+        if (barWidth > 0 && musicDuration > 0) {
+            const tapX = event.nativeEvent.locationX;
+            const percentage = Math.max(0, Math.min(1, tapX / barWidth));
+            const newTime = percentage * musicDuration;
+            livePlayer.currentTime = newTime;
+            setMusicProgress(newTime);
+        }
+    };
 
     const resetControlsTimer = useCallback(() => {
         if (controlsTimer.current) clearTimeout(controlsTimer.current);
@@ -120,43 +332,58 @@ export default function PlayerScreen() {
     }, [resetControlsTimer]);
 
     useEffect(() => {
-        if (id && type && !ytId && !streamUrl) {
-            const checkVidking = async () => {
-                try {
-                    const url = type === 'tv'
-                        ? `https://www.vidking.net/embed/tv/${id}/1/1`
-                        : `https://www.vidking.net/embed/movie/${id}`;
-
-                    const res = await fetch(url);
-                    const text = await res.text();
-
-                    if (res.status === 404 || text.includes('404 Not Found') || text.includes('Movie not found')) {
-                        setIsVidkingAvailable(false);
-                    } else {
-                        setIsVidkingAvailable(true);
-                    }
-                } catch (error) {
-                    setIsVidkingAvailable(false);
-                }
-            };
-            checkVidking();
-        }
-    }, [id, type, ytId, streamUrl]);
-
-    useEffect(() => {
-        if (!id && !ytId && !streamUrl) return;
-
         const fetchAllData = async () => {
             setIsLoading(true);
             try {
+                if (type === 'music') {
+                    setMediaDetails({ title: channelName || "Music Player", vote_average: 0 });
+
+                    const initialTrack = {
+                        id: ytId || 'init',
+                        title: channelName || 'Unknown Song',
+                        artist: 'Playing Now',
+                        url: streamUrl,
+                        image: artworkUrl || 'https://images.unsplash.com/photo-1614680376573-3e4e1ef41090?w=500&q=80'
+                    };
+                    setMusicQueue([initialTrack]);
+
+                    try {
+                        const searchQ = encodeURIComponent(channelName || 'Arijit Singh');
+                        const json = await safeFetchJson(`/search/songs?query=${searchQ}`);
+
+                        if (json?.success && json.data?.results) {
+                            const fetchedTracks = json.data.results.map(mapSaavnSong).filter(t => t.url);
+
+                            setMusicQueue(prev => {
+                                const existingNames = new Set(prev.map(t => normalizeString(t.title)));
+                                const filteredTracks = fetchedTracks.filter(s => {
+                                    const normName = normalizeString(s.title);
+                                    if (existingNames.has(normName)) return false;
+                                    existingNames.add(normName);
+                                    return true;
+                                });
+                                return [...prev, ...filteredTracks];
+                            });
+                        }
+                    } catch (e) {
+                        console.log("Queue fetch error:", e);
+                    }
+
+                    setIsLoading(false);
+                    return;
+                }
+
                 if (streamUrl) {
-                    setMediaDetails({
-                        title: channelName || "Live TV Broadcast",
-                        overview: "Streaming live broadcast...",
-                        vote_average: 0
-                    });
-                    setHasStarted(true);
-                    setIsPlaying(true);
+                    setMediaDetails({ title: channelName || "Live TV Broadcast", overview: "Streaming live broadcast...", vote_average: 0 });
+                    try {
+                        await livePlayer.replaceAsync(streamUrl);
+                        livePlayer.play();
+                        setHasStarted(true);
+                        setIsPlaying(true);
+                    } catch (err) {
+                        console.error('Failed to load live stream:', err?.message || err);
+                        Toast.show({ type: 'error', text1: 'Failed to load stream' });
+                    }
                     setIsLoading(false);
                     return;
                 }
@@ -177,59 +404,38 @@ export default function PlayerScreen() {
                                 if (snippet) {
                                     videoTitle = snippet.title;
                                     setMediaDetails({
-                                        title: snippet.title,
-                                        overview: "",
-                                        vote_average: 0,
-                                        spoken_languages: [{ english_name: snippet.channelTitle }],
-                                        ytThumbnail: snippet.thumbnails?.high?.url
+                                        title: snippet.title, overview: "", vote_average: 0,
+                                        spoken_languages: [{ english_name: snippet.channelTitle }], ytThumbnail: snippet.thumbnails?.high?.url
                                     });
                                 }
                             }
-                        } catch (e) {
-                            console.error("Failed to fetch YT video details:", e);
-                        }
+                        } catch (e) { console.error(e); }
                     }
-                    if (!videoTitle) {
-                        setMediaDetails({ title: "YouTube Video", overview: "", vote_average: 0 });
-                    }
+                    if (!videoTitle) setMediaDetails({ title: "YouTube Video", overview: "", vote_average: 0 });
                 }
 
-                if (id && type) {
+                if (id && type !== 'music') {
                     const [details, videos, similar, providers] = await Promise.all([
-                        tmdbService.getDetails(id, type),
-                        tmdbService.getVideos(id, type),
-                        tmdbService.getSimilar(id, type),
-                        tmdbService.getWatchProviders(id, type)
+                        tmdbService.getDetails(id, type), tmdbService.getVideos(id, type),
+                        tmdbService.getSimilar(id, type), tmdbService.getWatchProviders(id, type)
                     ]);
 
-                    const trailer = videos.find(v => v.type === 'Trailer' && v.site === 'YouTube')
-                        || videos.find(v => v.site === 'YouTube');
-
+                    const trailer = videos.find(v => v.type === 'Trailer' && v.site === 'YouTube') || videos.find(v => v.site === 'YouTube');
                     setTrailerKey(trailer ? trailer.key : null);
+                    if (trailer) setIsPlaying(true);
 
-                    if (trailer) {
-                        setIsPlaying(true); // Automatically trigger playback on load
-                    }
-
-                    setMediaDetails(details);
-                    setSimilarMedia(similar);
-                    setWatchProviders(providers);
-
+                    setMediaDetails(details); setSimilarMedia(similar); setWatchProviders(providers);
                     videoTitle = details.title || details.name;
+                    setIsVidkingAvailable(true);
                 }
 
-                if (id && type && !ytId && videoTitle && ACTIVE_YT_KEYS.length > 0) {
+                if (id && type !== 'music' && !ytId && videoTitle && ACTIVE_YT_KEYS.length > 0) {
                     try {
                         const searchQuery = encodeURIComponent(`${videoTitle} official clip OR soundtrack OR song`);
                         const urlTemplate = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${searchQuery}&type=video&maxResults=10&key=__API_KEY__`;
                         const ytData = await fetchYouTubeWithRetry(urlTemplate);
-
-                        if (!ytData.error && ytData.items) {
-                            setRelatedYtClips(ytData.items);
-                        }
-                    } catch (ytError) {
-                        console.error("Failed to fetch YT clips:", ytError);
-                    }
+                        if (!ytData.error && ytData.items) setRelatedYtClips(ytData.items);
+                    } catch (ytError) { console.error(ytError); }
                 }
 
             } catch (error) {
@@ -341,11 +547,38 @@ export default function PlayerScreen() {
         }
     };
 
+    const [lastTap, setLastTap] = useState(0);
+    const handleDoubleTapLike = (songId) => {
+        const now = Date.now();
+        if (now - lastTap < 300) {
+            handleMusicAction(songId, 'toggleLike');
+        }
+        setLastTap(now);
+    };
+
+    const panResponderMusic = useMemo(() => PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onPanResponderRelease: (evt, gestureState) => {
+            const { dx, dy } = gestureState;
+            if (Math.abs(dx) > 60) {
+                if (dx > 0) {
+                    if (currentMusicIndex > 0) setCurrentMusicIndex(prev => prev - 1);
+                } else {
+                    if (currentMusicIndex < musicQueue.length - 1) setCurrentMusicIndex(prev => prev + 1);
+                }
+            } else if (dy > 60) {
+                router.back();
+            } else if (Math.abs(dx) < 10 && Math.abs(dy) < 10) {
+                if (musicQueue[currentMusicIndex]) handleDoubleTapLike(musicQueue[currentMusicIndex].id);
+            }
+        }
+    }), [currentMusicIndex, musicQueue, lastTap]);
+
     if (isLoading) {
         return (
             <SafeAreaView style={styles.safeArea}>
                 <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
-                    <ActivityIndicator size="large" color="#1F80E0" />
+                    <ActivityIndicator size="large" color="#FF007A" />
                 </View>
             </SafeAreaView>
         );
@@ -357,13 +590,153 @@ export default function PlayerScreen() {
                 <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
                     <Text style={{ color: 'white' }}>Failed to load media details.</Text>
                     <TouchableOpacity onPress={handleBackPress} style={{ marginTop: 20 }}>
-                        <Text style={{ color: '#1F80E0' }}>Go Back</Text>
+                        <Text style={{ color: '#00E5FF' }}>Go Back</Text>
                     </TouchableOpacity>
                 </View>
             </SafeAreaView>
         );
     }
 
+    // ==========================================
+    // 🎵 DEDICATED MUSIC PLAYER UI
+    // ==========================================
+    if (type === 'music') {
+        const currentTrack = musicQueue[currentMusicIndex] || {};
+
+        const artScale = scrollY.interpolate({
+            inputRange: [-100, 0, 250],
+            outputRange: [1.1, 1, 0.65],
+            extrapolate: 'clamp'
+        });
+
+        const artTranslateY = scrollY.interpolate({
+            inputRange: [-100, 0, 250],
+            outputRange: [-20, 0, 60],
+            extrapolate: 'clamp'
+        });
+
+        return (
+            <SafeAreaView style={styles.safeArea}>
+                <LinearGradient colors={['#170D22', '#0A0A0C']} style={styles.container}>
+                    <VideoView player={livePlayer} style={{ width: 0, height: 0, position: 'absolute' }} nativeControls={false} />
+
+                    <View style={styles.musicFixedHeader}>
+                        <TouchableOpacity onPress={handleBackPress} style={{ padding: 10 }}>
+                            <Ionicons name="chevron-down" size={28} color="#FFFFFF" />
+                        </TouchableOpacity>
+                        <View style={{ alignItems: 'center' }}>
+                            <Text style={styles.musicHeaderSubtitle}>NOW PLAYING</Text>
+                            <Text style={styles.musicHeaderTitle} numberOfLines={1}>{currentTrack.title}</Text>
+                        </View>
+                        <View style={{ width: 48 }} />
+                    </View>
+
+                    <Animated.ScrollView
+                        showsVerticalScrollIndicator={false}
+                        contentContainerStyle={{ paddingBottom: 40 }}
+                        onScroll={Animated.event(
+                            [{ nativeEvent: { contentOffset: { y: scrollY } } }],
+                            { useNativeDriver: true }
+                        )}
+                        scrollEventThrottle={16}
+                    >
+                        <View style={{ paddingTop: 10 }} {...panResponderMusic.panHandlers}>
+                            <Animated.View style={[styles.albumArtContainer, { transform: [{ scale: artScale }, { translateY: artTranslateY }] }]}>
+                                <Image source={{ uri: currentTrack.image }} style={[styles.albumArt, { width: width * 0.75, height: width * 0.75 }]} />
+                            </Animated.View>
+
+                            <View style={[styles.musicTrackInfo, { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20 }]}>
+                                <TouchableOpacity onPress={() => handleMusicAction(currentTrack.id, 'dislike')} style={{ padding: 10 }}>
+                                    <Ionicons name="thumbs-down-outline" size={28} color="#8F98A0" />
+                                </TouchableOpacity>
+
+                                <View style={{ flex: 1, alignItems: 'center', paddingHorizontal: 10 }}>
+                                    <Text style={styles.musicLargeTitle} numberOfLines={1}>{currentTrack.title}</Text>
+                                    <Text style={styles.musicLargeArtist} numberOfLines={1}>{currentTrack.artist}</Text>
+                                </View>
+
+                                <TouchableOpacity onPress={() => handleMusicAction(currentTrack.id, 'toggleLike')} style={{ padding: 10 }}>
+                                    <Ionicons name={musicPrefs[currentTrack.id] === 'like' ? "heart" : "heart-outline"} size={28} color={musicPrefs[currentTrack.id] === 'like' ? "#FF007A" : "#FFF"} />
+                                </TouchableOpacity>
+                            </View>
+
+                            <View style={styles.seekContainer}>
+                                <TouchableOpacity activeOpacity={1} style={styles.progressBarTouchArea} onLayout={(e) => setBarWidth(e.nativeEvent.layout.width)} onPress={handleSeek}>
+                                    <View style={styles.progressBarBg}>
+                                        <LinearGradient colors={['#00E5FF', '#9B51E0']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={[styles.progressBarFill, { width: `${(musicProgress / (musicDuration || 1)) * 100}%` }]} />
+                                        <View style={[styles.progressKnob, { left: `${(musicProgress / (musicDuration || 1)) * 100}%` }]} />
+                                    </View>
+                                </TouchableOpacity>
+                                <View style={styles.timeRow}>
+                                    <Text style={styles.timeText}>{formatTime(musicProgress)}</Text>
+                                    <Text style={styles.timeText}>{formatTime(musicDuration)}</Text>
+                                </View>
+                            </View>
+
+                            <View style={styles.musicControlsRow}>
+                                <TouchableOpacity
+                                    onPress={() => { if (currentMusicIndex > 0) setCurrentMusicIndex(prev => prev - 1); }}
+                                    style={styles.skipBtn}
+                                >
+                                    <Ionicons name="play-skip-back" size={32} color={currentMusicIndex > 0 ? "#FFFFFF" : "#555"} />
+                                </TouchableOpacity>
+
+                                <TouchableOpacity
+                                    style={styles.neonPlayWrapper}
+                                    activeOpacity={0.8}
+                                    onPress={() => {
+                                        if (isPlaying) { livePlayer.pause(); setIsPlaying(false); }
+                                        else { livePlayer.play(); setIsPlaying(true); }
+                                    }}
+                                >
+                                    <LinearGradient colors={['#00E5FF', '#9B51E0', '#FF007A']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.neonPlayInner}>
+                                        <Ionicons name={isPlaying ? "pause" : "play"} size={36} color="#FFFFFF" style={!isPlaying ? { marginLeft: 6 } : {}} />
+                                    </LinearGradient>
+                                </TouchableOpacity>
+
+                                <TouchableOpacity
+                                    onPress={() => { if (currentMusicIndex < musicQueue.length - 1) setCurrentMusicIndex(prev => prev + 1); }}
+                                    style={styles.skipBtn}
+                                >
+                                    <Ionicons name="play-skip-forward" size={32} color={currentMusicIndex < musicQueue.length - 1 ? "#FFFFFF" : "#555"} />
+                                </TouchableOpacity>
+                            </View>
+                        </View>
+
+                        <View style={styles.queueContainer}>
+                            <Text style={styles.queueTitle}>Playlist</Text>
+                            {/* MAP OVER FULL LIST SO PREVIOUS SONGS STAY VISIBLE */}
+                            {musicQueue.map((track, index) => {
+                                const isActive = index === currentMusicIndex;
+                                return (
+                                    <TouchableOpacity
+                                        key={track.id + index}
+                                        style={[styles.queueItem, isActive && { borderColor: '#00E5FF', backgroundColor: 'rgba(0, 229, 255, 0.1)' }]}
+                                        onPress={() => setCurrentMusicIndex(index)}
+                                    >
+                                        <Image source={{ uri: track.image }} style={styles.queueImage} />
+                                        <View style={styles.queueInfo}>
+                                            <Text style={[styles.queueTrackTitle, isActive && { color: '#00E5FF' }]} numberOfLines={1}>{track.title}</Text>
+                                            <Text style={styles.queueTrackArtist} numberOfLines={1}>{track.artist}</Text>
+                                        </View>
+                                        {isActive ? (
+                                            <Ionicons name="stats-chart" size={20} color="#00E5FF" />
+                                        ) : (
+                                            <Ionicons name="play-circle-outline" size={24} color="#8F98A0" />
+                                        )}
+                                    </TouchableOpacity>
+                                )
+                            })}
+                        </View>
+                    </Animated.ScrollView>
+                </LinearGradient>
+            </SafeAreaView>
+        );
+    }
+
+    // ==========================================
+    // 🎬 STANDARD VIDEO / TV PLAYER UI
+    // ==========================================
     const title = mediaDetails.title || mediaDetails.name;
     const year = (mediaDetails.release_date || mediaDetails.first_air_date || '').substring(0, 4);
     const languages = mediaDetails.spoken_languages?.map(lang => lang.english_name).join(', ') || 'Unknown';
@@ -404,9 +777,7 @@ export default function PlayerScreen() {
                             return false;
                         }}
                     >
-
                         {streamUrl ? (
-                            // --- 1. LIVE TV STREAM WITH PERFECT OVERLAP AND AUTO-HIDE UI ---
                             <>
                                 <VideoView
                                     player={livePlayer}
@@ -415,57 +786,40 @@ export default function PlayerScreen() {
                                     nativeControls={false}
                                 />
 
-                                {/* Custom Gradient Controls Overlay */}
+                                <TouchableOpacity
+                                    style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', zIndex: 5 }}
+                                    activeOpacity={1}
+                                    onPress={resetControlsTimer}
+                                />
+
                                 <Animated.View
                                     style={[styles.liveStreamOverlay, { opacity: controlsFadeAnim }]}
                                     pointerEvents={showControls ? 'box-none' : 'none'}
                                 >
-                                    {/* Live Badge Top Left */}
                                     <View style={styles.liveBadgeContainer}>
                                         <View style={styles.liveDot} />
                                         <Text style={styles.liveBadgeText}>LIVE</Text>
                                     </View>
 
-                                    {/* Gradient Play/Pause Button perfectly centered */}
                                     <TouchableOpacity
                                         style={styles.gradientPlayWrapper}
                                         activeOpacity={0.8}
                                         onPress={() => {
                                             resetControlsTimer();
-                                            if (isPlaying) {
-                                                livePlayer.pause();
-                                                setIsPlaying(false);
-                                            } else {
-                                                livePlayer.play();
-                                                setIsPlaying(true);
-                                            }
+                                            if (isPlaying) { livePlayer.pause(); setIsPlaying(false); }
+                                            else { livePlayer.play(); setIsPlaying(true); }
                                         }}
                                     >
-                                        <LinearGradient
-                                            colors={['#00E5FF', '#9B51E0', '#FF007A']}
-                                            start={{ x: 0, y: 0 }}
-                                            end={{ x: 1, y: 1 }}
-                                            style={styles.gradientPlayInner}
-                                        >
-                                            <Ionicons
-                                                name={isPlaying ? "pause" : "play"}
-                                                size={24}
-                                                color="#FFFFFF"
-                                                style={!isPlaying ? { marginLeft: 4 } : {}}
-                                            />
+                                        <LinearGradient colors={['#00E5FF', '#9B51E0', '#FF007A']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.gradientPlayInner}>
+                                            <Ionicons name={isPlaying ? "pause" : "play"} size={24} color="#FFFFFF" style={!isPlaying ? { marginLeft: 4 } : {}} />
                                         </LinearGradient>
                                     </TouchableOpacity>
                                 </Animated.View>
                             </>
                         ) : activeMediaView === 'movie' ? (
-                            // --- 2. VIDKING MOVIES (WebView) ---
                             <WebView
                                 key={`vidking-${selectedSeason}-${selectedEpisode}`}
-                                source={{
-                                    uri: type === 'tv'
-                                        ? `https://www.vidking.net/embed/tv/${id}/${selectedSeason}/${selectedEpisode}?autoPlay=true`
-                                        : `https://www.vidking.net/embed/movie/${id}?autoPlay=true`
-                                }}
+                                source={{ uri: type === 'tv' ? `https://www.vidking.net/embed/tv/${id}/${selectedSeason}/${selectedEpisode}?autoPlay=true` : `https://www.vidking.net/embed/movie/${id}?autoPlay=true` }}
                                 style={{ flex: 1, backgroundColor: '#000' }}
                                 javaScriptEnabled={true}
                                 allowsFullscreenVideo={false}
@@ -475,9 +829,7 @@ export default function PlayerScreen() {
                                 onMessage={(event) => {
                                     try {
                                         const data = JSON.parse(event.nativeEvent.data);
-                                        if (data.type === 'USER_TOUCH' && isFullScreen) {
-                                            resetControlsTimer();
-                                        }
+                                        if (data.type === 'USER_TOUCH' && isFullScreen) resetControlsTimer();
                                     } catch (e) { }
                                 }}
                                 onShouldStartLoadWithRequest={(request) => {
@@ -496,50 +848,32 @@ export default function PlayerScreen() {
                                         const playBtn = document.querySelector('.play-btn, .jw-display-icon-container, [aria-label="Play"]');
                                         if (playBtn) playBtn.click();
                                     };
-                                    setTimeout(triggerPlay, 400);
-                                    setTimeout(triggerPlay, 1200);
-                                    setTimeout(triggerPlay, 2500);
+                                    setTimeout(triggerPlay, 400); setTimeout(triggerPlay, 1200); setTimeout(triggerPlay, 2500);
 
                                     ['click', 'touchstart'].forEach(evt => {
                                         document.addEventListener(evt, () => {
-                                            if (window.ReactNativeWebView) {
-                                                window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'USER_TOUCH' }));
-                                            }
+                                            if (window.ReactNativeWebView) window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'USER_TOUCH' }));
                                         }, { passive: true });
                                     });
                                     true;
                                 `}
                             />
                         ) : trailerKey ? (
-                            // --- 3. YOUTUBE TRAILERS (Iframe directly with no overlay) ---
                             <YoutubePlayer
-                                height={innerVideoHeight}
-                                width={innerVideoWidth}
-                                play={isPlaying}
-                                videoId={trailerKey}
+                                height={innerVideoHeight} width={innerVideoWidth}
+                                play={isPlaying} videoId={trailerKey}
                                 onReady={() => setIsPlaying(true)}
                                 webViewProps={{ allowsFullscreenVideo: false, mediaPlaybackRequiresUserAction: false, allowsInlineMediaPlayback: true }}
                                 initialPlayerParams={{ controls: 1, modestbranding: 1, rel: 0, iv_load_policy: 3, fs: 0, autoplay: 1 }}
                                 onChangeState={(state) => {
-                                    if (state === 'playing') {
-                                        setIsPlaying(true);
-                                        setHasStarted(true);
-                                    }
+                                    if (state === 'playing') { setIsPlaying(true); setHasStarted(true); }
                                     if (state === 'paused' || state === 'ended') setIsPlaying(false);
                                 }}
                             />
                         ) : (
-                            // --- 4. NO VIDEO AVAILABLE FALLBACK ---
                             <View style={[StyleSheet.absoluteFill, { zIndex: 10 }]}>
                                 {(mediaDetails.backdrop_path || mediaDetails.ytThumbnail) && (
-                                    <Image
-                                        source={{
-                                            uri: mediaDetails.backdrop_path
-                                                ? getImageUrl(mediaDetails.backdrop_path, 'original')
-                                                : mediaDetails.ytThumbnail
-                                        }}
-                                        style={styles.videoThumbnail}
-                                    />
+                                    <Image source={{ uri: mediaDetails.backdrop_path ? getImageUrl(mediaDetails.backdrop_path, 'original') : mediaDetails.ytThumbnail }} style={styles.videoThumbnail} />
                                 )}
                                 <View style={styles.playerOverlay}>
                                     <Text style={styles.noTrailerText}>No Video Available</Text>
@@ -547,12 +881,8 @@ export default function PlayerScreen() {
                             </View>
                         )}
 
-                        {/* Fullscreen Close Button tied to the same Auto-Hide animation */}
                         {isFullScreen && (
-                            <Animated.View
-                                style={[styles.fullscreenExitBtn, { opacity: controlsFadeAnim }]}
-                                pointerEvents={showControls ? 'auto' : 'none'}
-                            >
+                            <Animated.View style={[styles.fullscreenExitBtn, { opacity: controlsFadeAnim }]} pointerEvents={showControls ? 'auto' : 'none'}>
                                 <TouchableOpacity onPress={handleBackPress} activeOpacity={0.7}>
                                     <Ionicons name="close" size={26} color="#FFFFFF" />
                                 </TouchableOpacity>
@@ -576,11 +906,6 @@ export default function PlayerScreen() {
                             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.externalRightControls} bounces={false}>
                                 {id && !streamUrl && (
                                     <>
-                                        {/* Watch Party button specifically injected for Movie/TV Cards */}
-                                        <TouchableOpacity onPress={handleCreateWatchParty} style={[styles.externalBtn, { borderColor: '#00E5FF', borderWidth: 1, backgroundColor: 'rgba(0, 229, 255, 0.1)' }]}>
-                                            <Ionicons name="people-circle" size={18} color="#00E5FF" />
-                                            <Text style={[styles.externalBtnText, { color: '#00E5FF' }]}>Watch Party</Text>
-                                        </TouchableOpacity>
                                         <TouchableOpacity onPress={() => handleAuthAction(() => handleToggleAction(id, type, 'watchlist'))} style={styles.externalBtn}>
                                             <Ionicons name={isCurrentInWatchlist ? "bookmark" : "bookmark-outline"} size={20} color={isCurrentInWatchlist ? "#F5C518" : "#FFFFFF"} />
                                             <Text style={[styles.externalBtnText, isCurrentInWatchlist && { color: '#F5C518' }]}>Save</Text>
@@ -596,14 +921,9 @@ export default function PlayerScreen() {
                     </View>
                 )}
 
-                <ScrollView
-                    style={{ display: isFullScreen ? 'none' : 'flex' }}
-                    showsVerticalScrollIndicator={false}
-                    contentContainerStyle={[styles.scrollContent, { paddingBottom: TAB_BAR_HEIGHT + 20 }]}
-                >
+                <ScrollView style={{ display: isFullScreen ? 'none' : 'flex' }} showsVerticalScrollIndicator={false} contentContainerStyle={[styles.scrollContent, { paddingBottom: TAB_BAR_HEIGHT + 20 }]}>
                     <View style={styles.detailsContainer}>
                         <Text style={styles.mediaTitle}>{title}</Text>
-
                         {!streamUrl && (
                             ytId ? (
                                 <TouchableOpacity style={styles.watchToggleBtn} activeOpacity={0.8} onPress={handleCreateWatchParty}>
@@ -614,18 +934,13 @@ export default function PlayerScreen() {
                                 </TouchableOpacity>
                             ) : (
                                 <TouchableOpacity
-                                    style={styles.watchToggleBtn}
-                                    activeOpacity={0.8}
-                                    disabled={activeMediaView === 'trailer' && isVidkingAvailable === false}
+                                    style={styles.watchToggleBtn} activeOpacity={0.8} disabled={activeMediaView === 'trailer' && isVidkingAvailable === false}
                                     onPress={() => {
                                         if (activeMediaView === 'trailer') setIsPlaying(false);
                                         setActiveMediaView(prev => prev === 'trailer' ? 'movie' : 'trailer');
                                     }}
                                 >
-                                    <LinearGradient
-                                        colors={activeMediaView === 'movie' ? ['#2A2A30', '#2A2A30'] : isVidkingAvailable === false ? ['#2A2A30', '#2A2A30'] : ['#00E5FF', '#9B51E0', '#FF007A']}
-                                        start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.watchToggleGradient}
-                                    >
+                                    <LinearGradient colors={activeMediaView === 'movie' ? ['#2A2A30', '#2A2A30'] : isVidkingAvailable === false ? ['#2A2A30', '#2A2A30'] : ['#00E5FF', '#9B51E0', '#FF007A']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.watchToggleGradient}>
                                         {isVidkingAvailable === null ? (
                                             <Text style={styles.watchToggleText}>Checking availability...</Text>
                                         ) : activeMediaView === 'movie' ? (
@@ -636,53 +951,33 @@ export default function PlayerScreen() {
                                         ) : (
                                             <>
                                                 <Ionicons name={isVidkingAvailable ? "play" : "close-circle"} size={20} color="#FFF" style={{ marginRight: 8 }} />
-                                                <Text style={styles.watchToggleText}>
-                                                    {isVidkingAvailable ? (type === 'tv' ? 'Watch Show' : 'Watch Movie') : (type === 'tv' ? 'Show Not Available' : 'Movie Not Available')}
-                                                </Text>
+                                                <Text style={styles.watchToggleText}>{isVidkingAvailable ? (type === 'tv' ? 'Watch Show' : 'Watch Movie') : (type === 'tv' ? 'Show Not Available' : 'Movie Not Available')}</Text>
                                             </>
                                         )}
                                     </LinearGradient>
                                 </TouchableOpacity>
                             )
                         )}
-
                         {activeMediaView === 'movie' && type === 'tv' && tvSeasons.length > 0 && !streamUrl && (
                             <View style={styles.tvControlsContainer}>
                                 <Text style={styles.tvControlsLabel}>Select Season</Text>
                                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tvControlsRow}>
                                     {tvSeasons.map((season) => (
-                                        <TouchableOpacity
-                                            key={`season-${season.season_number}`}
-                                            style={[styles.tvChip, selectedSeason === season.season_number && styles.tvChipActive]}
-                                            onPress={() => {
-                                                setSelectedSeason(season.season_number);
-                                                setSelectedEpisode(1);
-                                            }}
-                                        >
-                                            <Text style={[styles.tvChipText, selectedSeason === season.season_number && styles.tvChipTextActive]}>
-                                                Season {season.season_number}
-                                            </Text>
+                                        <TouchableOpacity key={`season-${season.season_number}`} style={[styles.tvChip, selectedSeason === season.season_number && styles.tvChipActive]} onPress={() => { setSelectedSeason(season.season_number); setSelectedEpisode(1); }}>
+                                            <Text style={[styles.tvChipText, selectedSeason === season.season_number && styles.tvChipTextActive]}>Season {season.season_number}</Text>
                                         </TouchableOpacity>
                                     ))}
                                 </ScrollView>
-
                                 <Text style={styles.tvControlsLabel}>Select Episode</Text>
                                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tvControlsRow}>
                                     {episodesArray.map((ep) => (
-                                        <TouchableOpacity
-                                            key={`ep-${ep}`}
-                                            style={[styles.tvChip, selectedEpisode === ep && styles.tvChipActive]}
-                                            onPress={() => setSelectedEpisode(ep)}
-                                        >
-                                            <Text style={[styles.tvChipText, selectedEpisode === ep && styles.tvChipTextActive]}>
-                                                Episode {ep}
-                                            </Text>
+                                        <TouchableOpacity key={`ep-${ep}`} style={[styles.tvChip, selectedEpisode === ep && styles.tvChipActive]} onPress={() => setSelectedEpisode(ep)}>
+                                            <Text style={[styles.tvChipText, selectedEpisode === ep && styles.tvChipTextActive]}>Episode {ep}</Text>
                                         </TouchableOpacity>
                                     ))}
                                 </ScrollView>
                             </View>
                         )}
-
                         <View style={styles.metaRow}>
                             {year ? <Text style={styles.metaText}>{year}</Text> : null}
                             {year && languages ? <Text style={styles.metaDot}>•</Text> : null}
@@ -697,99 +992,8 @@ export default function PlayerScreen() {
                                 </>
                             )}
                         </View>
-
-                        {streamingPlatforms.length > 0 && !streamUrl && (
-                            <View style={styles.providersContainer}>
-                                <Text style={styles.providersTitle}>Available to Stream on:</Text>
-                                <View style={styles.providerIconsRow}>
-                                    {streamingPlatforms.map(provider => (
-                                        <Image
-                                            key={provider.provider_id}
-                                            source={{ uri: getImageUrl(provider.logo_path, 'w92') }}
-                                            style={styles.providerLogo}
-                                        />
-                                    ))}
-                                </View>
-                            </View>
-                        )}
-
-                        {mediaDetails.overview ? (
-                            <Text style={styles.overviewText}>{mediaDetails.overview}</Text>
-                        ) : null}
+                        {mediaDetails.overview ? <Text style={styles.overviewText}>{mediaDetails.overview}</Text> : null}
                     </View>
-
-                    {!ytId && !streamUrl && relatedYtClips.length > 0 && (
-                        <View style={styles.sectionContainer}>
-                            <Text style={styles.sectionTitle}>Related on YouTube</Text>
-                            <FlatList
-                                horizontal
-                                showsHorizontalScrollIndicator={false}
-                                data={relatedYtClips}
-                                keyExtractor={(item, index) => item.id?.videoId || index.toString()}
-                                contentContainerStyle={styles.listContent}
-                                renderItem={({ item }) => (
-                                    <TouchableOpacity
-                                        style={styles.ytCard}
-                                        activeOpacity={0.7}
-                                        onPress={() => {
-                                            setActiveMediaView('trailer');
-                                            setTrailerKey(item.id.videoId);
-                                            setHasStarted(false);
-                                            setIsPlaying(true);
-                                        }}
-                                    >
-                                        <Image source={{ uri: item.snippet?.thumbnails?.medium?.url }} style={styles.ytCardImage} />
-                                        <View style={styles.ytPlayIconOverlay}>
-                                            <Ionicons name="play-circle" size={32} color="rgba(255,255,255,0.8)" />
-                                        </View>
-                                        <Text style={styles.ytCardTitle} numberOfLines={2}>{item.snippet?.title}</Text>
-                                    </TouchableOpacity>
-                                )}
-                            />
-                        </View>
-                    )}
-
-                    {!streamUrl && similarMedia.length > 0 && (
-                        <View style={styles.sectionContainer}>
-                            <Text style={styles.sectionTitle}>More Like This</Text>
-                            <FlatList
-                                horizontal
-                                showsHorizontalScrollIndicator={false}
-                                data={similarMedia}
-                                extraData={{ watchlist, watched }}
-                                keyExtractor={(item) => item.id.toString()}
-                                contentContainerStyle={styles.listContent}
-                                renderItem={({ item }) => {
-                                    const inWatchlist = watchlist[item.id];
-                                    const inWatched = watched[item.id];
-                                    const simType = item.media_type || type;
-
-                                    return (
-                                        <TouchableOpacity
-                                            style={styles.standardCard}
-                                            activeOpacity={0.7}
-                                            onPress={() => router.push({ pathname: '/player', params: { id: item.id, type: simType } })}
-                                        >
-                                            <Image source={{ uri: getImageUrl(item.poster_path) }} style={styles.cardImage} />
-                                            <LinearGradient colors={['transparent', 'rgba(0,0,0,0.9)']} style={styles.cardBottomGradient} />
-                                            <View style={styles.translucentRatingBadge}>
-                                                <Ionicons name="star" size={10} color="#F5C518" />
-                                                <Text style={styles.smallCardRatingText}>{item.vote_average?.toFixed(1) || 'NR'}</Text>
-                                            </View>
-                                            <View style={styles.smallCardActions}>
-                                                <TouchableOpacity style={styles.smallIconBtn} onPress={() => handleAuthAction(() => handleToggleAction(item.id, simType, 'watchlist'))}>
-                                                    <Ionicons name={inWatchlist ? "bookmark" : "bookmark-outline"} size={14} color={inWatchlist ? "#F5C518" : "#FFFFFF"} />
-                                                </TouchableOpacity>
-                                                <TouchableOpacity style={styles.smallIconBtn} onPress={() => handleAuthAction(() => handleToggleAction(item.id, simType, 'watched'))}>
-                                                    <Ionicons name="checkmark-done" size={14} color={inWatched ? "#1F80E0" : "#FFFFFF"} />
-                                                </TouchableOpacity>
-                                            </View>
-                                        </TouchableOpacity>
-                                    );
-                                }}
-                            />
-                        </View>
-                    )}
                 </ScrollView>
             </View>
         </SafeAreaView>
@@ -800,37 +1004,21 @@ const styles = StyleSheet.create({
     safeArea: { flex: 1, backgroundColor: '#000' },
     container: { flex: 1, backgroundColor: '#0A0A0C' },
     scrollContent: {},
-
     playerContainer: { position: 'relative', backgroundColor: '#000' },
     videoThumbnail: { width: '100%', height: '100%', position: 'absolute' },
     playerOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'center', alignItems: 'center', zIndex: 5 },
-
     noTrailerText: { color: '#FFFFFF', fontSize: 16, fontWeight: 'bold', backgroundColor: 'rgba(0,0,0,0.5)', padding: 10, borderRadius: 8 },
-
-    fullscreenExitBtn: {
-        position: 'absolute',
-        top: 20,
-        left: 20,
-        zIndex: 99999,
-        backgroundColor: 'rgba(0,0,0,0.7)',
-        padding: 8,
-        borderRadius: 20
-    },
-
+    fullscreenExitBtn: { position: 'absolute', top: 20, left: 20, zIndex: 99999, backgroundColor: 'rgba(0,0,0,0.7)', padding: 8, borderRadius: 20 },
     externalControlBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#14141A', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.08)' },
     externalLeftControls: { flexDirection: 'row', gap: 12 },
-
     externalRightControls: { flexDirection: 'row', gap: 10, alignItems: 'center' },
     externalBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(255,255,255,0.08)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
     externalBtnText: { color: '#FFFFFF', fontSize: 13, fontWeight: '600' },
-
     detailsContainer: { paddingHorizontal: 16, paddingTop: 20 },
     mediaTitle: { color: '#FFFFFF', fontSize: 26, fontWeight: 'bold', marginBottom: 8 },
-
     watchToggleBtn: { marginTop: 4, marginBottom: 16, borderRadius: 10, overflow: 'hidden' },
     watchToggleGradient: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 14 },
     watchToggleText: { color: '#FFFFFF', fontSize: 16, fontWeight: 'bold' },
-
     tvControlsContainer: { marginBottom: 16, backgroundColor: 'rgba(255,255,255,0.02)', padding: 12, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
     tvControlsLabel: { color: '#FFFFFF', fontSize: 13, fontWeight: 'bold', marginBottom: 10, letterSpacing: 0.5, textTransform: 'uppercase' },
     tvControlsRow: { gap: 10, paddingBottom: 6 },
@@ -838,88 +1026,42 @@ const styles = StyleSheet.create({
     tvChipActive: { backgroundColor: 'rgba(0, 229, 255, 0.15)', borderColor: '#00E5FF' },
     tvChipText: { color: '#8F98A0', fontSize: 13, fontWeight: '600' },
     tvChipTextActive: { color: '#00E5FF', fontWeight: 'bold' },
-
     metaRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
     metaText: { color: '#A0A0A5', fontSize: 14, fontWeight: '600' },
     metaDot: { color: '#A0A0A5', fontSize: 14, marginHorizontal: 8 },
     ratingBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(245, 197, 24, 0.15)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
     ratingText: { color: '#F5C518', fontSize: 13, fontWeight: 'bold', marginLeft: 4 },
     overviewText: { color: '#D0D0D5', fontSize: 15, lineHeight: 22, marginTop: 8 },
-
-    providersContainer: { marginBottom: 16, backgroundColor: 'rgba(255,255,255,0.05)', padding: 12, borderRadius: 8 },
-    providersTitle: { color: '#FFFFFF', fontSize: 14, fontWeight: 'bold', marginBottom: 8 },
-    providerIconsRow: { flexDirection: 'row', gap: 10 },
-    providerLogo: { width: 36, height: 36, borderRadius: 8 },
-
-    sectionContainer: { marginTop: 30 },
-    sectionTitle: { color: '#FFFFFF', fontSize: 20, fontWeight: 'bold', paddingHorizontal: 16, marginBottom: 16, letterSpacing: 0.2 },
-    listContent: { paddingHorizontal: 16, gap: 12 },
-
-    standardCard: { width: 125, height: 175, borderRadius: 8, overflow: 'hidden', backgroundColor: '#1E1428', position: 'relative' },
-    cardImage: { width: '100%', height: '100%', position: 'absolute' },
-    cardBottomGradient: { position: 'absolute', bottom: 0, left: 0, right: 0, height: '40%' },
-    translucentRatingBadge: { position: 'absolute', top: 6, left: 6, flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0, 0, 0, 0.6)', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 4 },
-    smallCardRatingText: { color: '#FFFFFF', fontSize: 10, fontWeight: 'bold', marginLeft: 3, marginTop: 1 },
-    smallCardActions: { position: 'absolute', top: 6, right: 6, gap: 6 },
-    smallIconBtn: { width: 26, height: 26, borderRadius: 13, backgroundColor: 'rgba(0, 0, 0, 0.65)', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.3)' },
-
-    ytCard: { width: 180, marginRight: 12 },
-    ytCardImage: { width: '100%', height: 101, borderRadius: 8, backgroundColor: '#1E1428' },
-    ytPlayIconOverlay: { position: 'absolute', top: 35, left: 74, zIndex: 2 },
-    ytCardTitle: { color: '#D0D0D5', fontSize: 13, marginTop: 8, fontWeight: '500' },
-
-    // --- CUSTOM LIVE STREAM UI STYLES ---
-    liveStreamOverlay: {
-        position: 'absolute',
-        top: 0,
-        left: 0,
-        width: '100%',
-        height: '100%',
-        backgroundColor: 'rgba(0,0,0,0.15)',
-        justifyContent: 'center',
-        alignItems: 'center',
-        zIndex: 10,
-    },
-    liveBadgeContainer: {
-        position: 'absolute',
-        top: 20,
-        left: 20,
-        flexDirection: 'row',
-        alignItems: 'center',
-        backgroundColor: 'rgba(255, 0, 122, 0.15)',
-        paddingHorizontal: 10,
-        paddingVertical: 5,
-        borderRadius: 6,
-        borderWidth: 1,
-        borderColor: 'rgba(255, 0, 122, 0.5)'
-    },
-    liveDot: {
-        width: 8,
-        height: 8,
-        borderRadius: 4,
-        backgroundColor: '#FF007A',
-        marginRight: 6
-    },
-    liveBadgeText: {
-        color: '#FF007A',
-        fontSize: 12,
-        fontWeight: '900',
-        letterSpacing: 1
-    },
-    gradientPlayWrapper: {
-        width: 56,
-        height: 56,
-        borderRadius: 28,
-        elevation: 8,
-        shadowColor: '#FF007A',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.5,
-        shadowRadius: 8,
-    },
-    gradientPlayInner: {
-        flex: 1,
-        justifyContent: 'center',
-        alignItems: 'center',
-        borderRadius: 28
-    }
+    liveStreamOverlay: { position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', backgroundColor: 'rgba(0,0,0,0.15)', justifyContent: 'center', alignItems: 'center', zIndex: 10 },
+    liveBadgeContainer: { position: 'absolute', top: 20, left: 20, flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255, 0, 122, 0.15)', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, borderWidth: 1, borderColor: 'rgba(255, 0, 122, 0.5)' },
+    liveDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#FF007A', marginRight: 6 },
+    liveBadgeText: { color: '#FF007A', fontSize: 12, fontWeight: '900', letterSpacing: 1 },
+    gradientPlayWrapper: { width: 56, height: 56, borderRadius: 28, elevation: 8, shadowColor: '#FF007A', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.5, shadowRadius: 8 },
+    gradientPlayInner: { flex: 1, justifyContent: 'center', alignItems: 'center', borderRadius: 28 },
+    musicFixedHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingTop: 10, paddingBottom: 10, zIndex: 10 },
+    musicHeaderSubtitle: { color: '#8F98A0', fontSize: 10, fontWeight: 'bold', letterSpacing: 1.5, marginBottom: 4 },
+    musicHeaderTitle: { color: '#FFFFFF', fontSize: 16, fontWeight: '600', maxWidth: 250, textAlign: 'center' },
+    albumArtContainer: { alignItems: 'center', marginTop: 20, marginBottom: 40, shadowColor: '#00E5FF', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.3, shadowRadius: 20, elevation: 15 },
+    albumArt: { borderRadius: 20, backgroundColor: '#1E1428' },
+    musicTrackInfo: { marginBottom: 30 },
+    musicLargeTitle: { color: '#FFFFFF', fontSize: 26, fontWeight: 'bold', textAlign: 'center', marginBottom: 8 },
+    musicLargeArtist: { color: '#00E5FF', fontSize: 16, fontWeight: '600', textAlign: 'center' },
+    musicControlsRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 40, marginBottom: 40 },
+    skipBtn: { padding: 10 },
+    neonPlayWrapper: { width: 76, height: 76, borderRadius: 38, elevation: 10, shadowColor: '#FF007A', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.6, shadowRadius: 12 },
+    neonPlayInner: { flex: 1, justifyContent: 'center', alignItems: 'center', borderRadius: 38 },
+    queueContainer: { paddingHorizontal: 20, paddingTop: 10, borderTopWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
+    queueTitle: { color: '#FFFFFF', fontSize: 18, fontWeight: 'bold', marginBottom: 16 },
+    queueItem: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#16161A', padding: 10, borderRadius: 12, marginBottom: 10, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
+    queueImage: { width: 48, height: 48, borderRadius: 8, backgroundColor: '#2A2A30' },
+    queueInfo: { flex: 1, marginLeft: 12, marginRight: 10 },
+    queueTrackTitle: { color: '#FFFFFF', fontSize: 14, fontWeight: 'bold', marginBottom: 4 },
+    queueTrackArtist: { color: '#8F98A0', fontSize: 12 },
+    seekContainer: { paddingHorizontal: 30, marginBottom: 20 },
+    progressBarTouchArea: { height: 30, justifyContent: 'center' },
+    progressBarBg: { height: 6, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 3, position: 'relative' },
+    progressBarFill: { height: '100%', borderRadius: 3 },
+    progressKnob: { position: 'absolute', top: -5, width: 16, height: 16, borderRadius: 8, backgroundColor: '#FFFFFF', elevation: 4, transform: [{ translateX: -8 }] },
+    timeRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 },
+    timeText: { color: '#8F98A0', fontSize: 12, fontWeight: '600' }
 });

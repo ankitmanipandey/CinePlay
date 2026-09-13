@@ -118,7 +118,7 @@ const AnimatedToast = ({ text1, text2, colors, iconName, onPress }) => {
   );
 };
 
-const toastConfig = {
+export const toastConfig = {
   hotstarSuccess: ({ text1, text2, onPress }) => (
     <AnimatedToast text1={text1} text2={text2} onPress={onPress} colors={['#1F80E0', '#D63484']} iconName="checkmark-circle" />
   ),
