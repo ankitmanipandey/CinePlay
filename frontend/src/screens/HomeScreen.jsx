@@ -51,7 +51,6 @@ const SWIPE_VELOCITY = 1.0;
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL;
 
-
 const normalizeString = (str) => {
     if (!str) return '';
     return str.replace(/\([^)]*\)/g, '').replace(/\[[^\]]*\]/g, '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase().trim();
@@ -59,10 +58,7 @@ const normalizeString = (str) => {
 
 // MULTI-API FALLBACK ENGINE FOR JIOSAAVN (Fixes Cloudflare Error 1027)
 const safeFetchJson = async (endpoint, options = {}) => {
-    // 1. Update primaryBase to your new Render URL
     const primaryBase = 'https://jiosaavn-api-47fm.onrender.com/api';
-
-    // 2. Keep the fallback just in case
     const fallbackBase = 'https://saavn.sumit.co/api';
 
     try {
@@ -201,7 +197,6 @@ const YTMusicFeed = ({ onPlayMusic }) => {
             const res = await fetch(`${BACKEND_URL}/user/music/liked`, { headers: { Authorization: `Bearer ${token}` } });
             const json = await res.json();
 
-            // FIX: Ensure we handle backend errors properly so it doesn't fail silently
             if (res.ok && json.data) {
                 setLikedSongsList(json.data);
             } else {
@@ -711,7 +706,7 @@ const LiveTvFeed = ({ selectedCategory, selectedLanguage, onNavigateToPlayer }) 
 
 const FilterDropdown = ({ filters, setFilter, onClose }) => {
     const regionOptions = [{ l: 'All', v: 'all' }, { l: 'Indian', v: 'indian' }, { l: 'Others', v: 'others' }];
-    const typeOptions = [{ l: 'All', v: 'all' }, { l: 'Movies', v: 'movie' }, { l: 'TV Shows / Web Series', v: 'tv' }, { l: 'Live Sports & TV', v: 'live' }, { l: 'Music', v: 'music' }];
+    const typeOptions = [{ l: 'All', v: 'all' }, { l: 'Movies', v: 'movie' }, { l: 'TV Shows / Web Series', v: 'tv' }, { l: 'Music', v: 'music' }, { l: 'Live Sports & TV', v: 'live' }];
     const langOptions = [{ l: 'Any', v: 'any' }, { l: 'Hindi', v: 'hi' }, { l: 'English', v: 'en' }, { l: 'Punjabi', v: 'pa' }, { l: 'Tamil', v: 'ta' }, { l: 'Others', v: 'others' }];
     const platformOptions = [{ l: 'Any', v: 'any' }, { l: 'Netflix', v: '8' }, { l: 'Prime Video', v: '119' }, { l: 'JioHotstar', v: '122|220|337' }, { l: 'SonyLIV', v: '237' }, { l: 'Zee5', v: '232' }];
     const liveOptions = [{ l: 'Cricket (Scores)', v: 'Cricket' }, { l: 'Football (Scores)', v: 'Football' }, { l: 'Basketball (Scores)', v: 'Basketball' }, { l: 'Live News', v: 'news' }, { l: 'Live Music', v: 'music' }, { l: 'Entertainment TV', v: 'entertainment' }, { l: 'Movies TV', v: 'movies' }];
@@ -966,6 +961,7 @@ const HomeScreen = () => {
     const globalMusicPlayer = useVideoPlayer(null, (player) => {
         player.loop = false;
         player.staysActiveInBackground = true;
+        player.showNowPlayingNotification = true;
     });
 
     const handleNavigateToPlayer = useCallback((params) => {
@@ -979,10 +975,6 @@ const HomeScreen = () => {
     }, [isMusicPlaying, globalMusicPlayer, router]);
 
     const handlePlayMusic = (track, initialQueue) => {
-        console.log("=== PLAY MUSIC TRIGGERED ===");
-        console.log("Clicked Track:", track.title || track.name, "| ID:", track.id);
-        console.log("Initial Queue Length:", initialQueue?.length);
-
         const refinedQueue = initialQueue
             .map(s => {
                 const actualStreamUrl = s.downloadUrl?.find?.(d => d.quality === '320kbps')?.url
@@ -1003,11 +995,8 @@ const HomeScreen = () => {
             })
             .filter(s => {
                 const valid = s.url && (s.url.includes('.mp4') || s.url.includes('.aac') || s.url.includes('http'));
-                if (!valid) console.log("   - Filtered out invalid URL for track:", s.title);
                 return valid;
             });
-
-        console.log("Refined Queue Length (Valid URLs):", refinedQueue.length);
 
         // STRICT DEDUPLICATION PRESERVING ORIGINAL ORDER
         const seenNames = new Set();
@@ -1021,16 +1010,11 @@ const HomeScreen = () => {
             }
         }
 
-        console.log("Final Queue Length (Post-Dedup):", finalQueue.length);
-
         // FIND THE SELECTED TRACK IN THE DEDUPLICATED QUEUE
         const targetTitleNorm = normalizeString(track.title || track.name);
         let selectedIndex = finalQueue.findIndex(s => String(s.id) === String(track.id) || normalizeString(s.title) === targetTitleNorm);
 
-        console.log("Selected Index found at:", selectedIndex);
-
         if (selectedIndex === -1) {
-            console.log("Track not found in queue! Injecting at top.");
             const formattedTrack = {
                 id: track.id,
                 title: track.title || track.name,
@@ -1045,7 +1029,6 @@ const HomeScreen = () => {
         playingTrackId.current = null; // Force reload
         setMusicQueue(finalQueue);
         setCurrentMusicIndex(selectedIndex);
-        console.log("=== QUEUE SET EXECUTED ===");
     };
 
     const extendQueueIfNeeded = useCallback(async (index, queue) => {
@@ -1109,7 +1092,6 @@ const HomeScreen = () => {
                 });
             }
         } catch (e) {
-            console.log("Queue extend error:", e);
         } finally {
             isFetchingQueue.current = false;
         }
@@ -1142,7 +1124,7 @@ const HomeScreen = () => {
                 setMusicProgress(0);
 
                 globalMusicPlayer.pause();
-                await globalMusicPlayer.replaceAsync(track.url);
+                await globalMusicPlayer.replaceAsync({ uri: track.url, metadata: { title: track.title, artist: track.artist, artwork: track.image, }, });
 
                 if (requestId !== playRequestId.current) return;
 

@@ -119,12 +119,11 @@ export default function PlayerScreen() {
                 .then(data => {
                     if (data.likedSongs) {
                         const initialPrefs = {};
-                        // Pre-fill the hearts for all previously liked songs
                         data.likedSongs.forEach(id => { initialPrefs[id] = 'like'; });
                         setMusicPrefs(initialPrefs);
                     }
                 })
-                .catch(err => console.log("Failed to sync liked songs:", err));
+                .catch(() => { });
         }
     }, [token]);
 
@@ -133,6 +132,7 @@ export default function PlayerScreen() {
     const livePlayer = useVideoPlayer(null, (player) => {
         player.loop = false;
         player.staysActiveInBackground = true;
+        player.showNowPlayingNotification = true;
     });
 
     const handleMusicAction = async (songId, action) => {
@@ -154,7 +154,6 @@ export default function PlayerScreen() {
             finalAction = musicPrefs[songId] === 'like' ? 'removeLike' : 'like';
         }
 
-        // 🛑 FIX: Only update the local UI state if the action is like/dislike
         if (action !== 'listen') {
             setMusicPrefs(prev => ({ ...prev, [songId]: finalAction === 'removeLike' ? null : finalAction }));
         }
@@ -227,14 +226,12 @@ export default function PlayerScreen() {
                     });
 
                     const finalTracks = filteredTracks.slice(0, 10);
-                    // 🛑 CRITICAL FIX: Stop infinite loop if all fetched tracks were duplicates
                     if (finalTracks.length === 0) return prev;
 
                     return [...prev, ...finalTracks];
                 });
             }
         } catch (e) {
-            console.log("Queue extend error:", e);
         } finally {
             isFetchingQueue.current = false;
         }
@@ -245,11 +242,9 @@ export default function PlayerScreen() {
 
         const track = musicQueue[currentMusicIndex];
 
-        // 🛑 CRITICAL FIX: Guard MUST be called before extendQueueIfNeeded
         if (playingTrackId.current === track.id) return;
         playingTrackId.current = track.id;
 
-        // Now it is safe to check for extension
         extendQueueIfNeeded(currentMusicIndex, musicQueue);
 
         const requestId = ++playRequestId.current;
@@ -266,7 +261,14 @@ export default function PlayerScreen() {
             try {
                 setIsPlaying(false);
                 setMusicProgress(0);
-                await livePlayer.replaceAsync(track.url);
+                await livePlayer.replaceAsync({
+                    uri: track.url,
+                    metadata: {
+                        title: track.title,
+                        artist: track.artist,
+                        artwork: track.image,
+                    },
+                });
                 if (requestId !== playRequestId.current) return;
                 livePlayer.play();
                 setIsPlaying(true);
@@ -366,7 +368,6 @@ export default function PlayerScreen() {
                             });
                         }
                     } catch (e) {
-                        console.log("Queue fetch error:", e);
                     }
 
                     setIsLoading(false);
@@ -376,7 +377,10 @@ export default function PlayerScreen() {
                 if (streamUrl) {
                     setMediaDetails({ title: channelName || "Live TV Broadcast", overview: "Streaming live broadcast...", vote_average: 0 });
                     try {
-                        await livePlayer.replaceAsync(streamUrl);
+                        await livePlayer.replaceAsync({
+                            uri: streamUrl,
+                            metadata: { title: channelName, artist: 'Live TV', artwork: artworkUrl },
+                        });
                         livePlayer.play();
                         setHasStarted(true);
                         setIsPlaying(true);
@@ -505,7 +509,7 @@ export default function PlayerScreen() {
             const newRoomId = Math.floor(10000 + Math.random() * 90000).toString();
             let vidId = '';
 
-            if (id && type) {
+            if (id && type && activeMediaView === 'movie') {
                 vidId = type === 'tv'
                     ? `VIDKING:tv:${id}:${selectedSeason}:${selectedEpisode}`
                     : `VIDKING:movie:${id}`;
@@ -705,7 +709,6 @@ export default function PlayerScreen() {
 
                         <View style={styles.queueContainer}>
                             <Text style={styles.queueTitle}>Playlist</Text>
-                            {/* MAP OVER FULL LIST SO PREVIOUS SONGS STAY VISIBLE */}
                             {musicQueue.map((track, index) => {
                                 const isActive = index === currentMusicIndex;
                                 return (
@@ -924,6 +927,7 @@ export default function PlayerScreen() {
                 <ScrollView style={{ display: isFullScreen ? 'none' : 'flex' }} showsVerticalScrollIndicator={false} contentContainerStyle={[styles.scrollContent, { paddingBottom: TAB_BAR_HEIGHT + 20 }]}>
                     <View style={styles.detailsContainer}>
                         <Text style={styles.mediaTitle}>{title}</Text>
+
                         {!streamUrl && (
                             ytId ? (
                                 <TouchableOpacity style={styles.watchToggleBtn} activeOpacity={0.8} onPress={handleCreateWatchParty}>
@@ -958,6 +962,8 @@ export default function PlayerScreen() {
                                 </TouchableOpacity>
                             )
                         )}
+
+                        {/* TV SHOW SEASON & EPISODE SELECTORS */}
                         {activeMediaView === 'movie' && type === 'tv' && tvSeasons.length > 0 && !streamUrl && (
                             <View style={styles.tvControlsContainer}>
                                 <Text style={styles.tvControlsLabel}>Select Season</Text>
@@ -978,6 +984,17 @@ export default function PlayerScreen() {
                                 </ScrollView>
                             </View>
                         )}
+
+                        {/* NEW: WATCH PARTY BUTTON FOR MOVIES & TV SHOWS */}
+                        {activeMediaView === 'movie' && !streamUrl && !ytId && isVidkingAvailable && (
+                            <TouchableOpacity style={styles.watchToggleBtn} activeOpacity={0.8} onPress={handleCreateWatchParty}>
+                                <LinearGradient colors={['#00E5FF', '#9B51E0']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.watchToggleGradient}>
+                                    <Ionicons name="people-circle" size={24} color="#FFF" style={{ marginRight: 8 }} />
+                                    <Text style={styles.watchToggleText}>Start Watch Party</Text>
+                                </LinearGradient>
+                            </TouchableOpacity>
+                        )}
+
                         <View style={styles.metaRow}>
                             {year ? <Text style={styles.metaText}>{year}</Text> : null}
                             {year && languages ? <Text style={styles.metaDot}>•</Text> : null}
