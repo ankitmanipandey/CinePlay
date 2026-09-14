@@ -5,12 +5,15 @@ import Constants from 'expo-constants';
 import axios from 'axios';
 import React, { useEffect, useState, useRef } from 'react';
 import { View, Text, StyleSheet, ActivityIndicator, Animated, Dimensions, Platform, PermissionsAndroid, Linking, BackHandler } from 'react-native';
-import { Stack, useRouter, usePathname } from 'expo-router'; // <-- Added usePathname
+import { Stack, useRouter, usePathname } from 'expo-router';
 import Toast from 'react-native-toast-message';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import * as SecureStore from 'expo-secure-store';
 import { ThemeProvider, DarkTheme } from 'expo-router/react-navigation';
+
+// <-- ADD THIS IMPORT -->
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 // --- GLOBAL STORES ---
 import { useAuthStore } from '../store/useAuthStore';
@@ -134,7 +137,7 @@ export default function RootLayout() {
   const [isLoading, setIsLoading] = useState(true);
 
   const router = useRouter();
-  const pathname = usePathname(); // <-- Track the current route
+  const pathname = usePathname();
 
   const restoreSession = useAuthStore((state) => state.restoreSession);
   const token = useAuthStore((state) => state.token);
@@ -290,7 +293,7 @@ export default function RootLayout() {
     const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
 
     return () => subscription.remove();
-  }, [router, pathname]); // <-- Added pathname to dependencies
+  }, [router, pathname]);
 
   if (isLoading) {
     return (
@@ -300,19 +303,22 @@ export default function RootLayout() {
     );
   }
 
+  // <-- WRAPPED THE ENTIRE RETURN BLOCK -->
   return (
-    <ThemeProvider value={DarkTheme}>
-      <Stack
-        screenOptions={{
-          headerShown: false,
-          contentStyle: { backgroundColor: '#0A0A0C' },
-          animation: 'slide_from_right',
-          gestureEnabled: true,
-          gestureDirection: 'horizontal',
-        }}
-      />
-      <Toast config={toastConfig} position="top" topOffset={50} />
-    </ThemeProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <ThemeProvider value={DarkTheme}>
+        <Stack
+          screenOptions={{
+            headerShown: false,
+            contentStyle: { backgroundColor: '#0A0A0C' },
+            animation: 'slide_from_right',
+            gestureEnabled: true,
+            gestureDirection: 'horizontal',
+          }}
+        />
+        <Toast config={toastConfig} position="top" topOffset={50} />
+      </ThemeProvider>
+    </GestureHandlerRootView>
   );
 }
 

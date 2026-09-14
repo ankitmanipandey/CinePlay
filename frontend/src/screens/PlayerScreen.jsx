@@ -70,6 +70,15 @@ const formatTime = (seconds) => {
     return `${m}:${s < 10 ? '0' : ''}${s}`;
 };
 
+// --- Mini player collapse thresholds (scrollY breakpoints, in px) ---
+// 0                -> MINI_START   : full hero view (big art, like/dislike, full transport, full progress bar)
+// MINI_START       -> MINI_PEAK    : "mid" state — mini bar fading in, thin progress bar visible (YT Music style)
+// MINI_PEAK        -> MINI_END     : progress bar fades OUT, mini bar finishes docking as a clean icon-only strip
+// MINI_END+                        : fully collapsed sticky bar, no progress bar
+const MINI_START = 110;
+const MINI_PEAK = 190;
+const MINI_END = 260;
+
 export default function PlayerScreen() {
     const router = useRouter();
     const insets = useSafeAreaInsets();
@@ -103,12 +112,21 @@ export default function PlayerScreen() {
     const [currentMusicIndex, setCurrentMusicIndex] = useState(0);
     const [musicPrefs, setMusicPrefs] = useState({});
 
+    // Shuffle & Loop states
+    const [isShuffle, setIsShuffle] = useState(false);
+    const [loopMode, setLoopMode] = useState(0); // 0=off, 1=all, 2=one
+
     const [musicProgress, setMusicProgress] = useState(0);
     const [musicDuration, setMusicDuration] = useState(0);
     const [barWidth, setBarWidth] = useState(0);
+    const [miniBarWidth, setMiniBarWidth] = useState(0);
     const scrollY = useRef(new Animated.Value(0)).current;
     const playRequestId = useRef(0);
     const isFetchingQueue = useRef(false);
+
+    // Tracks whether the mini bar is far enough along to accept taps (avoids
+    // ghost-touches on the queue underneath while it's still fading in).
+    const [miniBarInteractive, setMiniBarInteractive] = useState(false);
 
     const { watchlist, watched, toggleWatchlist, toggleWatched } = useUserListStore();
     const { token } = useAuthStore();
@@ -169,9 +187,7 @@ export default function PlayerScreen() {
                 Toast.show({ type: 'hotstarSuccess', text1: 'Saved to Liked Songs' });
             } else if (finalAction === 'dislike') {
                 Toast.show({ type: 'hotstarSuccess', text1: 'We will recommend less of this' });
-                if (currentMusicIndex < musicQueue.length - 1) {
-                    setCurrentMusicIndex(prev => prev + 1);
-                }
+                handleNextTrack();
             }
         } catch (error) {
             console.error('Failed to register interaction:', error);
@@ -237,6 +253,31 @@ export default function PlayerScreen() {
         }
     }, [token]);
 
+    const handleNextTrack = useCallback(() => {
+        if (isShuffle) {
+            setCurrentMusicIndex(Math.floor(Math.random() * musicQueue.length));
+        } else if (currentMusicIndex < musicQueue.length - 1) {
+            setCurrentMusicIndex(prev => prev + 1);
+        } else if (loopMode === 1) { // Loop All
+            setCurrentMusicIndex(0);
+        } else {
+            livePlayer.pause();
+            setIsPlaying(false);
+        }
+    }, [isShuffle, loopMode, currentMusicIndex, musicQueue.length, livePlayer]);
+
+    const handlePrevTrack = useCallback(() => {
+        if (musicProgress > 3) {
+            livePlayer.currentTime = 0;
+        } else if (isShuffle) {
+            setCurrentMusicIndex(Math.floor(Math.random() * musicQueue.length));
+        } else if (currentMusicIndex > 0) {
+            setCurrentMusicIndex(prev => prev - 1);
+        } else if (loopMode === 1) { // Loop All
+            setCurrentMusicIndex(musicQueue.length - 1);
+        }
+    }, [isShuffle, loopMode, currentMusicIndex, musicQueue.length, musicProgress, livePlayer]);
+
     useEffect(() => {
         if (type !== 'music' || currentMusicIndex < 0 || !musicQueue[currentMusicIndex]) return;
 
@@ -251,9 +292,7 @@ export default function PlayerScreen() {
 
         if (!track.url) {
             console.warn('Track has no url, skipping:', track.title);
-            if (currentMusicIndex < musicQueue.length - 1) {
-                setCurrentMusicIndex(prev => prev + 1);
-            }
+            handleNextTrack();
             return;
         }
 
@@ -277,9 +316,7 @@ export default function PlayerScreen() {
                 console.error('Failed to load track:', track.title, err?.message || err);
                 setIsPlaying(false);
                 Toast.show({ type: 'error', text1: `Couldn't play "${track.title}", skipping...` });
-                if (currentMusicIndex < musicQueue.length - 1) {
-                    setCurrentMusicIndex(prev => prev + 1);
-                }
+                handleNextTrack();
             }
         })();
     }, [currentMusicIndex, musicQueue, type, livePlayer, extendQueueIfNeeded]);
@@ -295,18 +332,33 @@ export default function PlayerScreen() {
 
         const sub = livePlayer.addListener('playToEnd', async () => {
             setIsPlaying(false);
-            if (currentMusicIndex < musicQueue.length - 1) {
-                setCurrentMusicIndex(prev => prev + 1);
+            if (loopMode === 2) { // Loop One
+                livePlayer.currentTime = 0;
+                livePlayer.play();
+                setIsPlaying(true);
+            } else {
+                handleNextTrack();
             }
         });
 
         return () => { clearInterval(interval); sub?.remove(); };
-    }, [livePlayer, currentMusicIndex, musicQueue, isPlaying, type]);
+    }, [livePlayer, currentMusicIndex, musicQueue, isPlaying, type, loopMode, handleNextTrack]);
 
     const handleSeek = (event) => {
         if (barWidth > 0 && musicDuration > 0) {
             const tapX = event.nativeEvent.locationX;
             const percentage = Math.max(0, Math.min(1, tapX / barWidth));
+            const newTime = percentage * musicDuration;
+            livePlayer.currentTime = newTime;
+            setMusicProgress(newTime);
+        }
+    };
+
+    // Same seek behaviour, but scoped to the mini bar's own thin progress line.
+    const handleMiniSeek = (event) => {
+        if (miniBarWidth > 0 && musicDuration > 0) {
+            const tapX = event.nativeEvent.locationX;
+            const percentage = Math.max(0, Math.min(1, tapX / miniBarWidth));
             const newTime = percentage * musicDuration;
             livePlayer.currentTime = newTime;
             setMusicProgress(newTime);
@@ -332,6 +384,16 @@ export default function PlayerScreen() {
             if (controlsTimer.current) clearTimeout(controlsTimer.current);
         };
     }, [resetControlsTimer]);
+
+    // Drives miniBarInteractive off the same scrollY driving the animation,
+    // so taps on the docked bar only register once it's mostly visible.
+    useEffect(() => {
+        const id = scrollY.addListener(({ value }) => {
+            const shouldBeInteractive = value > MINI_START + (MINI_PEAK - MINI_START) * 0.5;
+            setMiniBarInteractive(prev => (prev !== shouldBeInteractive ? shouldBeInteractive : prev));
+        });
+        return () => scrollY.removeListener(id);
+    }, [scrollY]);
 
     useEffect(() => {
         const fetchAllData = async () => {
@@ -565,18 +627,15 @@ export default function PlayerScreen() {
         onPanResponderRelease: (evt, gestureState) => {
             const { dx, dy } = gestureState;
             if (Math.abs(dx) > 60) {
-                if (dx > 0) {
-                    if (currentMusicIndex > 0) setCurrentMusicIndex(prev => prev - 1);
-                } else {
-                    if (currentMusicIndex < musicQueue.length - 1) setCurrentMusicIndex(prev => prev + 1);
-                }
+                if (dx > 0) handlePrevTrack();
+                else handleNextTrack();
             } else if (dy > 60) {
                 router.back();
             } else if (Math.abs(dx) < 10 && Math.abs(dy) < 10) {
                 if (musicQueue[currentMusicIndex]) handleDoubleTapLike(musicQueue[currentMusicIndex].id);
             }
         }
-    }), [currentMusicIndex, musicQueue, lastTap]);
+    }), [currentMusicIndex, musicQueue, lastTap, handleNextTrack, handlePrevTrack]);
 
     if (isLoading) {
         return (
@@ -607,15 +666,55 @@ export default function PlayerScreen() {
     if (type === 'music') {
         const currentTrack = musicQueue[currentMusicIndex] || {};
 
+        // 1. ANIMATION CONSTANTS
+        const SCROLL_RANGE = 260; // Total scroll distance for the morph
+        const ART_ORIG_SIZE = width * 0.75;
+        const ART_TARGET_SIZE = 48;
+        const ART_SCALE = ART_TARGET_SIZE / ART_ORIG_SIZE;
+
+        // 2. PIN THE HERO SECTION
+        // This exactly counteracts the scroll, freezing the hero container on screen.
+        const pinnedTranslateY = scrollY;
+
+        // 3. MORPH THE ALBUM ART
         const artScale = scrollY.interpolate({
-            inputRange: [-100, 0, 250],
-            outputRange: [1.1, 1, 0.65],
+            inputRange: [0, SCROLL_RANGE],
+            outputRange: [1, ART_SCALE],
             extrapolate: 'clamp'
         });
 
+        // Move to the top-left edge
+        const artTranslateX = scrollY.interpolate({
+            inputRange: [0, SCROLL_RANGE],
+            outputRange: [0, -(width / 2) + (ART_TARGET_SIZE / 2) + 20],
+            extrapolate: 'clamp'
+        });
+
+        // Move up to the header level
         const artTranslateY = scrollY.interpolate({
-            inputRange: [-100, 0, 250],
-            outputRange: [-20, 0, 60],
+            inputRange: [0, SCROLL_RANGE],
+            outputRange: [0, -(ART_ORIG_SIZE / 2) + 24],
+            extrapolate: 'clamp'
+        });
+
+        // 4. FADE OUT FULL CONTROLS
+        const heroOpacity = scrollY.interpolate({
+            inputRange: [0, SCROLL_RANGE * 0.5],
+            outputRange: [1, 0],
+            extrapolate: 'clamp'
+        });
+
+        // 5. FADE IN MINI CONTROLS (Next to shrunk art)
+        const miniOpacity = scrollY.interpolate({
+            inputRange: [SCROLL_RANGE * 0.7, SCROLL_RANGE],
+            outputRange: [0, 1],
+            extrapolate: 'clamp'
+        });
+
+        // 6. HEADER BACKGROUND (Blocks playlist text from bleeding through)
+        const headerBgOpacity = scrollY.interpolate({
+            inputRange: [SCROLL_RANGE * 0.5, SCROLL_RANGE],
+            outputRange: [0, 0.95],
             extrapolate: 'clamp'
         });
 
@@ -624,89 +723,134 @@ export default function PlayerScreen() {
                 <LinearGradient colors={['#170D22', '#0A0A0C']} style={styles.container}>
                     <VideoView player={livePlayer} style={{ width: 0, height: 0, position: 'absolute' }} nativeControls={false} />
 
+                    {/* FIXED TOP HEADER */}
                     <View style={styles.musicFixedHeader}>
-                        <TouchableOpacity onPress={handleBackPress} style={{ padding: 10 }}>
+                        <TouchableOpacity onPress={handleBackPress} style={{ padding: 10, zIndex: 30 }}>
                             <Ionicons name="chevron-down" size={28} color="#FFFFFF" />
                         </TouchableOpacity>
-                        <View style={{ alignItems: 'center' }}>
+
+                        <Animated.View style={{ alignItems: 'center', opacity: heroOpacity }}>
                             <Text style={styles.musicHeaderSubtitle}>NOW PLAYING</Text>
                             <Text style={styles.musicHeaderTitle} numberOfLines={1}>{currentTrack.title}</Text>
-                        </View>
+                        </Animated.View>
                         <View style={{ width: 48 }} />
                     </View>
 
                     <Animated.ScrollView
                         showsVerticalScrollIndicator={false}
-                        contentContainerStyle={{ paddingBottom: 40 }}
+                        contentContainerStyle={{ paddingBottom: TAB_BAR_HEIGHT + 40 }}
                         onScroll={Animated.event(
                             [{ nativeEvent: { contentOffset: { y: scrollY } } }],
                             { useNativeDriver: true }
                         )}
                         scrollEventThrottle={16}
                     >
-                        <View style={{ paddingTop: 10 }} {...panResponderMusic.panHandlers}>
-                            <Animated.View style={[styles.albumArtContainer, { transform: [{ scale: artScale }, { translateY: artTranslateY }] }]}>
-                                <Image source={{ uri: currentTrack.image }} style={[styles.albumArt, { width: width * 0.75, height: width * 0.75 }]} />
+                        {/* THE PINNED HERO WRAPPER */}
+                        <Animated.View style={{ zIndex: 10, transform: [{ translateY: pinnedTranslateY }] }} {...panResponderMusic.panHandlers}>
+
+                            {/* Solid background that fades in to hide the scrolling queue underneath */}
+                            <Animated.View style={{
+                                position: 'absolute', top: -100, left: 0, right: 0, height: 200,
+                                backgroundColor: '#170D22',
+                                opacity: headerBgOpacity,
+                                borderBottomWidth: 1,
+                                borderBottomColor: 'rgba(255,255,255,0.06)'
+                            }} />
+
+                            {/* ALBUM ART (Shrinks and moves into place) */}
+                            <Animated.View style={[styles.albumArtContainer, { transform: [{ translateX: artTranslateX }, { translateY: artTranslateY }, { scale: artScale }] }]}>
+                                <Image source={{ uri: currentTrack.image }} style={[styles.albumArt, { width: ART_ORIG_SIZE, height: ART_ORIG_SIZE }]} />
                             </Animated.View>
 
-                            <View style={[styles.musicTrackInfo, { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20 }]}>
-                                <TouchableOpacity onPress={() => handleMusicAction(currentTrack.id, 'dislike')} style={{ padding: 10 }}>
-                                    <Ionicons name="thumbs-down-outline" size={28} color="#8F98A0" />
-                                </TouchableOpacity>
-
-                                <View style={{ flex: 1, alignItems: 'center', paddingHorizontal: 10 }}>
-                                    <Text style={styles.musicLargeTitle} numberOfLines={1}>{currentTrack.title}</Text>
-                                    <Text style={styles.musicLargeArtist} numberOfLines={1}>{currentTrack.artist}</Text>
+                            {/* DOCKED MINI CONTROLS (Fade in seamlessly next to the art) */}
+                            <Animated.View
+                                style={{
+                                    position: 'absolute',
+                                    top: 24, // Matches the new Y position of the shrunk art
+                                    left: 80, // Sits exactly to the right of the 48px art
+                                    right: 20,
+                                    flexDirection: 'row',
+                                    alignItems: 'center',
+                                    justifyContent: 'space-between',
+                                    opacity: miniOpacity
+                                }}
+                                pointerEvents={miniBarInteractive ? 'auto' : 'none'}
+                            >
+                                <View style={{ flex: 1, marginRight: 10 }}>
+                                    <Text style={styles.miniPlayerTitle} numberOfLines={1}>{currentTrack.title}</Text>
+                                    <Text style={styles.miniPlayerArtist} numberOfLines={1}>{currentTrack.artist}</Text>
                                 </View>
+                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+                                    <TouchableOpacity onPress={handlePrevTrack}>
+                                        <Ionicons name="play-skip-back" size={24} color="#FFFFFF" />
+                                    </TouchableOpacity>
+                                    <TouchableOpacity onPress={() => { if (isPlaying) { livePlayer.pause(); setIsPlaying(false); } else { livePlayer.play(); setIsPlaying(true); } }}>
+                                        <Ionicons name={isPlaying ? "pause" : "play"} size={28} color="#FFFFFF" />
+                                    </TouchableOpacity>
+                                    <TouchableOpacity onPress={handleNextTrack}>
+                                        <Ionicons name="play-skip-forward" size={24} color="#FFFFFF" />
+                                    </TouchableOpacity>
+                                </View>
+                            </Animated.View>
 
-                                <TouchableOpacity onPress={() => handleMusicAction(currentTrack.id, 'toggleLike')} style={{ padding: 10 }}>
-                                    <Ionicons name={musicPrefs[currentTrack.id] === 'like' ? "heart" : "heart-outline"} size={28} color={musicPrefs[currentTrack.id] === 'like' ? "#FF007A" : "#FFF"} />
-                                </TouchableOpacity>
-                            </View>
+                            {/* FULL HERO CONTROLS (Fade out to reveal the queue sliding up) */}
+                            <Animated.View style={{ opacity: heroOpacity }}>
+                                <View style={[styles.musicTrackInfo, { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20 }]}>
+                                    <TouchableOpacity onPress={() => handleMusicAction(currentTrack.id, 'dislike')} style={{ padding: 10 }}>
+                                        <Ionicons name="thumbs-down-outline" size={28} color="#8F98A0" />
+                                    </TouchableOpacity>
 
-                            <View style={styles.seekContainer}>
-                                <TouchableOpacity activeOpacity={1} style={styles.progressBarTouchArea} onLayout={(e) => setBarWidth(e.nativeEvent.layout.width)} onPress={handleSeek}>
-                                    <View style={styles.progressBarBg}>
-                                        <LinearGradient colors={['#00E5FF', '#9B51E0']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={[styles.progressBarFill, { width: `${(musicProgress / (musicDuration || 1)) * 100}%` }]} />
-                                        <View style={[styles.progressKnob, { left: `${(musicProgress / (musicDuration || 1)) * 100}%` }]} />
+                                    <View style={{ flex: 1, alignItems: 'center', paddingHorizontal: 10 }}>
+                                        <Text style={styles.musicLargeTitle} numberOfLines={1}>{currentTrack.title}</Text>
+                                        <Text style={styles.musicLargeArtist} numberOfLines={1}>{currentTrack.artist}</Text>
                                     </View>
-                                </TouchableOpacity>
-                                <View style={styles.timeRow}>
-                                    <Text style={styles.timeText}>{formatTime(musicProgress)}</Text>
-                                    <Text style={styles.timeText}>{formatTime(musicDuration)}</Text>
+
+                                    <TouchableOpacity onPress={() => handleMusicAction(currentTrack.id, 'toggleLike')} style={{ padding: 10 }}>
+                                        <Ionicons name={musicPrefs[currentTrack.id] === 'like' ? "heart" : "heart-outline"} size={28} color={musicPrefs[currentTrack.id] === 'like' ? "#FF007A" : "#FFF"} />
+                                    </TouchableOpacity>
                                 </View>
-                            </View>
 
-                            <View style={styles.musicControlsRow}>
-                                <TouchableOpacity
-                                    onPress={() => { if (currentMusicIndex > 0) setCurrentMusicIndex(prev => prev - 1); }}
-                                    style={styles.skipBtn}
-                                >
-                                    <Ionicons name="play-skip-back" size={32} color={currentMusicIndex > 0 ? "#FFFFFF" : "#555"} />
-                                </TouchableOpacity>
+                                <View style={styles.seekContainer}>
+                                    <TouchableOpacity activeOpacity={1} style={styles.progressBarTouchArea} onLayout={(e) => setBarWidth(e.nativeEvent.layout.width)} onPress={handleSeek}>
+                                        <View style={styles.progressBarBg}>
+                                            <LinearGradient colors={['#00E5FF', '#9B51E0']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={[styles.progressBarFill, { width: `${(musicProgress / (musicDuration || 1)) * 100}%` }]} />
+                                            <View style={[styles.progressKnob, { left: `${(musicProgress / (musicDuration || 1)) * 100}%` }]} />
+                                        </View>
+                                    </TouchableOpacity>
+                                    <View style={styles.timeRow}>
+                                        <Text style={styles.timeText}>{formatTime(musicProgress)}</Text>
+                                        <Text style={styles.timeText}>{formatTime(musicDuration)}</Text>
+                                    </View>
+                                </View>
 
-                                <TouchableOpacity
-                                    style={styles.neonPlayWrapper}
-                                    activeOpacity={0.8}
-                                    onPress={() => {
-                                        if (isPlaying) { livePlayer.pause(); setIsPlaying(false); }
-                                        else { livePlayer.play(); setIsPlaying(true); }
-                                    }}
-                                >
-                                    <LinearGradient colors={['#00E5FF', '#9B51E0', '#FF007A']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.neonPlayInner}>
-                                        <Ionicons name={isPlaying ? "pause" : "play"} size={36} color="#FFFFFF" style={!isPlaying ? { marginLeft: 6 } : {}} />
-                                    </LinearGradient>
-                                </TouchableOpacity>
+                                <View style={styles.musicControlsRow}>
+                                    <TouchableOpacity onPress={() => setIsShuffle(!isShuffle)} style={{ padding: 10 }}>
+                                        <Ionicons name="shuffle" size={24} color={isShuffle ? "#00E5FF" : "#8F98A0"} />
+                                    </TouchableOpacity>
 
-                                <TouchableOpacity
-                                    onPress={() => { if (currentMusicIndex < musicQueue.length - 1) setCurrentMusicIndex(prev => prev + 1); }}
-                                    style={styles.skipBtn}
-                                >
-                                    <Ionicons name="play-skip-forward" size={32} color={currentMusicIndex < musicQueue.length - 1 ? "#FFFFFF" : "#555"} />
-                                </TouchableOpacity>
-                            </View>
-                        </View>
+                                    <TouchableOpacity onPress={handlePrevTrack} style={styles.skipBtn}>
+                                        <Ionicons name="play-skip-back" size={32} color={currentMusicIndex > 0 || isShuffle || loopMode === 1 ? "#FFFFFF" : "#555"} />
+                                    </TouchableOpacity>
 
+                                    <TouchableOpacity style={styles.neonPlayWrapper} activeOpacity={0.8} onPress={() => { resetControlsTimer(); if (isPlaying) { livePlayer.pause(); setIsPlaying(false); } else { livePlayer.play(); setIsPlaying(true); } }}>
+                                        <LinearGradient colors={['#00E5FF', '#9B51E0', '#FF007A']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.gradientPlayInner}>
+                                            <Ionicons name={isPlaying ? "pause" : "play"} size={36} color="#FFFFFF" style={!isPlaying ? { marginLeft: 6 } : {}} />
+                                        </LinearGradient>
+                                    </TouchableOpacity>
+
+                                    <TouchableOpacity onPress={handleNextTrack} style={styles.skipBtn}>
+                                        <Ionicons name="play-skip-forward" size={32} color={currentMusicIndex < musicQueue.length - 1 || isShuffle || loopMode === 1 ? "#FFFFFF" : "#555"} />
+                                    </TouchableOpacity>
+
+                                    <TouchableOpacity onPress={() => setLoopMode((prev) => (prev + 1) % 3)} style={{ padding: 10, position: 'relative' }}>
+                                        <Ionicons name="repeat" size={24} color={loopMode !== 0 ? "#00E5FF" : "#8F98A0"} />
+                                        {loopMode === 2 && <Text style={{ position: 'absolute', fontSize: 10, color: '#00E5FF', top: 10, right: 6, fontWeight: 'bold' }}>1</Text>}
+                                    </TouchableOpacity>
+                                </View>
+                            </Animated.View>
+                        </Animated.View>
+
+                        {/* PLAYLIST (Naturally slides up under the pinned header) */}
                         <View style={styles.queueContainer}>
                             <Text style={styles.queueTitle}>Playlist</Text>
                             {musicQueue.map((track, index) => {
@@ -985,7 +1129,7 @@ export default function PlayerScreen() {
                             </View>
                         )}
 
-                        {/* NEW: WATCH PARTY BUTTON FOR MOVIES & TV SHOWS */}
+                        {/* WATCH PARTY BUTTON FOR MOVIES & TV SHOWS */}
                         {activeMediaView === 'movie' && !streamUrl && !ytId && isVidkingAvailable && (
                             <TouchableOpacity style={styles.watchToggleBtn} activeOpacity={0.8} onPress={handleCreateWatchParty}>
                                 <LinearGradient colors={['#00E5FF', '#9B51E0']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.watchToggleGradient}>
@@ -1058,12 +1202,35 @@ const styles = StyleSheet.create({
     musicFixedHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingTop: 10, paddingBottom: 10, zIndex: 10 },
     musicHeaderSubtitle: { color: '#8F98A0', fontSize: 10, fontWeight: 'bold', letterSpacing: 1.5, marginBottom: 4 },
     musicHeaderTitle: { color: '#FFFFFF', fontSize: 16, fontWeight: '600', maxWidth: 250, textAlign: 'center' },
+
+    // --- Docked mini player bar ---
+    miniPlayerBar: {
+        position: 'absolute',
+        top: 62, // sits directly under musicFixedHeader
+        left: 0,
+        right: 0,
+        zIndex: 20,
+        backgroundColor: 'rgba(10, 8, 14, 0.92)',
+        borderBottomWidth: 1,
+        borderBottomColor: 'rgba(255,255,255,0.06)',
+        paddingBottom: 6,
+    },
+    miniPlayerRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 8 },
+    miniPlayerArt: { width: 40, height: 40, borderRadius: 8, backgroundColor: '#2A2A30' },
+    miniPlayerTextWrap: { flex: 1, marginLeft: 12, marginRight: 8 },
+    miniPlayerTitle: { color: '#FFFFFF', fontSize: 14, fontWeight: 'bold' },
+    miniPlayerArtist: { color: '#8F98A0', fontSize: 12, marginTop: 2 },
+    miniPlayerBtn: { paddingHorizontal: 6, paddingVertical: 4 },
+    miniProgressTouchArea: { height: 14, justifyContent: 'center', paddingHorizontal: 16 },
+    miniProgressBg: { height: 3, backgroundColor: 'rgba(255,255,255,0.12)', borderRadius: 2 },
+    miniProgressFill: { height: '100%', borderRadius: 2 },
+
     albumArtContainer: { alignItems: 'center', marginTop: 20, marginBottom: 40, shadowColor: '#00E5FF', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.3, shadowRadius: 20, elevation: 15 },
     albumArt: { borderRadius: 20, backgroundColor: '#1E1428' },
     musicTrackInfo: { marginBottom: 30 },
     musicLargeTitle: { color: '#FFFFFF', fontSize: 26, fontWeight: 'bold', textAlign: 'center', marginBottom: 8 },
     musicLargeArtist: { color: '#00E5FF', fontSize: 16, fontWeight: '600', textAlign: 'center' },
-    musicControlsRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 40, marginBottom: 40 },
+    musicControlsRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 24, marginBottom: 40 },
     skipBtn: { padding: 10 },
     neonPlayWrapper: { width: 76, height: 76, borderRadius: 38, elevation: 10, shadowColor: '#FF007A', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.6, shadowRadius: 12 },
     neonPlayInner: { flex: 1, justifyContent: 'center', alignItems: 'center', borderRadius: 38 },

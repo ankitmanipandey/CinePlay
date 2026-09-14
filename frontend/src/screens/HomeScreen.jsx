@@ -19,7 +19,11 @@ import {
     Modal,
     Keyboard
 } from 'react-native';
-import ReAnimated, { FadeIn, FadeOut, LinearTransition, FadeInDown, FadeInUp, FadeOutUp } from 'react-native-reanimated';
+import { GestureDetector, Gesture } from 'react-native-gesture-handler';
+import ReAnimated, {
+    FadeIn, FadeOut, LinearTransition, FadeInDown, FadeInUp, FadeOutUp,
+    useSharedValue, useAnimatedStyle, withSpring, runOnJS
+} from 'react-native-reanimated';
 import Svg, { Defs, LinearGradient as SvgLinearGradient, Stop, Circle, Path } from 'react-native-svg';
 import { toastConfig } from '../app/_layout'
 
@@ -84,7 +88,6 @@ const safeFetchJson = (endpoint, options = {}) => {
             if (failedCount === 2) resolve({ success: false, data: { results: [] } }); // Both failed
         };
 
-        // Fire both requests at the exact same time
         fetchApi(primaryBase).then(handleSuccess).catch(handleError);
         fetchApi(fallbackBase).then(handleSuccess).catch(handleError);
     });
@@ -170,15 +173,111 @@ const ArtistImage = ({ name, rawImage, style }) => {
     );
 };
 
+// ==========================================
+// 🎵 FIXED MINI PLAYER COMPONENT (RNGH)
+// ==========================================
+const MiniPlayer = ({
+    currentTrack,
+    isMusicPlaying,
+    musicProgress,
+    musicDuration,
+    isShuffle,
+    setIsShuffle,
+    loopMode,
+    setLoopMode,
+    onTogglePlay,
+    handleNextTrack,
+    handlePrevTrack,
+    onOpenModal,
+    onDismiss,
+    bottomOffset,
+}) => {
+
+    const panGesture = Gesture.Pan()
+        .activeOffsetX([-10, 10])
+        .activeOffsetY([-15, 15])
+        // REMOVED .onUpdate so it stops physically moving
+        .onEnd((e) => {
+            const { translationX: dx, translationY: dy, velocityX: vx, velocityY: vy } = e;
+
+            if (dx > 50 || vx > 800) {
+                runOnJS(handlePrevTrack)();
+            } else if (dx < -50 || vx < -800) {
+                runOnJS(handleNextTrack)();
+            } else if (dy < -40 || vy < -800) {
+                runOnJS(onOpenModal)();
+            } else if (dy > 40 || vy > 800) {
+                runOnJS(onDismiss)();
+            }
+        });
+
+    const doubleTap = Gesture.Tap().numberOfTaps(2).maxDuration(250);
+    const singleTap = Gesture.Tap().numberOfTaps(1).maxDuration(250);
+
+    const doubleTapAction = doubleTap.onEnd((_, success) => {
+        if (success) runOnJS(onTogglePlay)();
+    });
+    const singleTapAction = singleTap.onEnd((_, success) => {
+        if (success) runOnJS(onOpenModal)();
+    });
+
+    const tapGesture = Gesture.Exclusive(doubleTapAction, singleTapAction);
+
+    if (!currentTrack) return null;
+
+    return (
+        <GestureDetector gesture={panGesture}>
+            <ReAnimated.View
+                entering={FadeInUp}
+                // REMOVED animatedStyle so it stays completely fixed
+                style={[styles.miniPlayerContainer, { bottom: bottomOffset }]}
+            >
+                <View style={styles.miniPlayerContent}>
+                    <GestureDetector gesture={tapGesture}>
+                        <ReAnimated.View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+                            <Image source={{ uri: currentTrack.image }} style={styles.miniPlayerArt} />
+                            <View style={styles.miniPlayerTextWrap}>
+                                <Text style={styles.miniPlayerTitle} numberOfLines={1}>{currentTrack.title}</Text>
+                                <Text style={styles.miniPlayerArtist} numberOfLines={1}>{currentTrack.artist}</Text>
+                            </View>
+                        </ReAnimated.View>
+                    </GestureDetector>
+
+                    {/* Controls strictly independent from gestures */}
+                    <View style={styles.miniPlayerControls}>
+                        <TouchableOpacity onPress={() => setIsShuffle(!isShuffle)} style={styles.miniPlayerBtn} hitSlop={8}>
+                            <Ionicons name="shuffle" size={20} color={isShuffle ? "#00E5FF" : "#8F98A0"} />
+                        </TouchableOpacity>
+                        <TouchableOpacity onPress={onTogglePlay} style={styles.miniPlayerBtn} hitSlop={8}>
+                            <Ionicons name={isMusicPlaying ? "pause" : "play"} size={26} color="#FFF" />
+                        </TouchableOpacity>
+                        <TouchableOpacity onPress={handleNextTrack} style={styles.miniPlayerBtn} hitSlop={8}>
+                            <Ionicons name="play-skip-forward" size={24} color="#FFF" />
+                        </TouchableOpacity>
+                        <TouchableOpacity onPress={() => setLoopMode((prev) => (prev + 1) % 3)} style={[styles.miniPlayerBtn, { position: 'relative' }]} hitSlop={8}>
+                            <Ionicons name="repeat" size={20} color={loopMode !== 0 ? "#00E5FF" : "#8F98A0"} />
+                            {loopMode === 2 && (
+                                <Text style={{ position: 'absolute', fontSize: 8, color: '#00E5FF', top: 4, right: 2, fontWeight: 'bold' }}>1</Text>
+                            )}
+                        </TouchableOpacity>
+                    </View>
+                </View>
+                <View style={styles.miniProgressBarBg}>
+                    <View style={[styles.miniProgressBarFill, { width: `${(musicProgress / (musicDuration || 1)) * 100}%` }]} />
+                </View>
+            </ReAnimated.View>
+        </GestureDetector>
+    );
+};
+
+
 // --- 1. YOUTUBE MUSIC CLONE FEED ---
-const YTMusicFeed = ({ onPlayMusic }) => {
+const YTMusicFeed = ({ onPlayMusic, activeTrackId }) => {
     const { token } = useAuthStore();
     const insets = useSafeAreaInsets();
 
     const [selectedArtists, setSelectedArtists] = useState([]);
     const [customArtistMap, setCustomArtistMap] = useState({});
-
-    // --- FIX #3: Request Guard for race conditions
     const buildRequestId = useRef(0);
 
     useEffect(() => {
@@ -208,7 +307,6 @@ const YTMusicFeed = ({ onPlayMusic }) => {
     const [artistPlaylists, setArtistPlaylists] = useState([]);
 
     const [loading, setLoading] = useState(globalCachedSpeedDial.length === 0);
-
     const [searchQuery, setSearchQuery] = useState('');
     const [searchResults, setSearchResults] = useState({ songs: [], artists: [] });
     const [isSearching, setIsSearching] = useState(false);
@@ -281,7 +379,7 @@ const YTMusicFeed = ({ onPlayMusic }) => {
 
         toggleArtistSelection(artistName);
         setSearchQuery('');
-        Keyboard.dismiss(); // --- FIX #1: Dismiss keyboard when selecting to unblock first touch
+        Keyboard.dismiss();
     };
 
     const fetchLikedSongs = async () => {
@@ -491,13 +589,17 @@ const YTMusicFeed = ({ onPlayMusic }) => {
 
     const displayTopArtists = [...TOP_ARTISTS, ...customArtists];
 
+    const unifiedArtistQueue = useMemo(() => {
+        const allSongs = artistPlaylists.flatMap(p => p.songs);
+        return Array.from(new Map(allSongs.map(s => [s.id, s])).values());
+    }, [artistPlaylists]);
+
     if (loading && speedDial.length === 0 && artistPlaylists.length === 0) {
         return <View style={{ alignItems: 'center', paddingTop: 60 }}><ActivityIndicator size="large" color="#FF007A" /></View>;
     }
 
     return (
         <ReAnimated.View layout={LinearTransition} style={{ flex: 1, paddingBottom: 40 }}>
-            {/* FULL SCREEN LIKED SONGS MODAL - NATIVE UI */}
             <Modal visible={likedModalOpen} animationType="slide" transparent={false} onRequestClose={() => setLikedModalOpen(false)}>
                 <View style={{ flex: 1, backgroundColor: '#0A0A0C' }}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', paddingTop: insets.top + 20, paddingBottom: 16, paddingHorizontal: 16, borderBottomWidth: 1, borderColor: 'rgba(255,255,255,0.05)', backgroundColor: '#170D22' }}>
@@ -520,6 +622,7 @@ const YTMusicFeed = ({ onPlayMusic }) => {
                         <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: 16, paddingBottom: 100 }} showsVerticalScrollIndicator={false}>
                             {likedSongsList.map((track) => {
                                 const imgUrl = Array.isArray(track.image) ? (track.image?.find?.(i => i.quality === '500x500')?.url || track.image?.[0]?.url) : track.image;
+                                const isActiveTrack = track.id === activeTrackId;
                                 return (
                                     <TouchableOpacity
                                         key={track.id}
@@ -528,9 +631,10 @@ const YTMusicFeed = ({ onPlayMusic }) => {
                                     >
                                         <Image source={{ uri: imgUrl }} style={styles.ytTileImgQuick} />
                                         <View style={{ flex: 1, justifyContent: 'center', paddingRight: 10 }}>
-                                            <Text style={[styles.ytTileTitle, { fontSize: 16 }]} numberOfLines={1}>{track.title || track.name}</Text>
+                                            <Text style={[styles.ytTileTitle, { fontSize: 16 }, isActiveTrack && { color: '#00E5FF' }]} numberOfLines={1}>{track.title || track.name}</Text>
                                             <Text style={[styles.ytTileSubtitle, { fontSize: 14 }]} numberOfLines={1}>{track.artist || track.subtitle}</Text>
                                         </View>
+                                        {isActiveTrack && <Ionicons name="stats-chart" size={16} color="#00E5FF" />}
                                     </TouchableOpacity>
                                 )
                             })}
@@ -539,7 +643,6 @@ const YTMusicFeed = ({ onPlayMusic }) => {
                 </View>
             </Modal>
 
-            {/* MAIN MUSIC FEED CONTINUES */}
             <View style={[styles.musicSearchBox, isListening && styles.musicSearchBoxActive, { marginHorizontal: 16, marginBottom: 20 }]}>
                 <Ionicons name="search" size={20} color="#00E5FF" style={styles.musicSearchIcon} />
                 <TextInput
@@ -562,22 +665,20 @@ const YTMusicFeed = ({ onPlayMusic }) => {
                 )}
             </View>
 
-            {
-                searchQuery.trim().length === 0 && selectedArtists.length === 0 && (
-                    <View style={{ paddingHorizontal: 16, marginBottom: 24, flexDirection: 'row' }}>
-                        <TouchableOpacity
-                            style={styles.libraryChip}
-                            activeOpacity={0.8}
-                            onPress={fetchLikedSongs}
-                        >
-                            <LinearGradient colors={['#FF007A', '#9B51E0']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.libraryChipGradient}>
-                                <Ionicons name="heart" size={16} color="#FFF" style={{ marginTop: 2 }} />
-                            </LinearGradient>
-                            <Text style={styles.libraryChipText}>Liked Songs</Text>
-                        </TouchableOpacity> 
-                    </View>
-                )
-            }
+            {searchQuery.trim().length === 0 && (
+                <View style={{ paddingHorizontal: 16, marginBottom: 24, flexDirection: 'row' }}>
+                    <TouchableOpacity
+                        style={styles.libraryChip}
+                        activeOpacity={0.8}
+                        onPress={fetchLikedSongs}
+                    >
+                        <LinearGradient colors={['#FF007A', '#9B51E0']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.libraryChipGradient}>
+                            <Ionicons name="heart" size={16} color="#FFF" style={{ marginTop: 2 }} />
+                        </LinearGradient>
+                        <Text style={styles.libraryChipText}>Liked Songs</Text>
+                    </TouchableOpacity>
+                </View>
+            )}
 
             {searchQuery.trim().length > 0 ? (
                 <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 20 }}>
@@ -621,13 +722,15 @@ const YTMusicFeed = ({ onPlayMusic }) => {
                                         <View style={{ gap: 12, marginTop: 10 }}>
                                             {searchResults.songs.map(track => {
                                                 const imgUrl = track.image?.find?.(i => i.quality === '500x500')?.url || track.image?.[0]?.url || track.image;
+                                                const isActiveTrack = track.id === activeTrackId;
                                                 return (
                                                     <TouchableOpacity key={track.id} style={styles.ytListTile} onPress={() => handleSongClick(track, searchResults.songs)}>
                                                         <ArtistImage name={track.title || track.name} rawImage={imgUrl} style={styles.ytTileImgQuick} />
                                                         <View style={{ flex: 1, justifyContent: 'center', paddingRight: 10 }}>
-                                                            <Text style={styles.ytTileTitle} numberOfLines={1}>{track.title || track.name}</Text>
+                                                            <Text style={[styles.ytTileTitle, isActiveTrack && { color: '#00E5FF' }]} numberOfLines={1}>{track.title || track.name}</Text>
                                                             <Text style={styles.ytTileSubtitle} numberOfLines={1}>{track.description || track.subtitle || 'Song'}</Text>
                                                         </View>
+                                                        {isActiveTrack && <Ionicons name="stats-chart" size={16} color="#00E5FF" />}
                                                     </TouchableOpacity>
                                                 )
                                             })}
@@ -684,13 +787,15 @@ const YTMusicFeed = ({ onPlayMusic }) => {
                                         <View style={{ paddingHorizontal: 16, gap: 16 }}>
                                             {playlist.songs.map(track => {
                                                 const imgUrl = track.image?.find?.(i => i.quality === '500x500')?.url || track.image?.[0]?.url || track.image;
+                                                const isActiveTrack = track.id === activeTrackId;
                                                 return (
-                                                    <TouchableOpacity key={track.id} style={styles.ytListTile} onPress={() => handleSongClick(track, playlist.songs)}>
+                                                    <TouchableOpacity key={track.id} style={styles.ytListTile} onPress={() => handleSongClick(track, unifiedArtistQueue)}>
                                                         <ArtistImage name={track.title || track.name} rawImage={imgUrl} style={styles.ytTileImgQuick} />
                                                         <View style={{ flex: 1, justifyContent: 'center', paddingRight: 10 }}>
-                                                            <Text style={[styles.ytTileTitle, { fontSize: 16 }]} numberOfLines={1}>{track.title || track.name}</Text>
+                                                            <Text style={[styles.ytTileTitle, { fontSize: 16 }, isActiveTrack && { color: '#00E5FF' }]} numberOfLines={1}>{track.title || track.name}</Text>
                                                             <Text style={[styles.ytTileSubtitle, { fontSize: 14 }]} numberOfLines={1}>{track.artists?.primary?.map(a => a.name).join(', ') || track.subtitle || playlist.artist}</Text>
                                                         </View>
+                                                        {isActiveTrack && <Ionicons name="stats-chart" size={16} color="#00E5FF" />}
                                                     </TouchableOpacity>
                                                 )
                                             })}
@@ -711,13 +816,15 @@ const YTMusicFeed = ({ onPlayMusic }) => {
                                             <View key={colIdx} style={{ width: width * 0.85, gap: 12 }}>
                                                 {col.map(track => {
                                                     const imgUrl = track.image?.find(i => i.quality === '500x500')?.url || track.image?.[0]?.url;
+                                                    const isActiveTrack = track.id === activeTrackId;
                                                     return (
                                                         <TouchableOpacity key={track.id} style={styles.ytListTile} onPress={() => handleSongClick(track, speedDial)}>
                                                             <Image source={{ uri: imgUrl }} style={styles.ytTileImg} />
                                                             <View style={{ flex: 1, justifyContent: 'center', paddingRight: 10 }}>
-                                                                <Text style={styles.ytTileTitle} numberOfLines={1}>{track.name || track.title}</Text>
+                                                                <Text style={[styles.ytTileTitle, isActiveTrack && { color: '#00E5FF' }]} numberOfLines={1}>{track.name || track.title}</Text>
                                                                 <Text style={styles.ytTileSubtitle} numberOfLines={1}>{track.artists?.primary?.map(a => a.name).join(', ') || track.subtitle}</Text>
                                                             </View>
+                                                            {isActiveTrack && <Ionicons name="stats-chart" size={16} color="#00E5FF" />}
                                                         </TouchableOpacity>
                                                     )
                                                 })}
@@ -732,13 +839,15 @@ const YTMusicFeed = ({ onPlayMusic }) => {
                                             <View key={colIdx} style={{ width: width * 0.85, gap: 12 }}>
                                                 {col.map(track => {
                                                     const imgUrl = track.image?.find(i => i.quality === '500x500')?.url || track.image?.[0]?.url;
+                                                    const isActiveTrack = track.id === activeTrackId;
                                                     return (
                                                         <TouchableOpacity key={track.id} style={styles.ytListTile} onPress={() => handleSongClick(track, quickPicks)}>
                                                             <Image source={{ uri: imgUrl }} style={styles.ytTileImgQuick} />
                                                             <View style={{ flex: 1, justifyContent: 'center', paddingRight: 10 }}>
-                                                                <Text style={styles.ytTileTitle} numberOfLines={1}>{track.name || track.title}</Text>
+                                                                <Text style={[styles.ytTileTitle, isActiveTrack && { color: '#00E5FF' }]} numberOfLines={1}>{track.name || track.title}</Text>
                                                                 <Text style={styles.ytTileSubtitle} numberOfLines={1}>{track.artists?.primary?.map(a => a.name).join(', ') || track.subtitle}</Text>
                                                             </View>
+                                                            {isActiveTrack && <Ionicons name="stats-chart" size={16} color="#00E5FF" />}
                                                         </TouchableOpacity>
                                                     )
                                                 })}
@@ -750,8 +859,7 @@ const YTMusicFeed = ({ onPlayMusic }) => {
                         </>
                     )}
                 </>
-            )
-            }
+            )}
         </ReAnimated.View >
     );
 };
@@ -1152,12 +1260,18 @@ const HomeScreen = () => {
     const [isMusicPlaying, setIsMusicPlaying] = useState(false);
     const [isMusicModalOpen, setIsMusicModalOpen] = useState(false);
 
+    // NEW: Shuffle & Loop states
+    const [isShuffle, setIsShuffle] = useState(false);
+    const [loopMode, setLoopMode] = useState(0); // 0=off, 1=all, 2=one
+
     const [musicProgress, setMusicProgress] = useState(0);
     const [musicDuration, setMusicDuration] = useState(0);
     const [barWidth, setBarWidth] = useState(0);
     const [musicPrefs, setMusicPrefs] = useState({});
 
+    // Keep this one for double tapping like in the full-screen modal
     const [lastTap, setLastTap] = useState(0);
+
     const scrollY = useRef(new Animated.Value(0)).current;
 
     const playRequestId = useRef(0);
@@ -1311,9 +1425,7 @@ const HomeScreen = () => {
         const requestId = ++playRequestId.current;
 
         if (!track.url || track.url.includes('jiosaavn.com/song')) {
-            if (currentMusicIndex < musicQueue.length - 1) {
-                setCurrentMusicIndex(prev => prev + 1);
-            }
+            handleNextTrack();
             return;
         }
 
@@ -1334,15 +1446,38 @@ const HomeScreen = () => {
                 if (requestId !== playRequestId.current) return;
                 setIsMusicPlaying(false);
                 Toast.show({ type: 'error', text1: `Couldn't play "${track.title}", skipping...` });
-
-                if (currentMusicIndex < musicQueue.length - 1) {
-                    setCurrentMusicIndex(prev => prev + 1);
-                }
+                handleNextTrack();
             }
         };
 
         loadAndPlayTrack();
     }, [currentMusicIndex, musicQueue, globalMusicPlayer, extendQueueIfNeeded]);
+
+    // NEW: Handle Next and Prev tracks (incorporating Shuffle & Loop states)
+    const handleNextTrack = useCallback(() => {
+        if (isShuffle) {
+            setCurrentMusicIndex(Math.floor(Math.random() * musicQueue.length));
+        } else if (currentMusicIndex < musicQueue.length - 1) {
+            setCurrentMusicIndex(prev => prev + 1);
+        } else if (loopMode === 1) { // Loop All
+            setCurrentMusicIndex(0);
+        } else {
+            globalMusicPlayer.pause();
+            setIsMusicPlaying(false);
+        }
+    }, [isShuffle, loopMode, currentMusicIndex, musicQueue.length, globalMusicPlayer]);
+
+    const handlePrevTrack = useCallback(() => {
+        if (musicProgress > 3) {
+            globalMusicPlayer.currentTime = 0;
+        } else if (isShuffle) {
+            setCurrentMusicIndex(Math.floor(Math.random() * musicQueue.length));
+        } else if (currentMusicIndex > 0) {
+            setCurrentMusicIndex(prev => prev - 1);
+        } else if (loopMode === 1) { // Loop All
+            setCurrentMusicIndex(musicQueue.length - 1);
+        }
+    }, [isShuffle, loopMode, currentMusicIndex, musicQueue.length, musicProgress, globalMusicPlayer]);
 
     useEffect(() => {
         const interval = setInterval(() => {
@@ -1354,13 +1489,17 @@ const HomeScreen = () => {
 
         const sub = globalMusicPlayer.addListener('playToEnd', async () => {
             setIsMusicPlaying(false);
-            if (currentMusicIndex < musicQueue.length - 1) {
-                setCurrentMusicIndex(prev => prev + 1);
+            if (loopMode === 2) { // Loop One
+                globalMusicPlayer.currentTime = 0;
+                globalMusicPlayer.play();
+                setIsMusicPlaying(true);
+            } else {
+                handleNextTrack();
             }
         });
 
         return () => { clearInterval(interval); sub.remove(); };
-    }, [globalMusicPlayer, currentMusicIndex, musicQueue, isMusicPlaying]);
+    }, [globalMusicPlayer, isMusicPlaying, loopMode, handleNextTrack]);
 
     const handleSeek = (event) => {
         if (barWidth > 0 && musicDuration > 0) {
@@ -1395,9 +1534,7 @@ const HomeScreen = () => {
                 Toast.show({ type: 'hotstarSuccess', text1: 'Saved to Liked Songs' });
             } else if (finalAction === 'dislike') {
                 Toast.show({ type: 'hotstarSuccess', text1: 'We will recommend less of this' });
-                if (currentMusicIndex < musicQueue.length - 1) {
-                    setCurrentMusicIndex(prev => prev + 1);
-                }
+                handleNextTrack();
             }
         } catch (error) {
             console.error('Failed to register interaction:', error?.message || error);
@@ -1415,18 +1552,15 @@ const HomeScreen = () => {
         onPanResponderRelease: (evt, gestureState) => {
             const { dx, dy } = gestureState;
             if (Math.abs(dx) > 60) {
-                if (dx > 0) {
-                    if (currentMusicIndex > 0) setCurrentMusicIndex(prev => prev - 1);
-                } else {
-                    if (currentMusicIndex < musicQueue.length - 1) setCurrentMusicIndex(prev => prev + 1);
-                }
+                if (dx > 0) handlePrevTrack();
+                else handleNextTrack();
             } else if (dy > 60) {
                 setIsMusicModalOpen(false); // Swipe down to minimize
             } else if (Math.abs(dx) < 10 && Math.abs(dy) < 10) {
                 if (musicQueue[currentMusicIndex]) handleDoubleTapLike(musicQueue[currentMusicIndex].id);
             }
         }
-    }), [currentMusicIndex, musicQueue, lastTap]);
+    }), [currentMusicIndex, musicQueue, lastTap, handleNextTrack, handlePrevTrack]);
 
     useEffect(() => {
         if (currentMusicIndex >= 0 && musicQueue[currentMusicIndex]) {
@@ -1615,8 +1749,6 @@ const HomeScreen = () => {
                     <TouchableOpacity style={styles.headerRightBtn} onPress={() => handleAuthAction(() => router.push('/my-list'))}><Ionicons name="bookmarks" size={24} color="#E0E0E0" /></TouchableOpacity>
                 </View>
 
-                {/* FIX #4: Massive padding-bottom when mini-player is up, so lists naturally clear it */}
-                {/* FIX #2: keyboard persist taps on main screen wrapper */}
                 <ScrollView
                     keyboardShouldPersistTaps="handled"
                     showsVerticalScrollIndicator={false}
@@ -1649,7 +1781,7 @@ const HomeScreen = () => {
                             <ReAnimated.View key="loading" entering={FadeIn} exiting={FadeOut}><ActivityIndicator size="large" color="#00E5FF" style={{ marginTop: 40, marginBottom: 80 }} /></ReAnimated.View>
                         ) : filters.type === 'music' ? (
                             <ReAnimated.View key="music" entering={FadeIn} exiting={FadeOut}>
-                                <YTMusicFeed onPlayMusic={handlePlayMusic} />
+                                <YTMusicFeed onPlayMusic={handlePlayMusic} activeTrackId={currentTrack?.id} />
                             </ReAnimated.View>
                         ) : filters.type === 'live' ? (
                             isLiveSportsFeed ? (
@@ -1676,37 +1808,31 @@ const HomeScreen = () => {
             </SafeAreaView>
 
             {/* GLOBAL MINI PLAYER (Background Play) */}
-            {/* FIX #3: Adding pointerEvents="box-none" so empty container edges don't block taps */}
             {currentTrack && !isMusicModalOpen && (
-                <Animated.View pointerEvents="box-none" style={[styles.miniPlayerContainer, { bottom: insets.bottom + 60 }]} entering={FadeInUp}>
-                    <TouchableOpacity style={styles.miniPlayerContent} activeOpacity={0.9} onPress={() => setIsMusicModalOpen(true)}>
-                        <Image source={{ uri: currentTrack.image }} style={styles.miniPlayerArt} />
-                        <View style={styles.miniPlayerTextWrap}>
-                            <Text style={styles.miniPlayerTitle} numberOfLines={1}>{currentTrack.title}</Text>
-                            <Text style={styles.miniPlayerArtist} numberOfLines={1}>{currentTrack.artist}</Text>
-                        </View>
-                        <View style={styles.miniPlayerControls}>
-                            <TouchableOpacity onPress={() => { if (isMusicPlaying) { globalMusicPlayer.pause(); setIsMusicPlaying(false); } else { globalMusicPlayer.play(); setIsMusicPlaying(true); } }} style={styles.miniPlayerBtn}>
-                                <Ionicons name={isMusicPlaying ? "pause" : "play"} size={26} color="#FFF" />
-                            </TouchableOpacity>
-                            <TouchableOpacity onPress={() => { if (currentMusicIndex < musicQueue.length - 1) setCurrentMusicIndex(prev => prev + 1); }} style={styles.miniPlayerBtn}>
-                                <Ionicons name="play-skip-forward" size={24} color="#FFF" />
-                            </TouchableOpacity>
-                            <TouchableOpacity
-                                onPress={() => {
-                                    globalMusicPlayer.pause();
-                                    setIsMusicPlaying(false);
-                                    setCurrentMusicIndex(-1);
-                                    setMusicQueue([]);
-                                }}
-                                style={[styles.miniPlayerBtn, { marginLeft: 4 }]}
-                            >
-                                <Ionicons name="close" size={26} color="#8F98A0" />
-                            </TouchableOpacity>
-                        </View>
-                    </TouchableOpacity>
-                    <View style={styles.miniProgressBarBg}><View style={[styles.miniProgressBarFill, { width: `${(musicProgress / (musicDuration || 1)) * 100}%` }]} /></View>
-                </Animated.View>
+                <MiniPlayer
+                    currentTrack={currentTrack}
+                    isMusicPlaying={isMusicPlaying}
+                    musicProgress={musicProgress}
+                    musicDuration={musicDuration}
+                    isShuffle={isShuffle}
+                    setIsShuffle={setIsShuffle}
+                    loopMode={loopMode}
+                    setLoopMode={setLoopMode}
+                    onTogglePlay={() => {
+                        if (isMusicPlaying) { globalMusicPlayer.pause(); setIsMusicPlaying(false); }
+                        else { globalMusicPlayer.play(); setIsMusicPlaying(true); }
+                    }}
+                    handleNextTrack={handleNextTrack}
+                    handlePrevTrack={handlePrevTrack}
+                    onOpenModal={() => setIsMusicModalOpen(true)}
+                    onDismiss={() => {
+                        globalMusicPlayer.pause();
+                        setIsMusicPlaying(false);
+                        setCurrentMusicIndex(-1);
+                        setMusicQueue([]);
+                    }}
+                    bottomOffset={insets.bottom + 60}
+                />
             )}
 
             {/* FULL SCREEN MUSIC PLAYER MODAL */}
@@ -1736,7 +1862,7 @@ const HomeScreen = () => {
                             >
                                 <Ionicons name={isMusicPlaying ? "pause" : "play"} size={26} color="#FFF" />
                             </TouchableOpacity>
-                            <TouchableOpacity onPress={() => { if (currentMusicIndex < musicQueue.length - 1) setCurrentMusicIndex(prev => prev + 1); }} style={{ paddingLeft: 8 }}>
+                            <TouchableOpacity onPress={handleNextTrack} style={{ paddingLeft: 8 }}>
                                 <Ionicons name="play-skip-forward" size={22} color="#FFF" />
                             </TouchableOpacity>
                         </Animated.View>
@@ -1795,11 +1921,16 @@ const HomeScreen = () => {
                                 </View>
 
                                 <View style={styles.musicControlsRow}>
+                                    {/* SHUFFLE BUTTON */}
+                                    <TouchableOpacity onPress={() => setIsShuffle(!isShuffle)} style={{ padding: 10 }}>
+                                        <Ionicons name="shuffle" size={24} color={isShuffle ? "#00E5FF" : "#8F98A0"} />
+                                    </TouchableOpacity>
+
                                     <TouchableOpacity
-                                        onPress={() => { if (currentMusicIndex > 0) setCurrentMusicIndex(prev => prev - 1); }}
+                                        onPress={handlePrevTrack}
                                         style={styles.skipBtn}
                                     >
-                                        <Ionicons name="play-skip-back" size={32} color={currentMusicIndex > 0 ? "#FFFFFF" : "#555"} />
+                                        <Ionicons name="play-skip-back" size={32} color={currentMusicIndex > 0 || isShuffle || loopMode === 1 ? "#FFFFFF" : "#555"} />
                                     </TouchableOpacity>
 
                                     <TouchableOpacity
@@ -1816,10 +1947,16 @@ const HomeScreen = () => {
                                     </TouchableOpacity>
 
                                     <TouchableOpacity
-                                        onPress={() => { if (currentMusicIndex < musicQueue.length - 1) setCurrentMusicIndex(prev => prev + 1); }}
+                                        onPress={handleNextTrack}
                                         style={styles.skipBtn}
                                     >
-                                        <Ionicons name="play-skip-forward" size={32} color={currentMusicIndex < musicQueue.length - 1 ? "#FFFFFF" : "#555"} />
+                                        <Ionicons name="play-skip-forward" size={32} color={currentMusicIndex < musicQueue.length - 1 || isShuffle || loopMode === 1 ? "#FFFFFF" : "#555"} />
+                                    </TouchableOpacity>
+
+                                    {/* LOOP BUTTON */}
+                                    <TouchableOpacity onPress={() => setLoopMode((prev) => (prev + 1) % 3)} style={{ padding: 10, position: 'relative' }}>
+                                        <Ionicons name="repeat" size={24} color={loopMode !== 0 ? "#00E5FF" : "#8F98A0"} />
+                                        {loopMode === 2 && <Text style={{ position: 'absolute', fontSize: 10, color: '#00E5FF', top: 10, right: 6, fontWeight: 'bold' }}>1</Text>}
                                     </TouchableOpacity>
                                 </View>
                             </Animated.View>
@@ -1991,7 +2128,7 @@ const styles = StyleSheet.create({
     miniPlayerTextWrap: { flex: 1, marginLeft: 12, marginRight: 8 },
     miniPlayerTitle: { color: '#FFFFFF', fontSize: 14, fontWeight: 'bold', marginBottom: 2 },
     miniPlayerArtist: { color: '#8F98A0', fontSize: 11 },
-    miniPlayerControls: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingRight: 6 },
+    miniPlayerControls: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingRight: 4 },
     miniPlayerBtn: { padding: 4 },
     miniProgressBarBg: { height: 3, backgroundColor: 'rgba(255,255,255,0.1)', width: '100%' },
     miniProgressBarFill: { height: '100%', backgroundColor: '#00E5FF' },
@@ -2005,7 +2142,7 @@ const styles = StyleSheet.create({
     musicTrackInfo: { marginBottom: 30 },
     musicLargeTitle: { color: '#FFFFFF', fontSize: 26, fontWeight: 'bold', textAlign: 'center', marginBottom: 8 },
     musicLargeArtist: { color: '#00E5FF', fontSize: 16, fontWeight: '600', textAlign: 'center' },
-    musicControlsRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 40, marginBottom: 40 },
+    musicControlsRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 24, marginBottom: 40 },
     skipBtn: { padding: 10 },
     neonPlayWrapper: { width: 76, height: 76, borderRadius: 38, elevation: 10, shadowColor: '#FF007A', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.6, shadowRadius: 12 },
     neonPlayInner: { flex: 1, justifyContent: 'center', alignItems: 'center', borderRadius: 38 },
