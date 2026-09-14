@@ -196,7 +196,6 @@ const MiniPlayer = ({
     const panGesture = Gesture.Pan()
         .activeOffsetX([-10, 10])
         .activeOffsetY([-15, 15])
-        // REMOVED .onUpdate so it stops physically moving
         .onEnd((e) => {
             const { translationX: dx, translationY: dy, velocityX: vx, velocityY: vy } = e;
 
@@ -229,7 +228,6 @@ const MiniPlayer = ({
         <GestureDetector gesture={panGesture}>
             <ReAnimated.View
                 entering={FadeInUp}
-                // REMOVED animatedStyle so it stays completely fixed
                 style={[styles.miniPlayerContainer, { bottom: bottomOffset }]}
             >
                 <View style={styles.miniPlayerContent}>
@@ -243,7 +241,6 @@ const MiniPlayer = ({
                         </ReAnimated.View>
                     </GestureDetector>
 
-                    {/* Controls strictly independent from gestures */}
                     <View style={styles.miniPlayerControls}>
                         <TouchableOpacity onPress={() => setIsShuffle(!isShuffle)} style={styles.miniPlayerBtn} hitSlop={8}>
                             <Ionicons name="shuffle" size={20} color={isShuffle ? "#00E5FF" : "#8F98A0"} />
@@ -279,6 +276,7 @@ const YTMusicFeed = ({ onPlayMusic, activeTrackId }) => {
     const [selectedArtists, setSelectedArtists] = useState([]);
     const [customArtistMap, setCustomArtistMap] = useState({});
     const buildRequestId = useRef(0);
+    const [isFeedShuffled, setIsFeedShuffled] = useState(false);
 
     useEffect(() => {
         let isMounted = true;
@@ -447,7 +445,7 @@ const YTMusicFeed = ({ onPlayMusic, activeTrackId }) => {
                         setArtistPlaylists([]);
                     }
                 } else {
-                    const validArtists = selectedArtists.filter(a => a && typeof a === 'string');
+                    const validArtists = [...selectedArtists].filter(a => a && typeof a === 'string').reverse();
 
                     const promises = validArtists.map(async artist => {
                         const res = await safeFetchJson(`/search/songs?query=${encodeURIComponent(artist + " hindi")}&limit=50`);
@@ -587,12 +585,19 @@ const YTMusicFeed = ({ onPlayMusic, activeTrackId }) => {
             image: customArtistMap[name] || null
         })) : [];
 
-    const displayTopArtists = [...TOP_ARTISTS, ...customArtists];
+    const displayTopArtists = [...customArtists, ...TOP_ARTISTS];
 
     const unifiedArtistQueue = useMemo(() => {
         const allSongs = artistPlaylists.flatMap(p => p.songs);
         return Array.from(new Map(allSongs.map(s => [s.id, s])).values());
     }, [artistPlaylists]);
+
+    const shuffledFeedSongs = useMemo(() => {
+        if (!isFeedShuffled) return [];
+        const allSongs = artistPlaylists.flatMap(p => p.songs);
+        const uniqueSongs = Array.from(new Map(allSongs.map(s => [s.id, s])).values());
+        return uniqueSongs.sort(() => 0.5 - Math.random());
+    }, [artistPlaylists, isFeedShuffled]);
 
     if (loading && speedDial.length === 0 && artistPlaylists.length === 0) {
         return <View style={{ alignItems: 'center', paddingTop: 60 }}><ActivityIndicator size="large" color="#FF007A" /></View>;
@@ -703,11 +708,6 @@ const YTMusicFeed = ({ onPlayMusic, activeTrackId }) => {
                                                         <LinearGradient colors={isSelected ? ['#00E5FF', '#FF007A'] : ['#2A2A30', '#2A2A30']} style={styles.igStoryRing}>
                                                             <ArtistImage name={artistName} rawImage={artist.image} style={styles.igArtistImg} />
                                                         </LinearGradient>
-                                                        {isSelected && (
-                                                            <View style={styles.artistSelectedBadge}>
-                                                                <Ionicons name="heart" size={12} color="#FFFFFF" />
-                                                            </View>
-                                                        )}
                                                         <Text style={styles.igArtistName} numberOfLines={2}>{artistName}</Text>
                                                     </TouchableOpacity>
                                                 )
@@ -765,11 +765,6 @@ const YTMusicFeed = ({ onPlayMusic, activeTrackId }) => {
                                     <LinearGradient colors={isSelected ? ['#00E5FF', '#FF007A'] : ['#2A2A30', '#2A2A30']} style={styles.igStoryRing}>
                                         <ArtistImage name={artist.name} rawImage={artist.image} style={styles.igArtistImg} />
                                     </LinearGradient>
-                                    {isSelected && (
-                                        <View style={styles.artistSelectedBadge}>
-                                            <Ionicons name="heart" size={12} color="#FFFFFF" />
-                                        </View>
-                                    )}
                                     <Text style={styles.igArtistName} numberOfLines={2}>{artist.name}</Text>
                                 </TouchableOpacity>
                             )
@@ -781,27 +776,57 @@ const YTMusicFeed = ({ onPlayMusic, activeTrackId }) => {
                             {loading ? (
                                 <View style={{ alignItems: 'center', paddingVertical: 40 }}><ActivityIndicator color="#00E5FF" /></View>
                             ) : (
-                                artistPlaylists.map((playlist, pIdx) => (
-                                    <View key={pIdx} style={{ marginBottom: 30 }}>
-                                        <Text style={[styles.ytSectionTitle, { paddingHorizontal: 16, fontSize: 20, marginBottom: 12 }]}>{playlist.artist}</Text>
-                                        <View style={{ paddingHorizontal: 16, gap: 16 }}>
-                                            {playlist.songs.map(track => {
+                                <>
+                                    {artistPlaylists.length > 0 && (
+                                        <View style={{ flexDirection: 'row', justifyContent: 'flex-end', paddingHorizontal: 16, marginBottom: 16 }}>
+                                            <TouchableOpacity onPress={() => setIsFeedShuffled(!isFeedShuffled)} style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: isFeedShuffled ? 'rgba(0, 229, 255, 0.15)' : 'rgba(255,255,255,0.05)', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, borderWidth: 1, borderColor: isFeedShuffled ? '#00E5FF' : 'transparent' }}>
+                                                <Ionicons name="shuffle" size={18} color={isFeedShuffled ? "#00E5FF" : "#FFFFFF"} style={{ marginRight: 6 }} />
+                                                <Text style={{ color: isFeedShuffled ? "#00E5FF" : "#FFFFFF", fontSize: 13, fontWeight: 'bold' }}>SHUFFLE</Text>
+                                            </TouchableOpacity>
+                                        </View>
+                                    )}
+
+                                    {isFeedShuffled ? (
+                                        <View style={{ paddingHorizontal: 16, gap: 16, marginBottom: 30 }}>
+                                            {shuffledFeedSongs.map(track => {
                                                 const imgUrl = track.image?.find?.(i => i.quality === '500x500')?.url || track.image?.[0]?.url || track.image;
                                                 const isActiveTrack = track.id === activeTrackId;
                                                 return (
-                                                    <TouchableOpacity key={track.id} style={styles.ytListTile} onPress={() => handleSongClick(track, unifiedArtistQueue)}>
+                                                    <TouchableOpacity key={track.id} style={styles.ytListTile} onPress={() => handleSongClick(track, shuffledFeedSongs)}>
                                                         <ArtistImage name={track.title || track.name} rawImage={imgUrl} style={styles.ytTileImgQuick} />
                                                         <View style={{ flex: 1, justifyContent: 'center', paddingRight: 10 }}>
                                                             <Text style={[styles.ytTileTitle, { fontSize: 16 }, isActiveTrack && { color: '#00E5FF' }]} numberOfLines={1}>{track.title || track.name}</Text>
-                                                            <Text style={[styles.ytTileSubtitle, { fontSize: 14 }]} numberOfLines={1}>{track.artists?.primary?.map(a => a.name).join(', ') || track.subtitle || playlist.artist}</Text>
+                                                            <Text style={[styles.ytTileSubtitle, { fontSize: 14 }]} numberOfLines={1}>{track.artists?.primary?.map(a => a.name).join(', ') || track.subtitle}</Text>
                                                         </View>
                                                         {isActiveTrack && <Ionicons name="stats-chart" size={16} color="#00E5FF" />}
                                                     </TouchableOpacity>
                                                 )
                                             })}
                                         </View>
-                                    </View>
-                                ))
+                                    ) : (
+                                        artistPlaylists.map((playlist, pIdx) => (
+                                            <View key={pIdx} style={{ marginBottom: 30 }}>
+                                                <Text style={[styles.ytSectionTitle, { paddingHorizontal: 16, fontSize: 20, marginBottom: 12 }]}>{playlist.artist}</Text>
+                                                <View style={{ paddingHorizontal: 16, gap: 16 }}>
+                                                    {playlist.songs.map(track => {
+                                                        const imgUrl = track.image?.find?.(i => i.quality === '500x500')?.url || track.image?.[0]?.url || track.image;
+                                                        const isActiveTrack = track.id === activeTrackId;
+                                                        return (
+                                                            <TouchableOpacity key={track.id} style={styles.ytListTile} onPress={() => handleSongClick(track, unifiedArtistQueue)}>
+                                                                <ArtistImage name={track.title || track.name} rawImage={imgUrl} style={styles.ytTileImgQuick} />
+                                                                <View style={{ flex: 1, justifyContent: 'center', paddingRight: 10 }}>
+                                                                    <Text style={[styles.ytTileTitle, { fontSize: 16 }, isActiveTrack && { color: '#00E5FF' }]} numberOfLines={1}>{track.title || track.name}</Text>
+                                                                    <Text style={[styles.ytTileSubtitle, { fontSize: 14 }]} numberOfLines={1}>{track.artists?.primary?.map(a => a.name).join(', ') || track.subtitle || playlist.artist}</Text>
+                                                                </View>
+                                                                {isActiveTrack && <Ionicons name="stats-chart" size={16} color="#00E5FF" />}
+                                                            </TouchableOpacity>
+                                                        )
+                                                    })}
+                                                </View>
+                                            </View>
+                                        ))
+                                    )}
+                                </>
                             )}
                         </View>
                     ) : (
@@ -1757,8 +1782,12 @@ const HomeScreen = () => {
                 >
 
                     {filters.type !== 'live' && filters.type !== 'music' && (
-                        <ReAnimated.View entering={FadeInUp.duration(300)} exiting={FadeOutUp.duration(200)} layout={LinearTransition}>
-                            <View style={styles.sectionHeader}><Text style={styles.sectionTitle}>For You</Text></View>
+                        <ReAnimated.View
+                            entering={FadeInUp.duration(300)}
+                            exiting={FadeOutUp.duration(200)}
+                            layout={LinearTransition}
+                            pointerEvents={(filters.type === 'live' || filters.type === 'music') ? 'none' : 'auto'}
+                        >
                             <View style={styles.deckArea}>{renderCardStack()}</View>
                         </ReAnimated.View>
                     )}
@@ -1776,27 +1805,23 @@ const HomeScreen = () => {
                         </ReAnimated.View>
                     )}
 
-                    <ReAnimated.View layout={LinearTransition.duration(280)} style={styles.categoriesWrapper}>
+                    <View style={styles.categoriesWrapper}>
                         {isLoading && filters.type !== 'music' ? (
-                            <ReAnimated.View key="loading" entering={FadeIn} exiting={FadeOut}><ActivityIndicator size="large" color="#00E5FF" style={{ marginTop: 40, marginBottom: 80 }} /></ReAnimated.View>
+                            <ActivityIndicator size="large" color="#00E5FF" style={{ marginTop: 40, marginBottom: 80 }} />
                         ) : filters.type === 'music' ? (
-                            <ReAnimated.View key="music" entering={FadeIn} exiting={FadeOut}>
-                                <YTMusicFeed onPlayMusic={handlePlayMusic} activeTrackId={currentTrack?.id} />
-                            </ReAnimated.View>
+                            <YTMusicFeed onPlayMusic={handlePlayMusic} activeTrackId={currentTrack?.id} />
                         ) : filters.type === 'live' ? (
-                            isLiveSportsFeed ? (
-                                <ReAnimated.View key="live-sports" entering={FadeIn} exiting={FadeOut}><LiveSportsFeed selectedSport={activeLiveCategory} /></ReAnimated.View>
-                            ) : (
-                                <ReAnimated.View key="live-tv" entering={FadeIn} exiting={FadeOut}><LiveTvFeed selectedCategory={activeLiveCategory} selectedLanguage={filters.language} onNavigateToPlayer={handleNavigateToPlayer} /></ReAnimated.View>
-                            )
+                            isLiveSportsFeed
+                                ? <LiveSportsFeed selectedSport={activeLiveCategory} />
+                                : <LiveTvFeed selectedCategory={activeLiveCategory} selectedLanguage={filters.language} onNavigateToPlayer={handleNavigateToPlayer} />
                         ) : (
-                            <ReAnimated.View key="movies" entering={FadeIn} exiting={FadeOut}>
+                            <View>
                                 {categoryData.map((category, index) => (
                                     <HorizontalRow key={index.toString()} title={category.title} data={category.data} onAuthAction={handleAuthAction} watchlist={watched} toggleAction={handleToggleAction} onNavigateToPlayer={handleNavigateToPlayer} />
                                 ))}
-                            </ReAnimated.View>
+                            </View>
                         )}
-                    </ReAnimated.View>
+                    </View>
 
                     {filters.type !== 'live' && filters.type !== 'music' && (
                         <ReAnimated.View entering={FadeIn.duration(300)} exiting={FadeOut.duration(200)} layout={LinearTransition}>
