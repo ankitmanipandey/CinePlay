@@ -16,7 +16,8 @@ import {
     Platform,
     UIManager,
     TextInput,
-    Modal
+    Modal,
+    Keyboard
 } from 'react-native';
 import ReAnimated, { FadeIn, FadeOut, LinearTransition, FadeInDown, FadeInUp, FadeOutUp } from 'react-native-reanimated';
 import Svg, { Defs, LinearGradient as SvgLinearGradient, Stop, Circle, Path } from 'react-native-svg';
@@ -56,27 +57,37 @@ const normalizeString = (str) => {
     return str.replace(/\([^)]*\)/g, '').replace(/\[[^\]]*\]/g, '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase().trim();
 };
 
-// MULTI-API FALLBACK ENGINE FOR JIOSAAVN (Fixes Cloudflare Error 1027)
-const safeFetchJson = async (endpoint, options = {}) => {
+// --- MULTI-API FAST PARALLEL RACING ENGINE ---
+const safeFetchJson = (endpoint, options = {}) => {
     const primaryBase = 'https://jiosaavn-api-47fm.onrender.com/api';
     const fallbackBase = 'https://saavn.sumit.co/api';
 
-    try {
-        let res = await fetch(`${primaryBase}${endpoint}`, options);
-        let text = await res.text();
+    const fetchApi = async (baseUrl) => {
+        const controller = new AbortController();
+        const id = setTimeout(() => controller.abort(), 6000); // 6s max timeout
+        const res = await fetch(`${baseUrl}${endpoint}`, { ...options, signal: controller.signal });
+        clearTimeout(id);
+        if (!res.ok) throw new Error('Not ok');
+        return JSON.parse(await res.text());
+    };
 
-        try {
-            return JSON.parse(text);
-        } catch (err) {
-            console.warn(`[SafeFetch] Primary API failed. Switching to Fallback...`);
-            res = await fetch(`${fallbackBase}${endpoint}`, options);
-            text = await res.text();
-            return JSON.parse(text);
-        }
-    } catch (error) {
-        console.error(`[SafeFetch] Network error completely failed:`, error.message);
-        return { success: false, data: { results: [] } };
-    }
+    return new Promise((resolve) => {
+        let failedCount = 0;
+
+        const handleSuccess = (data) => {
+            if (data && data.success) resolve(data);
+            else handleError();
+        };
+
+        const handleError = () => {
+            failedCount++;
+            if (failedCount === 2) resolve({ success: false, data: { results: [] } }); // Both failed
+        };
+
+        // Fire both requests at the exact same time
+        fetchApi(primaryBase).then(handleSuccess).catch(handleError);
+        fetchApi(fallbackBase).then(handleSuccess).catch(handleError);
+    });
 };
 
 const MOCK_LANGUAGES = [
@@ -89,19 +100,19 @@ const MOCK_LANGUAGES = [
 ];
 
 const TOP_ARTISTS = [
-    { id: 'a1', name: 'Arijit Singh', image: 'https://c.saavncdn.com/artists/Arijit_Singh_002_20230323062147_500x500.jpg' },
-    { id: 'a2', name: 'Shreya Ghoshal', image: 'https://c.saavncdn.com/artists/Shreya_Ghoshal_004_20230622104523_500x500.jpg' },
+    { id: 'a1', name: 'Arijit Singh', image: 'https://c.saavncdn.com/artists/Arijit_Singh_500x500.jpg' },
+    { id: 'a2', name: 'Shreya Ghoshal', image: 'https://c.saavncdn.com/artists/Shreya_Ghoshal_500x500.jpg' },
     { id: 'a3', name: 'KK', image: 'https://c.saavncdn.com/artists/KK_500x500.jpg' },
     { id: 'a4', name: 'Sonu Nigam', image: 'https://c.saavncdn.com/artists/Sonu_Nigam_500x500.jpg' },
     { id: 'a5', name: 'Armaan Malik', image: 'https://c.saavncdn.com/artists/Armaan_Malik_500x500.jpg' },
-    { id: 'a6', name: 'Udit Narayan', image: 'https://c.saavncdn.com/artists/Udit_Narayan_001_20191130095754_500x500.jpg' },
+    { id: 'a6', name: 'Udit Narayan', image: 'https://c.saavncdn.com/artists/Udit_Narayan_500x500.jpg' },
     { id: 'a7', name: 'Kumar Sanu', image: 'https://c.saavncdn.com/artists/Kumar_Sanu_500x500.jpg' },
     { id: 'a8', name: 'Alka Yagnik', image: 'https://c.saavncdn.com/artists/Alka_Yagnik_500x500.jpg' },
-    { id: 'a9', name: 'Abhijeet Bhattacharya', image: 'https://c.saavncdn.com/artists/Abhijeet_500x500.jpg' },
+    { id: 'a9', name: 'Abhijeet Bhattacharya', image: 'https://i.scdn.co/image/ab6761610000e5eb0300a78ed8fc1b9cc0f39384' },
     { id: 'a10', name: 'Shankar Mahadevan', image: 'https://c.saavncdn.com/artists/Shankar_Mahadevan_500x500.jpg' },
     { id: 'a11', name: 'Javed Ali', image: 'https://c.saavncdn.com/artists/Javed_Ali_500x500.jpg' },
     { id: 'a12', name: 'Mohit Chauhan', image: 'https://c.saavncdn.com/artists/Mohit_Chauhan_500x500.jpg' },
-    { id: 'a13', name: 'Jubin Nautiyal', image: 'https://c.saavncdn.com/artists/Jubin_Nautiyal_500x500.jpg' },
+    { id: 'a13', name: 'Jubin Nautiyal', image: 'https://i.scdn.co/image/ab6761610000e5eb56eecf73fcdd401eb124af0d' },
     { id: 'a14', name: 'Atif Aslam', image: 'https://c.saavncdn.com/artists/Atif_Aslam_500x500.jpg' },
     { id: 'a15', name: 'Rahat Fateh Ali Khan', image: 'https://c.saavncdn.com/artists/Rahat_Fateh_Ali_Khan_500x500.jpg' },
     { id: 'a16', name: 'Nusrat Fateh Ali Khan', image: 'https://c.saavncdn.com/artists/Nusrat_Fateh_Ali_Khan_500x500.jpg' },
@@ -110,13 +121,13 @@ const TOP_ARTISTS = [
     { id: 'a19', name: 'Lata Mangeshkar', image: 'https://c.saavncdn.com/artists/Lata_Mangeshkar_500x500.jpg' },
     { id: 'a20', name: 'Asha Bhosle', image: 'https://c.saavncdn.com/artists/Asha_Bhosle_500x500.jpg' },
     { id: 'a21', name: 'Yo Yo Honey Singh', image: 'https://c.saavncdn.com/artists/Yo_Yo_Honey_Singh_500x500.jpg' },
-    { id: 'a22', name: 'Badshah', image: 'https://c.saavncdn.com/artists/Badshah_005_20230608084021_500x500.jpg' },
-    { id: 'a23', name: 'Karan Aujla', image: 'https://c.saavncdn.com/artists/Karan_Aujla_500x500.jpg' },
-    { id: 'a24', name: 'Diljit Dosanjh', image: 'https://c.saavncdn.com/artists/Diljit_Dosanjh_004_20231025075640_500x500.jpg' },
+    { id: 'a22', name: 'Badshah', image: 'https://c.saavncdn.com/artists/Badshah_500x500.jpg' },
+    { id: 'a23', name: 'Karan Aujla', image: 'https://i.scdn.co/image/ab6761610000e5eb1eabffcd8cc5951d8b2d7119' },
+    { id: 'a24', name: 'Diljit Dosanjh', image: 'https://i.scdn.co/image/ab6761610000e5ebb5b8f60183b0f581cd11ba90' },
     { id: 'a25', name: 'Guru Randhawa', image: 'https://c.saavncdn.com/artists/Guru_Randhawa_500x500.jpg' },
-    { id: 'a26', name: 'Jass Manak', image: 'https://c.saavncdn.com/artists/Jass_Manak_500x500.jpg' },
+    { id: 'a26', name: 'Jass Manak', image: 'https://i.scdn.co/image/ab6761610000e5ebdd2720d297b864a275b9f939' },
     { id: 'a27', name: 'Shafqat Amanat Ali', image: 'https://c.saavncdn.com/artists/Shafqat_Amanat_Ali_500x500.jpg' },
-    { id: 'a28', name: 'Pritam', image: 'https://c.saavncdn.com/artists/Pritam_500x500.jpg' },
+    { id: 'a28', name: 'Pritam', image: 'https://i.scdn.co/image/ab6761610000e5ebcb6926f44f620555ba444fcd' },
     { id: 'a29', name: 'Emraan Hashmi', image: 'https://c.saavncdn.com/artists/Emraan_Hashmi_500x500.jpg' },
     { id: 'a30', name: 'Himesh Reshammiya', image: 'https://c.saavncdn.com/artists/Himesh_Reshammiya_500x500.jpg' },
     { id: 'a31', name: 'Sunidhi Chauhan', image: 'https://c.saavncdn.com/artists/Sunidhi_Chauhan_500x500.jpg' },
@@ -129,23 +140,80 @@ const formatTime = (seconds) => {
     return `${m}:${s < 10 ? '0' : ''}${s}`;
 };
 
+// --- MEMORY CACHE FOR INSTANT LOADING ON TAB SWITCH ---
+let globalCachedSpeedDial = [];
+let globalCachedQuickPicks = [];
+
+const ArtistImage = ({ name, rawImage, style }) => {
+    const [hasError, setHasError] = useState(false);
+
+    useEffect(() => {
+        setHasError(false);
+    }, [rawImage]);
+
+    let parsedUrl = null;
+    if (typeof rawImage === 'string' && rawImage.startsWith('http')) {
+        parsedUrl = rawImage;
+    } else if (Array.isArray(rawImage) && rawImage.length > 0) {
+        parsedUrl = rawImage.find(i => i.quality === '500x500')?.url || rawImage[0]?.url;
+    }
+
+    const encodedName = encodeURIComponent(name || 'Artist');
+    const fallbackUrl = `https://ui-avatars.com/api/?name=${encodedName}&background=2A2A30&color=00E5FF&size=200&bold=true&font-size=0.4`;
+
+    return (
+        <Image
+            source={{ uri: (hasError || !parsedUrl) ? fallbackUrl : parsedUrl }}
+            style={style}
+            onError={() => setHasError(true)}
+        />
+    );
+};
+
 // --- 1. YOUTUBE MUSIC CLONE FEED ---
 const YTMusicFeed = ({ onPlayMusic }) => {
     const { token } = useAuthStore();
     const insets = useSafeAreaInsets();
 
     const [selectedArtists, setSelectedArtists] = useState([]);
-    const [speedDial, setSpeedDial] = useState([]);
-    const [quickPicks, setQuickPicks] = useState([]);
+    const [customArtistMap, setCustomArtistMap] = useState({});
+
+    // --- FIX #3: Request Guard for race conditions
+    const buildRequestId = useRef(0);
+
+    useEffect(() => {
+        let isMounted = true;
+        const loadSavedArtists = async () => {
+            if (!token) return;
+            try {
+                const res = await fetch(`${BACKEND_URL}/user/lists`, {
+                    headers: { Authorization: `Bearer ${token}` }
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    if (isMounted && data.favoriteArtists && data.favoriteArtists.length > 0) {
+                        setSelectedArtists(data.favoriteArtists);
+                    }
+                }
+            } catch (error) {
+                console.log("Failed to load saved artists", error);
+            }
+        };
+        loadSavedArtists();
+        return () => { isMounted = false; };
+    }, [token]);
+
+    const [speedDial, setSpeedDial] = useState(globalCachedSpeedDial);
+    const [quickPicks, setQuickPicks] = useState(globalCachedQuickPicks);
     const [artistPlaylists, setArtistPlaylists] = useState([]);
-    const [loading, setLoading] = useState(true);
+
+    const [loading, setLoading] = useState(globalCachedSpeedDial.length === 0);
 
     const [searchQuery, setSearchQuery] = useState('');
     const [searchResults, setSearchResults] = useState({ songs: [], artists: [] });
     const [isSearching, setIsSearching] = useState(false);
     const [isListening, setIsListening] = useState(false);
 
-    // LIKED SONGS STATE
     const [likedModalOpen, setLikedModalOpen] = useState(false);
     const [loadingLiked, setLoadingLiked] = useState(false);
     const [likedSongsList, setLikedSongsList] = useState([]);
@@ -153,13 +221,19 @@ const YTMusicFeed = ({ onPlayMusic }) => {
     useSpeechRecognitionEvent('start', () => setIsListening(true));
     useSpeechRecognitionEvent('end', () => setIsListening(false));
     useSpeechRecognitionEvent('result', (e) => {
-        if (e.results?.[0]?.transcript) setSearchQuery(e.results[0].transcript);
+        if (e.results?.[0]?.transcript) {
+            setSearchQuery(e.results[0].transcript);
+            Keyboard.dismiss();
+        }
         if (e.isFinal) ExpoSpeechRecognitionModule.stop();
     });
     useSpeechRecognitionEvent('error', () => setIsListening(false));
 
     const toggleListening = async () => {
-        if (isListening) return ExpoSpeechRecognitionModule.stop();
+        if (isListening) {
+            ExpoSpeechRecognitionModule.stop();
+            return;
+        }
         const p = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
         if (p.granted) {
             setSearchQuery('');
@@ -168,8 +242,12 @@ const YTMusicFeed = ({ onPlayMusic }) => {
     };
 
     const toggleArtistSelection = async (artistName) => {
-        let newSelected = [...selectedArtists];
-        if (newSelected.includes(artistName)) {
+        if (!artistName || typeof artistName !== 'string') return;
+
+        let newSelected = [...selectedArtists.filter(Boolean)];
+        const isCurrentlySelected = newSelected.includes(artistName);
+
+        if (isCurrentlySelected) {
             newSelected = newSelected.filter(a => a !== artistName);
         } else {
             newSelected.push(artistName);
@@ -183,8 +261,27 @@ const YTMusicFeed = ({ onPlayMusic }) => {
                     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
                     body: JSON.stringify({ artistName })
                 });
-            } catch (e) { console.error('DB Sync Error'); }
+            } catch (e) {
+                console.error('DB Sync Error', e);
+            }
         }
+    };
+
+    const handleSelectArtistFromSearch = (artist) => {
+        const artistName = (artist?.title || artist?.name || '').trim();
+        if (!artistName) return;
+
+        const img = Array.isArray(artist.image)
+            ? (artist.image.find(i => i.quality === '500x500')?.url || artist.image[0]?.url)
+            : artist.image;
+
+        if (img) {
+            setCustomArtistMap(prev => ({ ...prev, [artistName]: img }));
+        }
+
+        toggleArtistSelection(artistName);
+        setSearchQuery('');
+        Keyboard.dismiss(); // --- FIX #1: Dismiss keyboard when selecting to unblock first touch
     };
 
     const fetchLikedSongs = async () => {
@@ -211,7 +308,14 @@ const YTMusicFeed = ({ onPlayMusic }) => {
 
     useEffect(() => {
         let isMounted = true;
+        const myRequestId = ++buildRequestId.current;
+
         const buildFeed = async () => {
+            if (selectedArtists.length === 0 && globalCachedSpeedDial.length > 0) {
+                if (isMounted) setLoading(false);
+                return;
+            }
+
             setLoading(true);
             try {
                 if (selectedArtists.length === 0) {
@@ -236,15 +340,19 @@ const YTMusicFeed = ({ onPlayMusic }) => {
                         }
                     }
 
-                    if (isMounted) {
-                        setSpeedDial(uniqueSongs.slice(0, 12));
-                        setQuickPicks(uniqueSongs.slice(12, 24));
+                    if (isMounted && myRequestId === buildRequestId.current) {
+                        globalCachedSpeedDial = uniqueSongs.slice(0, 12);
+                        globalCachedQuickPicks = uniqueSongs.slice(12, 24);
+
+                        setSpeedDial(globalCachedSpeedDial);
+                        setQuickPicks(globalCachedQuickPicks);
                         setArtistPlaylists([]);
                     }
-                }
-                else {
-                    const promises = selectedArtists.map(async artist => {
-                        const res = await safeFetchJson(`/search/songs?query=${encodeURIComponent(artist)}&limit=15`);
+                } else {
+                    const validArtists = selectedArtists.filter(a => a && typeof a === 'string');
+
+                    const promises = validArtists.map(async artist => {
+                        const res = await safeFetchJson(`/search/songs?query=${encodeURIComponent(artist + " hindi")}&limit=50`);
                         return {
                             artist,
                             songs: res && res.success && res.data?.results ? res.data.results : []
@@ -254,24 +362,55 @@ const YTMusicFeed = ({ onPlayMusic }) => {
                     const results = await Promise.all(promises);
 
                     const newArtistPlaylists = results.map(result => {
+                        if (!result || !result.artist) return { artist: '', songs: [] };
+
                         const seenNames = new Set();
                         const uniqueSongs = [];
-                        for (const item of result.songs) {
-                            const normName = normalizeString(item.name || item.title);
-                            if (!seenNames.has(normName) && item.image && item.downloadUrl) {
+                        const targetLower = String(result.artist).toLowerCase().trim();
+
+                        for (const item of (result.songs || [])) {
+                            const songName = item?.name || item?.title;
+                            if (!songName || typeof songName !== 'string' || songName.trim() === '' || songName.toLowerCase().includes('undefined')) {
+                                continue;
+                            }
+
+                            const lang = String(item.language || '').toLowerCase();
+                            if (lang && lang !== 'hindi') {
+                                continue;
+                            }
+
+                            const primaryArtists = (item.artists?.primary || [])
+                                .map(a => a?.name ? String(a.name).toLowerCase() : '')
+                                .filter(Boolean);
+                            const subtitleLower = String(item.subtitle || '').toLowerCase();
+                            const descLower = String(item.description || '').toLowerCase();
+                            const artistStrLower = String(item.artist || '').toLowerCase();
+
+                            const isGenuine = primaryArtists.some(n => n.includes(targetLower) || targetLower.includes(n))
+                                || subtitleLower.includes(targetLower)
+                                || descLower.includes(targetLower)
+                                || artistStrLower.includes(targetLower);
+
+                            const rawName = songName.toLowerCase();
+                            const isVague = rawName.includes('karaoke') || rawName.includes('cover') || rawName.includes('instrumental') || rawName.includes('mashup');
+                            const normName = normalizeString(songName);
+
+                            if (isGenuine && !isVague && !seenNames.has(normName) && item.image && item.downloadUrl) {
                                 seenNames.add(normName);
                                 uniqueSongs.push(item);
                             }
                         }
-                        return { artist: result.artist, songs: uniqueSongs.slice(0, 15) };
+                        return { artist: result.artist, songs: uniqueSongs.slice(0, 30) };
                     }).filter(playlist => playlist.songs.length > 0);
 
-                    if (isMounted) setArtistPlaylists(newArtistPlaylists);
+                    if (isMounted && myRequestId === buildRequestId.current) {
+                        setArtistPlaylists(newArtistPlaylists);
+                    }
                 }
             } catch (e) {
                 console.error(e)
             } finally {
-                if (isMounted) setLoading(false);
+                if (isMounted && myRequestId === buildRequestId.current) setLoading(false);
             }
         };
         buildFeed();
@@ -296,7 +435,13 @@ const YTMusicFeed = ({ onPlayMusic }) => {
                 ]);
 
                 const validSongs = songsJson && songsJson.success ? songsJson.data.results.filter(s => s.image && s.image.length > 0) : [];
-                const validArtists = artistsJson && artistsJson.success ? artistsJson.data.results.filter(a => a.image && a.image.length > 0 && a.image[0].url && a.image[0].url.includes('http')) : [];
+
+                const validArtists = artistsJson && artistsJson.success
+                    ? artistsJson.data.results.filter(a => {
+                        const name = a?.title || a?.name;
+                        return name && typeof name === 'string' && name.trim() !== '' && !name.toLowerCase().includes('undefined') && !name.toLowerCase().includes('null');
+                    })
+                    : [];
 
                 const seenNames = new Set();
                 const uniqueValidSongs = validSongs.filter(s => {
@@ -336,6 +481,16 @@ const YTMusicFeed = ({ onPlayMusic }) => {
         }, queueContext.length > 0 ? queueContext : [track]);
     };
 
+    const customArtists = token ? selectedArtists
+        .filter(name => !TOP_ARTISTS.some(ta => ta.name.toLowerCase() === name.toLowerCase()))
+        .map(name => ({
+            id: `custom_${name}`,
+            name,
+            image: customArtistMap[name] || null
+        })) : [];
+
+    const displayTopArtists = [...TOP_ARTISTS, ...customArtists];
+
     if (loading && speedDial.length === 0 && artistPlaylists.length === 0) {
         return <View style={{ alignItems: 'center', paddingTop: 60 }}><ActivityIndicator size="large" color="#FF007A" /></View>;
     }
@@ -362,7 +517,7 @@ const YTMusicFeed = ({ onPlayMusic }) => {
                             <Text style={{ color: '#8F98A0', fontSize: 14, marginTop: 8 }}>Tap the heart on any playing song to save it here.</Text>
                         </View>
                     ) : (
-                        <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 100 }} showsVerticalScrollIndicator={false}>
+                        <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: 16, paddingBottom: 100 }} showsVerticalScrollIndicator={false}>
                             {likedSongsList.map((track) => {
                                 const imgUrl = Array.isArray(track.image) ? (track.image?.find?.(i => i.quality === '500x500')?.url || track.image?.[0]?.url) : track.image;
                                 return (
@@ -397,7 +552,7 @@ const YTMusicFeed = ({ onPlayMusic }) => {
                     autoCapitalize="none"
                 />
                 {searchQuery.length > 0 && !isListening ? (
-                    <TouchableOpacity onPress={() => setSearchQuery('')} style={styles.musicRightIcon}>
+                    <TouchableOpacity onPress={() => { setSearchQuery(''); Keyboard.dismiss(); }} style={styles.musicRightIcon}>
                         <Ionicons name="close-circle" size={18} color="#8F98A0" />
                     </TouchableOpacity>
                 ) : (
@@ -407,84 +562,84 @@ const YTMusicFeed = ({ onPlayMusic }) => {
                 )}
             </View>
 
-            {searchQuery.trim().length === 0 && (
-                <View style={{ paddingHorizontal: 16, marginBottom: 24, flexDirection: 'row' }}>
-                    <TouchableOpacity
-                        style={styles.libraryChip}
-                        activeOpacity={0.8}
-                        onPress={fetchLikedSongs}
-                    >
-                        <LinearGradient colors={['#FF007A', '#9B51E0']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.libraryChipGradient}>
-                            <Ionicons name="heart" size={16} color="#FFF" style={{ marginTop: 2 }} />
-                        </LinearGradient>
-                        <Text style={styles.libraryChipText}>Liked Songs</Text>
-                    </TouchableOpacity>
-                </View>
-            )}
+            {
+                searchQuery.trim().length === 0 && selectedArtists.length === 0 && (
+                    <View style={{ paddingHorizontal: 16, marginBottom: 24, flexDirection: 'row' }}>
+                        <TouchableOpacity
+                            style={styles.libraryChip}
+                            activeOpacity={0.8}
+                            onPress={fetchLikedSongs}
+                        >
+                            <LinearGradient colors={['#FF007A', '#9B51E0']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.libraryChipGradient}>
+                                <Ionicons name="heart" size={16} color="#FFF" style={{ marginTop: 2 }} />
+                            </LinearGradient>
+                            <Text style={styles.libraryChipText}>Liked Songs</Text>
+                        </TouchableOpacity> 
+                    </View>
+                )
+            }
 
             {searchQuery.trim().length > 0 ? (
-                <ScrollView contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 20 }}>
-                    {isSearching ? (
-                        <ActivityIndicator color="#00E5FF" style={{ marginTop: 30 }} />
-                    ) : (
-                        <>
-                            {searchResults.artists.length > 0 && (
-                                <View style={{ marginBottom: 24 }}>
-                                    <Text style={[styles.ytSectionTitle, { paddingHorizontal: 0 }]}>Artists</Text>
-                                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 16, paddingTop: 10 }}>
-                                        {searchResults.artists.map(artist => {
-                                            const imgUrl = artist.image?.find?.(i => i.quality === '500x500')?.url || artist.image?.[0]?.url || artist.image;
-                                            const isSelected = selectedArtists.includes(artist.title);
-                                            return (
-                                                <TouchableOpacity
-                                                    key={artist.id}
-                                                    style={{ alignItems: 'center', width: 80, position: 'relative' }}
-                                                    onPress={() => {
-                                                        toggleArtistSelection(artist.title);
-                                                        setSearchQuery('');
-                                                    }}
-                                                >
-                                                    <LinearGradient colors={isSelected ? ['#00E5FF', '#FF007A'] : ['#2A2A30', '#2A2A30']} style={styles.igStoryRing}>
-                                                        <Image source={{ uri: imgUrl }} style={styles.igArtistImg} />
-                                                    </LinearGradient>
-                                                    {isSelected && (
-                                                        <View style={styles.artistSelectedBadge}>
-                                                            <Ionicons name="heart" size={12} color="#FFFFFF" />
-                                                        </View>
-                                                    )}
-                                                    <Text style={styles.igArtistName} numberOfLines={2}>{artist.title}</Text>
-                                                </TouchableOpacity>
-                                            )
-                                        })}
-                                    </ScrollView>
-                                </View>
-                            )}
-
-                            {searchResults.songs.length > 0 && (
-                                <View>
-                                    <Text style={[styles.ytSectionTitle, { paddingHorizontal: 0 }]}>Songs</Text>
-                                    <View style={{ gap: 12, marginTop: 10 }}>
-                                        {searchResults.songs.map(track => {
-                                            const imgUrl = track.image?.find?.(i => i.quality === '500x500')?.url || track.image?.[0]?.url || track.image;
-                                            return (
-                                                <TouchableOpacity key={track.id} style={styles.ytListTile} onPress={() => handleSongClick(track, searchResults.songs)}>
-                                                    <Image source={{ uri: imgUrl }} style={styles.ytTileImgQuick} />
-                                                    <View style={{ flex: 1, justifyContent: 'center', paddingRight: 10 }}>
-                                                        <Text style={styles.ytTileTitle} numberOfLines={1}>{track.title || track.name}</Text>
-                                                        <Text style={styles.ytTileSubtitle} numberOfLines={1}>{track.description || track.subtitle || 'Song'}</Text>
-                                                    </View>
-                                                </TouchableOpacity>
-                                            )
-                                        })}
+                <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 20 }}>
+                    {
+                        isSearching ? (
+                            <ActivityIndicator color="#00E5FF" style={{ marginTop: 30 }} />
+                        ) : (
+                            <>
+                                {searchResults.artists.length > 0 && (
+                                    <View style={{ marginBottom: 24 }}>
+                                        <Text style={[styles.ytSectionTitle, { paddingHorizontal: 0 }]}>Artists</Text>
+                                        <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{ gap: 16, paddingTop: 10 }}>
+                                            {searchResults.artists.map(artist => {
+                                                const artistName = artist.title || artist.name;
+                                                const isSelected = selectedArtists.includes(artistName);
+                                                return (
+                                                    <TouchableOpacity
+                                                        key={artist.id}
+                                                        style={{ alignItems: 'center', width: 80, position: 'relative' }}
+                                                        onPress={() => handleSelectArtistFromSearch(artist)}
+                                                    >
+                                                        <LinearGradient colors={isSelected ? ['#00E5FF', '#FF007A'] : ['#2A2A30', '#2A2A30']} style={styles.igStoryRing}>
+                                                            <ArtistImage name={artistName} rawImage={artist.image} style={styles.igArtistImg} />
+                                                        </LinearGradient>
+                                                        {isSelected && (
+                                                            <View style={styles.artistSelectedBadge}>
+                                                                <Ionicons name="heart" size={12} color="#FFFFFF" />
+                                                            </View>
+                                                        )}
+                                                        <Text style={styles.igArtistName} numberOfLines={2}>{artistName}</Text>
+                                                    </TouchableOpacity>
+                                                )
+                                            })}
+                                        </ScrollView>
                                     </View>
-                                </View>
-                            )}
-                            {searchResults.artists.length === 0 && searchResults.songs.length === 0 && (
-                                <Text style={{ color: '#8F98A0', textAlign: 'center', marginTop: 20 }}>No results found</Text>
-                            )}
-                        </>
-                    )}
-                </ScrollView>
+                                )}
+
+                                {searchResults.songs.length > 0 && (
+                                    <View>
+                                        <Text style={[styles.ytSectionTitle, { paddingHorizontal: 0 }]}>Songs</Text>
+                                        <View style={{ gap: 12, marginTop: 10 }}>
+                                            {searchResults.songs.map(track => {
+                                                const imgUrl = track.image?.find?.(i => i.quality === '500x500')?.url || track.image?.[0]?.url || track.image;
+                                                return (
+                                                    <TouchableOpacity key={track.id} style={styles.ytListTile} onPress={() => handleSongClick(track, searchResults.songs)}>
+                                                        <ArtistImage name={track.title || track.name} rawImage={imgUrl} style={styles.ytTileImgQuick} />
+                                                        <View style={{ flex: 1, justifyContent: 'center', paddingRight: 10 }}>
+                                                            <Text style={styles.ytTileTitle} numberOfLines={1}>{track.title || track.name}</Text>
+                                                            <Text style={styles.ytTileSubtitle} numberOfLines={1}>{track.description || track.subtitle || 'Song'}</Text>
+                                                        </View>
+                                                    </TouchableOpacity>
+                                                )
+                                            })}
+                                        </View>
+                                    </View>
+                                )}
+                                {searchResults.artists.length === 0 && searchResults.songs.length === 0 && (
+                                    <Text style={{ color: '#8F98A0', textAlign: 'center', marginTop: 20 }}>No results found</Text>
+                                )}
+                            </>
+                        )}
+                </ScrollView >
             ) : (
                 <>
                     <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, marginBottom: 12 }}>
@@ -495,13 +650,17 @@ const YTMusicFeed = ({ onPlayMusic }) => {
                             </TouchableOpacity>
                         )}
                     </View>
-                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 16, gap: 16, marginBottom: 30 }}>
-                        {TOP_ARTISTS.map(artist => {
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingHorizontal: 16, gap: 16, marginBottom: 30 }}>
+                        {displayTopArtists.map(artist => {
                             const isSelected = selectedArtists.includes(artist.name);
                             return (
-                                <TouchableOpacity key={artist.id} style={{ alignItems: 'center', width: 80, position: 'relative' }} onPress={() => toggleArtistSelection(artist.name)}>
+                                <TouchableOpacity
+                                    key={artist.id}
+                                    style={{ alignItems: 'center', width: 80, position: 'relative' }}
+                                    onPress={() => toggleArtistSelection(artist.name)}
+                                >
                                     <LinearGradient colors={isSelected ? ['#00E5FF', '#FF007A'] : ['#2A2A30', '#2A2A30']} style={styles.igStoryRing}>
-                                        <Image source={{ uri: artist.image }} style={styles.igArtistImg} />
+                                        <ArtistImage name={artist.name} rawImage={artist.image} style={styles.igArtistImg} />
                                     </LinearGradient>
                                     {isSelected && (
                                         <View style={styles.artistSelectedBadge}>
@@ -514,25 +673,50 @@ const YTMusicFeed = ({ onPlayMusic }) => {
                         })}
                     </ScrollView>
 
-                    {loading && (speedDial.length > 0 || artistPlaylists.length > 0) ? (
-                        <View style={{ alignItems: 'center', paddingVertical: 20 }}><ActivityIndicator color="#00E5FF" /></View>
-                    ) : selectedArtists.length > 0 ? (
+                    {selectedArtists.length > 0 ? (
+                        <View>
+                            {loading ? (
+                                <View style={{ alignItems: 'center', paddingVertical: 40 }}><ActivityIndicator color="#00E5FF" /></View>
+                            ) : (
+                                artistPlaylists.map((playlist, pIdx) => (
+                                    <View key={pIdx} style={{ marginBottom: 30 }}>
+                                        <Text style={[styles.ytSectionTitle, { paddingHorizontal: 16, fontSize: 20, marginBottom: 12 }]}>{playlist.artist}</Text>
+                                        <View style={{ paddingHorizontal: 16, gap: 16 }}>
+                                            {playlist.songs.map(track => {
+                                                const imgUrl = track.image?.find?.(i => i.quality === '500x500')?.url || track.image?.[0]?.url || track.image;
+                                                return (
+                                                    <TouchableOpacity key={track.id} style={styles.ytListTile} onPress={() => handleSongClick(track, playlist.songs)}>
+                                                        <ArtistImage name={track.title || track.name} rawImage={imgUrl} style={styles.ytTileImgQuick} />
+                                                        <View style={{ flex: 1, justifyContent: 'center', paddingRight: 10 }}>
+                                                            <Text style={[styles.ytTileTitle, { fontSize: 16 }]} numberOfLines={1}>{track.title || track.name}</Text>
+                                                            <Text style={[styles.ytTileSubtitle, { fontSize: 14 }]} numberOfLines={1}>{track.artists?.primary?.map(a => a.name).join(', ') || track.subtitle || playlist.artist}</Text>
+                                                        </View>
+                                                    </TouchableOpacity>
+                                                )
+                                            })}
+                                        </View>
+                                    </View>
+                                ))
+                            )}
+                        </View>
+                    ) : (
                         <>
-                            {artistPlaylists.map((playlist, pIdx) => (
-                                <View key={pIdx} style={{ marginBottom: 30 }}>
-                                    <Text style={[styles.ytSectionTitle, { paddingHorizontal: 16 }]}>Top Songs by {playlist.artist}</Text>
-                                    <Text style={styles.ytSectionSubtitle}>BASED ON YOUR SELECTION</Text>
-                                    <ScrollView horizontal showsHorizontalScrollIndicator={false} snapToInterval={width * 0.85} decelerationRate="fast" contentContainerStyle={{ paddingHorizontal: 16, gap: 16 }}>
-                                        {chunkArray(playlist.songs, 4).map((col, colIdx) => (
+                            {loading && speedDial.length === 0 ? (
+                                <View style={{ alignItems: 'center', paddingVertical: 20 }}><ActivityIndicator color="#00E5FF" /></View>
+                            ) : (
+                                <>
+                                    <Text style={[styles.ytSectionTitle, { paddingHorizontal: 16 }]}>Speed dial</Text>
+                                    <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" snapToInterval={width * 0.85} decelerationRate="fast" contentContainerStyle={{ paddingHorizontal: 16, gap: 16, marginBottom: 30 }}>
+                                        {chunkArray(speedDial, 4).map((col, colIdx) => (
                                             <View key={colIdx} style={{ width: width * 0.85, gap: 12 }}>
                                                 {col.map(track => {
                                                     const imgUrl = track.image?.find(i => i.quality === '500x500')?.url || track.image?.[0]?.url;
                                                     return (
-                                                        <TouchableOpacity key={track.id} style={styles.ytListTile} onPress={() => handleSongClick(track, playlist.songs)}>
+                                                        <TouchableOpacity key={track.id} style={styles.ytListTile} onPress={() => handleSongClick(track, speedDial)}>
                                                             <Image source={{ uri: imgUrl }} style={styles.ytTileImg} />
                                                             <View style={{ flex: 1, justifyContent: 'center', paddingRight: 10 }}>
                                                                 <Text style={styles.ytTileTitle} numberOfLines={1}>{track.name || track.title}</Text>
-                                                                <Text style={styles.ytTileSubtitle} numberOfLines={1}>{track.artists?.primary?.map(a => a.name).join(', ') || track.subtitle || playlist.artist}</Text>
+                                                                <Text style={styles.ytTileSubtitle} numberOfLines={1}>{track.artists?.primary?.map(a => a.name).join(', ') || track.subtitle}</Text>
                                                             </View>
                                                         </TouchableOpacity>
                                                     )
@@ -540,56 +724,35 @@ const YTMusicFeed = ({ onPlayMusic }) => {
                                             </View>
                                         ))}
                                     </ScrollView>
-                                </View>
-                            ))}
-                        </>
-                    ) : (
-                        <>
-                            <Text style={[styles.ytSectionTitle, { paddingHorizontal: 16 }]}>Speed dial</Text>
-                            <ScrollView horizontal showsHorizontalScrollIndicator={false} snapToInterval={width * 0.85} decelerationRate="fast" contentContainerStyle={{ paddingHorizontal: 16, gap: 16, marginBottom: 30 }}>
-                                {chunkArray(speedDial, 4).map((col, colIdx) => (
-                                    <View key={colIdx} style={{ width: width * 0.85, gap: 12 }}>
-                                        {col.map(track => {
-                                            const imgUrl = track.image?.find(i => i.quality === '500x500')?.url || track.image?.[0]?.url;
-                                            return (
-                                                <TouchableOpacity key={track.id} style={styles.ytListTile} onPress={() => handleSongClick(track, speedDial)}>
-                                                    <Image source={{ uri: imgUrl }} style={styles.ytTileImg} />
-                                                    <View style={{ flex: 1, justifyContent: 'center', paddingRight: 10 }}>
-                                                        <Text style={styles.ytTileTitle} numberOfLines={1}>{track.name || track.title}</Text>
-                                                        <Text style={styles.ytTileSubtitle} numberOfLines={1}>{track.artists?.primary?.map(a => a.name).join(', ') || track.subtitle}</Text>
-                                                    </View>
-                                                </TouchableOpacity>
-                                            )
-                                        })}
-                                    </View>
-                                ))}
-                            </ScrollView>
 
-                            <Text style={[styles.ytSectionTitle, { paddingHorizontal: 16 }]}>Quick picks</Text>
-                            <Text style={styles.ytSectionSubtitle}>START RADIO FROM A SONG</Text>
-                            <ScrollView horizontal showsHorizontalScrollIndicator={false} snapToInterval={width * 0.85} decelerationRate="fast" contentContainerStyle={{ paddingHorizontal: 16, gap: 16 }}>
-                                {chunkArray(quickPicks, 4).map((col, colIdx) => (
-                                    <View key={colIdx} style={{ width: width * 0.85, gap: 12 }}>
-                                        {col.map(track => {
-                                            const imgUrl = track.image?.find(i => i.quality === '500x500')?.url || track.image?.[0]?.url;
-                                            return (
-                                                <TouchableOpacity key={track.id} style={styles.ytListTile} onPress={() => handleSongClick(track, quickPicks)}>
-                                                    <Image source={{ uri: imgUrl }} style={styles.ytTileImgQuick} />
-                                                    <View style={{ flex: 1, justifyContent: 'center', paddingRight: 10 }}>
-                                                        <Text style={styles.ytTileTitle} numberOfLines={1}>{track.name || track.title}</Text>
-                                                        <Text style={styles.ytTileSubtitle} numberOfLines={1}>{track.artists?.primary?.map(a => a.name).join(', ') || track.subtitle}</Text>
-                                                    </View>
-                                                </TouchableOpacity>
-                                            )
-                                        })}
-                                    </View>
-                                ))}
-                            </ScrollView>
+                                    <Text style={[styles.ytSectionTitle, { paddingHorizontal: 16 }]}>Quick picks</Text>
+                                    <Text style={styles.ytSectionSubtitle}>START RADIO FROM A SONG</Text>
+                                    <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" snapToInterval={width * 0.85} decelerationRate="fast" contentContainerStyle={{ paddingHorizontal: 16, gap: 16 }}>
+                                        {chunkArray(quickPicks, 4).map((col, colIdx) => (
+                                            <View key={colIdx} style={{ width: width * 0.85, gap: 12 }}>
+                                                {col.map(track => {
+                                                    const imgUrl = track.image?.find(i => i.quality === '500x500')?.url || track.image?.[0]?.url;
+                                                    return (
+                                                        <TouchableOpacity key={track.id} style={styles.ytListTile} onPress={() => handleSongClick(track, quickPicks)}>
+                                                            <Image source={{ uri: imgUrl }} style={styles.ytTileImgQuick} />
+                                                            <View style={{ flex: 1, justifyContent: 'center', paddingRight: 10 }}>
+                                                                <Text style={styles.ytTileTitle} numberOfLines={1}>{track.name || track.title}</Text>
+                                                                <Text style={styles.ytTileSubtitle} numberOfLines={1}>{track.artists?.primary?.map(a => a.name).join(', ') || track.subtitle}</Text>
+                                                            </View>
+                                                        </TouchableOpacity>
+                                                    )
+                                                })}
+                                            </View>
+                                        ))}
+                                    </ScrollView>
+                                </>
+                            )}
                         </>
                     )}
                 </>
-            )}
-        </ReAnimated.View>
+            )
+            }
+        </ReAnimated.View >
     );
 };
 
@@ -641,37 +804,78 @@ const LiveSportsFeed = ({ selectedSport }) => {
 
 const LiveTvFeed = ({ selectedCategory, selectedLanguage, onNavigateToPlayer }) => {
     const { allChannels, activeFeeds, isLoadingTv, fetchTvData, filterByCategory } = useTvStore();
-    const [searchQuery, setSearchQuery] = useState('');
+    const [tvSearchQuery, setTvSearchQuery] = useState('');
+    const [isTvListening, setIsTvListening] = useState(false);
+
+    useSpeechRecognitionEvent('start', () => setIsTvListening(true));
+    useSpeechRecognitionEvent('end', () => setIsTvListening(false));
+    useSpeechRecognitionEvent('result', (e) => {
+        if (e.results?.[0]?.transcript) {
+            setTvSearchQuery(e.results[0].transcript);
+            Keyboard.dismiss();
+        }
+        if (e.isFinal) ExpoSpeechRecognitionModule.stop();
+    });
+    useSpeechRecognitionEvent('error', () => setIsTvListening(false));
+
+    const toggleTvListening = async () => {
+        if (isTvListening) return ExpoSpeechRecognitionModule.stop();
+        const p = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+        if (p.granted) {
+            setTvSearchQuery('');
+            ExpoSpeechRecognitionModule.start({ lang: 'en-US', interimResults: true, continuous: false });
+        }
+    };
 
     useEffect(() => { if (allChannels.length === 0) fetchTvData(); }, []);
-    useEffect(() => { filterByCategory(selectedCategory, selectedLanguage); searchQuery && setSearchQuery(''); }, [selectedCategory, selectedLanguage, allChannels]);
+    useEffect(() => { filterByCategory(selectedCategory, selectedLanguage); tvSearchQuery && setTvSearchQuery(''); }, [selectedCategory, selectedLanguage, allChannels]);
 
     const displayedChannels = useMemo(() => {
-        if (!searchQuery.trim()) return activeFeeds;
-        return activeFeeds.filter(channel => channel.title.toLowerCase().includes(searchQuery.toLowerCase()));
-    }, [activeFeeds, searchQuery]);
+        if (!tvSearchQuery.trim()) return activeFeeds;
+        return activeFeeds.filter(channel => channel.title.toLowerCase().includes(tvSearchQuery.toLowerCase()));
+    }, [activeFeeds, tvSearchQuery]);
 
     if (isLoadingTv && allChannels.length === 0) return <ReAnimated.View entering={FadeIn} exiting={FadeOut} style={[styles.sportsContainer, { alignItems: 'center', paddingTop: 40 }]}><ActivityIndicator size="large" color="#00E5FF" /></ReAnimated.View>;
+
     return (
         <ReAnimated.View layout={LinearTransition} style={styles.sportsContainer}>
             <Text style={styles.rowTitle}>Live TV Channels</Text>
-            <View style={styles.searchContainer}>
-                <Ionicons name="search" size={22} color="#00E5FF" style={styles.searchIcon} />
-                <TextInput style={styles.searchInput} placeholder="Search channels..." placeholderTextColor="#6B7280" value={searchQuery} onChangeText={setSearchQuery} selectionColor="#00E5FF" />
-                {searchQuery.length > 0 && (
-                    <TouchableOpacity onPress={() => setSearchQuery('')} style={styles.clearSearchBtn} activeOpacity={0.7}>
-                        <Ionicons name="close" size={18} color="#FFFFFF" />
+
+            <View style={[styles.musicSearchBox, isTvListening && styles.musicSearchBoxActive, { marginHorizontal: 0, marginBottom: 20 }]}>
+                <Ionicons name="search" size={20} color="#00E5FF" style={styles.musicSearchIcon} />
+                <TextInput
+                    style={styles.musicSearchInput}
+                    placeholder={isTvListening ? "Listening..." : "Search TV shows, movies..."}
+                    placeholderTextColor={isTvListening ? "#00E5FF" : "#8F98A0"}
+                    value={tvSearchQuery}
+                    onChangeText={setTvSearchQuery}
+                    selectionColor="#00E5FF"
+                    autoCapitalize="none"
+                />
+                {tvSearchQuery.length > 0 && !isTvListening ? (
+                    <TouchableOpacity onPress={() => { setTvSearchQuery(''); Keyboard.dismiss(); }} style={styles.musicRightIcon}>
+                        <Ionicons name="close-circle" size={18} color="#8F98A0" />
+                    </TouchableOpacity>
+                ) : (
+                    <TouchableOpacity onPress={toggleTvListening} style={styles.musicRightIcon}>
+                        {isTvListening ? (
+                            <ActivityIndicator size="small" color="#00E5FF" />
+                        ) : (
+                            <Ionicons name="mic-outline" size={22} color="#FFFFFF" />
+                        )}
                     </TouchableOpacity>
                 )}
             </View>
+
             {displayedChannels.length === 0 ? (
                 <View style={styles.emptyStateContainer}>
                     <Ionicons name="tv-outline" size={48} color="#8F98A0" style={{ marginBottom: 12, opacity: 0.5 }} />
                     <Text style={styles.emptyStateTitle}>No Channels Found</Text>
-                    <Text style={styles.emptyStateSub}>{searchQuery ? `We couldn't find any channels matching "${searchQuery}".` : `No channels currently broadcasting for ${selectedCategory} in the selected language.`}</Text>
+                    <Text style={styles.emptyStateSub}>{tvSearchQuery ? `We couldn't find any channels matching "${tvSearchQuery}".` : `No channels currently broadcasting for ${selectedCategory} in the selected language.`}</Text>
                 </View>
             ) : (
                 <FlatList
+                    keyboardShouldPersistTaps="handled"
                     data={displayedChannels}
                     keyExtractor={(item) => item.id}
                     numColumns={2}
@@ -714,7 +918,7 @@ const FilterDropdown = ({ filters, setFilter, onClose }) => {
     const renderGroup = (title, options, activeValue, filterKey) => (
         <ReAnimated.View entering={FadeIn.duration(200)} exiting={FadeOut.duration(200)} style={styles.filterGroup}>
             <Text style={styles.filterGroupTitle}>{title}</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterScroll}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.filterScroll}>
                 {options.map(opt => {
                     const isActive = activeValue === opt.v;
                     return (
@@ -794,7 +998,6 @@ const HorizontalRow = React.memo(({ title, data, onAuthAction, watchlist = {}, w
     if (!data || data.length === 0) return null;
     const handleToggle = useCallback((id, mediaType, listType) => { onAuthAction(() => toggleAction(id, mediaType, listType)); }, [onAuthAction, toggleAction]);
 
-    // Safely default watchlist and watched to {} if they are undefined
     const safeWatchlist = watchlist || {};
     const safeWatched = watched || {};
 
@@ -813,6 +1016,7 @@ const HorizontalRow = React.memo(({ title, data, onAuthAction, watchlist = {}, w
             <Text style={styles.rowTitle}>{title}</Text>
             <FlatList
                 horizontal
+                keyboardShouldPersistTaps="handled"
                 data={data}
                 extraData={{ watchlist: safeWatchlist, watched: safeWatched }}
                 keyExtractor={(item) => String(item.id)}
@@ -852,6 +1056,7 @@ const LanguageRow = React.memo(({ router }) => {
             <Text style={styles.rowTitle}>Popular Languages</Text>
             <FlatList
                 horizontal
+                keyboardShouldPersistTaps="handled"
                 data={MOCK_LANGUAGES}
                 keyExtractor={(item) => item.id}
                 showsHorizontalScrollIndicator={false}
@@ -889,6 +1094,7 @@ const GenreRow = React.memo(({ router, lists }) => {
             <Text style={styles.rowTitle}>Popular Genres</Text>
             <FlatList
                 horizontal
+                keyboardShouldPersistTaps="handled"
                 data={genres}
                 keyExtractor={(item) => item.id}
                 showsHorizontalScrollIndicator={false}
@@ -956,7 +1162,7 @@ const HomeScreen = () => {
 
     const playRequestId = useRef(0);
     const playingTrackId = useRef(null);
-    const isFetchingQueue = useRef(false); // MUTEX LOCK FOR INFINITE SCROLL
+    const isFetchingQueue = useRef(false);
 
     const globalMusicPlayer = useVideoPlayer(null, (player) => {
         player.loop = false;
@@ -965,12 +1171,10 @@ const HomeScreen = () => {
     });
 
     const handleNavigateToPlayer = useCallback((params) => {
-        // Pause music if it's currently playing
         if (isMusicPlaying) {
             globalMusicPlayer.pause();
             setIsMusicPlaying(false);
         }
-        // Navigate to the video player
         router.push({ pathname: '/player', params });
     }, [isMusicPlaying, globalMusicPlayer, router]);
 
@@ -998,7 +1202,6 @@ const HomeScreen = () => {
                 return valid;
             });
 
-        // STRICT DEDUPLICATION PRESERVING ORIGINAL ORDER
         const seenNames = new Set();
         const finalQueue = [];
 
@@ -1010,7 +1213,6 @@ const HomeScreen = () => {
             }
         }
 
-        // FIND THE SELECTED TRACK IN THE DEDUPLICATED QUEUE
         const targetTitleNorm = normalizeString(track.title || track.name);
         let selectedIndex = finalQueue.findIndex(s => String(s.id) === String(track.id) || normalizeString(s.title) === targetTitleNorm);
 
@@ -1026,7 +1228,7 @@ const HomeScreen = () => {
             selectedIndex = 0;
         }
 
-        playingTrackId.current = null; // Force reload
+        playingTrackId.current = null;
         setMusicQueue(finalQueue);
         setCurrentMusicIndex(selectedIndex);
     };
@@ -1085,7 +1287,6 @@ const HomeScreen = () => {
                     });
 
                     const strictly10Tracks = filteredTracks.slice(0, 10);
-                    // 🛑 CRITICAL FIX: Stop infinite loop if all fetched tracks were duplicates
                     if (strictly10Tracks.length === 0) return prev;
 
                     return [...prev, ...strictly10Tracks];
@@ -1102,11 +1303,9 @@ const HomeScreen = () => {
 
         const track = musicQueue[currentMusicIndex];
 
-        // 🛑 CRITICAL FIX: Guard MUST be called before extendQueueIfNeeded
         if (playingTrackId.current === track.id) return;
         playingTrackId.current = track.id;
 
-        // Now it is safe to check for extension
         extendQueueIfNeeded(currentMusicIndex, musicQueue);
 
         const requestId = ++playRequestId.current;
@@ -1182,7 +1381,6 @@ const HomeScreen = () => {
             finalAction = musicPrefs[songId] === 'like' ? 'removeLike' : 'like';
         }
 
-        // 🛑 FIX: Only update the local UI state if the action is like/dislike
         if (action !== 'listen') {
             setMusicPrefs(prev => ({ ...prev, [songId]: finalAction === 'removeLike' ? null : finalAction }));
         }
@@ -1257,7 +1455,6 @@ const HomeScreen = () => {
                     if (isMounted) {
                         useUserListStore.setState({ watchlist: arrayToMap(data.watchlist || []), watched: arrayToMap(data.watched || []) });
 
-                        // --- NEW CODE: Set Music Prefs to light up the hearts! ---
                         if (data.likedSongs) {
                             const initialPrefs = {};
                             data.likedSongs.forEach(id => { initialPrefs[id] = 'like'; });
@@ -1418,7 +1615,14 @@ const HomeScreen = () => {
                     <TouchableOpacity style={styles.headerRightBtn} onPress={() => handleAuthAction(() => router.push('/my-list'))}><Ionicons name="bookmarks" size={24} color="#E0E0E0" /></TouchableOpacity>
                 </View>
 
-                <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={[styles.scrollContent, currentTrack && { paddingBottom: 130 }]} bounces={false}>
+                {/* FIX #4: Massive padding-bottom when mini-player is up, so lists naturally clear it */}
+                {/* FIX #2: keyboard persist taps on main screen wrapper */}
+                <ScrollView
+                    keyboardShouldPersistTaps="handled"
+                    showsVerticalScrollIndicator={false}
+                    contentContainerStyle={[styles.scrollContent, currentTrack ? { paddingBottom: insets.bottom + 160 } : { paddingBottom: 80 }]}
+                    bounces={false}
+                >
 
                     {filters.type !== 'live' && filters.type !== 'music' && (
                         <ReAnimated.View entering={FadeInUp.duration(300)} exiting={FadeOutUp.duration(200)} layout={LinearTransition}>
@@ -1472,8 +1676,9 @@ const HomeScreen = () => {
             </SafeAreaView>
 
             {/* GLOBAL MINI PLAYER (Background Play) */}
+            {/* FIX #3: Adding pointerEvents="box-none" so empty container edges don't block taps */}
             {currentTrack && !isMusicModalOpen && (
-                <Animated.View style={[styles.miniPlayerContainer, { bottom: insets.bottom + 60 }]} entering={FadeInUp}>
+                <Animated.View pointerEvents="box-none" style={[styles.miniPlayerContainer, { bottom: insets.bottom + 60 }]} entering={FadeInUp}>
                     <TouchableOpacity style={styles.miniPlayerContent} activeOpacity={0.9} onPress={() => setIsMusicModalOpen(true)}>
                         <Image source={{ uri: currentTrack.image }} style={styles.miniPlayerArt} />
                         <View style={styles.miniPlayerTextWrap}>
@@ -1549,6 +1754,7 @@ const HomeScreen = () => {
                         </Animated.View>
 
                         <Animated.ScrollView
+                            keyboardShouldPersistTaps="handled"
                             showsVerticalScrollIndicator={false}
                             contentContainerStyle={{ paddingTop: 80, paddingBottom: 40 }}
                             onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], { useNativeDriver: true })}
@@ -1620,7 +1826,6 @@ const HomeScreen = () => {
 
                             <View style={styles.queueContainer}>
                                 <Text style={styles.queueTitle}>Playlist</Text>
-                                {/* MAP OVER FULL LIST SO PREVIOUS SONGS STAY VISIBLE */}
                                 {musicQueue.map((track, index) => {
                                     const isActive = index === currentMusicIndex;
                                     return (

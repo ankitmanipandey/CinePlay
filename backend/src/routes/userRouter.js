@@ -57,6 +57,29 @@ userRouter.post('/watched/toggle', protect, async (req, res) => {
     }
 });
 
+// Toggle Favorite Artist
+userRouter.post('/artists/toggle', protect, async (req, res) => {
+    try {
+        const { artistName } = req.body;
+        const user = await User.findById(req.user._id);
+
+        const favorites = user.favoriteArtists || [];
+        const isFavorite = favorites.includes(artistName);
+
+        if (isFavorite) {
+            user.favoriteArtists = favorites.filter(name => name !== artistName);
+        } else {
+            user.favoriteArtists.push(artistName);
+        }
+
+        await user.save();
+        res.status(200).json({ favoriteArtists: user.favoriteArtists });
+    } catch (error) {
+        console.error('Error toggling artist:', error);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
 userRouter.put('/push-token', protect, async (req, res) => {
     try {
         const { token } = req.body;
@@ -83,8 +106,9 @@ userRouter.get('/lists', protect, async (req, res) => {
         res.status(200).json({
             watchlist: user.watchlist,
             watched: user.watched,
-            likedSongs: user.likedSongs || [],       // <-- Added
-            dislikedSongs: user.dislikedSongs || []  // <-- Added
+            likedSongs: user.likedSongs || [],
+            dislikedSongs: user.dislikedSongs || [],
+            favoriteArtists: user.favoriteArtists || []
         });
     } catch (error) {
         console.error('Error fetching lists:', error);
