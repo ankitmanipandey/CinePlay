@@ -9,7 +9,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
 
 import { useAuthStore } from '../../store/useAuthStore';
-import { safeFetchJson, normalizeString, TOP_ARTISTS } from '../../utils/homehelpers.js'
+import { safeFetchJson, normalizeString, TOP_ARTISTS } from '../../utils/homehelpers';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL;
 const { width } = Dimensions.get('window');
@@ -262,18 +262,19 @@ export const YTMusicFeed = ({ onPlayMusic, activeTrackId }) => {
 
     const chunkArray = (arr, size) => Array.from({ length: Math.ceil(arr.length / size) }, (v, i) => arr.slice(i * size, i * size + size));
 
+    // UPDATED: Now passes the RNTP queue formatted directly
     const handleSongClick = (track, queueContext = []) => {
-        const imgUrl = Array.isArray(track.image) ? (track.image?.find?.(i => i.quality === '500x500')?.url || track.image?.[0]?.url) : track.image;
-        const streamUrl = track.url || track.downloadUrl?.find?.(d => d.quality === '320kbps')?.url || track.downloadUrl?.[0]?.url;
+        // If queueContext is not provided, wrap the single track
+        const contextToUse = queueContext.length > 0 ? queueContext : [track];
 
-        onPlayMusic({
-            ...track,
-            id: track.id,
-            title: track.title || track.name,
-            artist: track.artist || track.description || track.subtitle || track.artists?.primary?.map(a => a.name).join(', ') || 'Unknown',
-            image: imgUrl,
-            url: streamUrl,
-        }, queueContext.length > 0 ? queueContext : [track]);
+        // Ensure track is part of the queue if it isn't already
+        const trackInQueue = contextToUse.find(t => String(t.id) === String(track.id));
+        if (!trackInQueue) {
+            contextToUse.unshift(track);
+        }
+
+        // Call the useMusicEngine's setMusicQueue function
+        onPlayMusic(contextToUse, track.id);
     };
 
     const customArtists = token ? selectedArtists
@@ -300,7 +301,6 @@ export const YTMusicFeed = ({ onPlayMusic, activeTrackId }) => {
 
     return (
         <ReAnimated.View layout={LinearTransition} style={{ flex: 1, paddingBottom: 40 }}>
-            {/* YOUR ENTIRE EXISTING MODAL & RENDER LOGIC GOES HERE... */}
             <Modal visible={likedModalOpen} animationType="slide" transparent={false} onRequestClose={() => setLikedModalOpen(false)}>
                 <View style={{ flex: 1, backgroundColor: '#0A0A0C' }}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', paddingTop: insets.top + 20, paddingBottom: 16, paddingHorizontal: 16, borderBottomWidth: 1, borderColor: 'rgba(255,255,255,0.05)', backgroundColor: '#170D22' }}>
@@ -323,7 +323,7 @@ export const YTMusicFeed = ({ onPlayMusic, activeTrackId }) => {
                         <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: 16, paddingBottom: 100 }} showsVerticalScrollIndicator={false}>
                             {likedSongsList.map((track) => {
                                 const imgUrl = Array.isArray(track.image) ? (track.image?.find?.(i => i.quality === '500x500')?.url || track.image?.[0]?.url) : track.image;
-                                const isActiveTrack = track.id === activeTrackId;
+                                const isActiveTrack = String(track.id) === String(activeTrackId);
                                 return (
                                     <TouchableOpacity key={track.id} style={[styles.ytListTile, { marginBottom: 16, paddingVertical: 4 }]} onPress={() => { handleSongClick(track, likedSongsList); setLikedModalOpen(false); }}>
                                         <Image source={{ uri: imgUrl }} style={styles.ytTileImgQuick} />
@@ -396,7 +396,7 @@ export const YTMusicFeed = ({ onPlayMusic, activeTrackId }) => {
                                     <View style={{ gap: 12, marginTop: 10 }}>
                                         {searchResults.songs.map(track => {
                                             const imgUrl = track.image?.find?.(i => i.quality === '500x500')?.url || track.image?.[0]?.url || track.image;
-                                            const isActiveTrack = track.id === activeTrackId;
+                                            const isActiveTrack = String(track.id) === String(activeTrackId);
                                             return (
                                                 <TouchableOpacity key={track.id} style={styles.ytListTile} onPress={() => handleSongClick(track, searchResults.songs)}>
                                                     <ArtistImage name={track.title || track.name} rawImage={imgUrl} style={styles.ytTileImgQuick} />
@@ -460,7 +460,7 @@ export const YTMusicFeed = ({ onPlayMusic, activeTrackId }) => {
                                         <View style={{ paddingHorizontal: 16, gap: 16, marginBottom: 30 }}>
                                             {shuffledFeedSongs.map(track => {
                                                 const imgUrl = track.image?.find?.(i => i.quality === '500x500')?.url || track.image?.[0]?.url || track.image;
-                                                const isActiveTrack = track.id === activeTrackId;
+                                                const isActiveTrack = String(track.id) === String(activeTrackId);
                                                 return (
                                                     <TouchableOpacity key={track.id} style={styles.ytListTile} onPress={() => handleSongClick(track, shuffledFeedSongs)}>
                                                         <ArtistImage name={track.title || track.name} rawImage={imgUrl} style={styles.ytTileImgQuick} />
@@ -480,7 +480,7 @@ export const YTMusicFeed = ({ onPlayMusic, activeTrackId }) => {
                                                 <View style={{ paddingHorizontal: 16, gap: 16 }}>
                                                     {playlist.songs.map(track => {
                                                         const imgUrl = track.image?.find?.(i => i.quality === '500x500')?.url || track.image?.[0]?.url || track.image;
-                                                        const isActiveTrack = track.id === activeTrackId;
+                                                        const isActiveTrack = String(track.id) === String(activeTrackId);
                                                         return (
                                                             <TouchableOpacity key={track.id} style={styles.ytListTile} onPress={() => handleSongClick(track, unifiedArtistQueue)}>
                                                                 <ArtistImage name={track.title || track.name} rawImage={imgUrl} style={styles.ytTileImgQuick} />
@@ -511,7 +511,7 @@ export const YTMusicFeed = ({ onPlayMusic, activeTrackId }) => {
                                             <View key={colIdx} style={{ width: width * 0.85, gap: 12 }}>
                                                 {col.map(track => {
                                                     const imgUrl = track.image?.find(i => i.quality === '500x500')?.url || track.image?.[0]?.url;
-                                                    const isActiveTrack = track.id === activeTrackId;
+                                                    const isActiveTrack = String(track.id) === String(activeTrackId);
                                                     return (
                                                         <TouchableOpacity key={track.id} style={styles.ytListTile} onPress={() => handleSongClick(track, speedDial)}>
                                                             <Image source={{ uri: imgUrl }} style={styles.ytTileImg} />
@@ -534,7 +534,7 @@ export const YTMusicFeed = ({ onPlayMusic, activeTrackId }) => {
                                             <View key={colIdx} style={{ width: width * 0.85, gap: 12 }}>
                                                 {col.map(track => {
                                                     const imgUrl = track.image?.find(i => i.quality === '500x500')?.url || track.image?.[0]?.url;
-                                                    const isActiveTrack = track.id === activeTrackId;
+                                                    const isActiveTrack = String(track.id) === String(activeTrackId);
                                                     return (
                                                         <TouchableOpacity key={track.id} style={styles.ytListTile} onPress={() => handleSongClick(track, quickPicks)}>
                                                             <Image source={{ uri: imgUrl }} style={styles.ytTileImgQuick} />

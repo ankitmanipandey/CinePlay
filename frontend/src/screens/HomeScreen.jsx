@@ -10,19 +10,13 @@ import {
     Animated,
     PanResponder,
     ScrollView,
-    FlatList,
-    Easing,
     ActivityIndicator,
     Platform,
     UIManager,
-    TextInput,
-    Modal,
-    Keyboard
+    Modal
 } from 'react-native';
-import { GestureDetector, Gesture } from 'react-native-gesture-handler';
 import ReAnimated, {
-    FadeIn, FadeOut, LinearTransition, FadeInDown, FadeInUp, FadeOutUp,
-    useSharedValue, useAnimatedStyle, withSpring, runOnJS
+    FadeIn, FadeOut, LinearTransition, FadeInUp, FadeOutUp,
 } from 'react-native-reanimated';
 import Svg, { Defs, LinearGradient as SvgLinearGradient, Stop, Circle, Path } from 'react-native-svg';
 import { toastConfig } from '../app/_layout'
@@ -33,8 +27,11 @@ import MaskedView from '@react-native-masked-view/masked-view';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import Toast from 'react-native-toast-message';
-import { useVideoPlayer, VideoView } from 'expo-video';
-import { normalizeString, safeFetchJson, formatTime } from '../utils/homehelpers';
+
+// --- RNTP V5 Import for enums ---
+import { RepeatMode } from '@rntp/player';
+
+import { normalizeString, formatTime } from '../utils/homehelpers';
 import { MiniPlayer } from '../components/home/MiniPlayer';
 import { FilterDropdown } from '../components/home/FilterDropDown';
 import { YTMusicFeed } from '../components/home/YTMusicFeed';
@@ -51,13 +48,13 @@ import { useMovieStore } from '../store/useMovieStore';
 import { useUserListStore } from '../store/useUserListStore';
 import { useAuthStore } from '../store/useAuthStore';
 import { getImageUrl } from '../constants/config';
+import { useMusicEngine } from '../hooks/useMusicEngine';
 
 const { width } = Dimensions.get('window');
 const SWIPE_THRESHOLD = 60;
 const SWIPE_VELOCITY = 1.0;
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL;
-
 
 const CinePlayLogo = ({ size = 38 }) => (
     <Svg viewBox="0 0 500 500" width={size} height={size}>
@@ -89,298 +86,76 @@ const HomeScreen = () => {
     const isTransitioning = useRef(false);
 
     // ==========================================
-    // 🎵 GLOBAL MUSIC PLAYER STATES
+    // 🎵 GLOBAL MUSIC PLAYER (Hook integration)
     // ==========================================
-    const [musicQueue, setMusicQueue] = useState([]);
-    const [currentMusicIndex, setCurrentMusicIndex] = useState(-1);
-    const [isMusicPlaying, setIsMusicPlaying] = useState(false);
+    const {
+        musicQueue, setMusicQueue, currentMusicIndex, setCurrentMusicIndex,
+        musicPrefs, isShuffle, setIsShuffle, loopMode, setLoopMode,
+        musicProgress, musicDuration, isPlaying, setIsPlaying,
+        handleNextTrack, handlePrevTrack, handleSeekTo, handleMusicAction
+    } = useMusicEngine('music', token, insets);
+
     const [isMusicModalOpen, setIsMusicModalOpen] = useState(false);
-
-    // NEW: Shuffle & Loop states
-    const [isShuffle, setIsShuffle] = useState(false);
-    const [loopMode, setLoopMode] = useState(0); // 0=off, 1=all, 2=one
-
-    const [musicProgress, setMusicProgress] = useState(0);
-    const [musicDuration, setMusicDuration] = useState(0);
     const [barWidth, setBarWidth] = useState(0);
-    const [musicPrefs, setMusicPrefs] = useState({});
-
-    // Keep this one for double tapping like in the full-screen modal
     const [lastTap, setLastTap] = useState(0);
-
     const scrollY = useRef(new Animated.Value(0)).current;
 
-    const playRequestId = useRef(0);
-    const playingTrackId = useRef(null);
-    const isFetchingQueue = useRef(false);
+    const currentTrack = musicQueue[currentMusicIndex] || null;
 
-    const globalMusicPlayer = useVideoPlayer(null, (player) => {
-        player.loop = false;
-        player.staysActiveInBackground = true;
-        player.showNowPlayingNotification = true;
-    });
+    // --- NEW: Optimistic UI State for Play/Pause and Loop ---
+    const [uiPlaying, setUiPlaying] = useState(!!isPlaying);
+    useEffect(() => { setUiPlaying(!!isPlaying); }, [isPlaying]);
 
-    const handleNavigateToPlayer = useCallback((params) => {
-        if (isMusicPlaying) {
-            globalMusicPlayer.pause();
-            setIsMusicPlaying(false);
-        }
-        router.push({ pathname: '/player', params });
-    }, [isMusicPlaying, globalMusicPlayer, router]);
-
-    const handlePlayMusic = (track, initialQueue) => {
-        const refinedQueue = initialQueue
-            .map(s => {
-                const actualStreamUrl = s.downloadUrl?.find?.(d => d.quality === '320kbps')?.url
-                    || s.downloadUrl?.[0]?.url
-                    || s.url;
-
-                const actualImgUrl = Array.isArray(s.image)
-                    ? (s.image?.find?.(i => i.quality === '500x500')?.url || s.image?.[0]?.url)
-                    : s.image;
-
-                return {
-                    id: s.id,
-                    title: s.title || s.name,
-                    artist: s.artist || s.description || s.subtitle || (s.artists?.primary?.map(a => a.name).join(', ') || 'Unknown Artist'),
-                    image: actualImgUrl,
-                    url: actualStreamUrl,
-                };
-            })
-            .filter(s => {
-                const valid = s.url && (s.url.includes('.mp4') || s.url.includes('.aac') || s.url.includes('http'));
-                return valid;
-            });
-
-        const seenNames = new Set();
-        const finalQueue = [];
-
-        for (const s of refinedQueue) {
-            const norm = normalizeString(s.title);
-            if (!seenNames.has(norm)) {
-                seenNames.add(norm);
-                finalQueue.push(s);
-            }
-        }
-
-        const targetTitleNorm = normalizeString(track.title || track.name);
-        let selectedIndex = finalQueue.findIndex(s => String(s.id) === String(track.id) || normalizeString(s.title) === targetTitleNorm);
-
-        if (selectedIndex === -1) {
-            const formattedTrack = {
-                id: track.id,
-                title: track.title || track.name,
-                artist: track.artist || track.subtitle || track.description || 'Unknown Artist',
-                image: Array.isArray(track.image) ? (track.image?.find?.(i => i.quality === '500x500')?.url || track.image?.[0]?.url) : track.image,
-                url: track.url || track.downloadUrl?.find?.(d => d.quality === '320kbps')?.url || track.downloadUrl?.[0]?.url
-            };
-            finalQueue.unshift(formattedTrack);
-            selectedIndex = 0;
-        }
-
-        playingTrackId.current = null;
-        setMusicQueue(finalQueue);
-        setCurrentMusicIndex(selectedIndex);
+    const handleTogglePlay = () => {
+        const nextState = !uiPlaying;
+        setUiPlaying(nextState);
+        setIsPlaying(nextState);
     };
 
-    const extendQueueIfNeeded = useCallback(async (index, queue) => {
-        const thresholdIndex = Math.floor(queue.length * 0.60);
+    // Safe RNTP v5 enum checks
+    const isLoopActive = loopMode !== 0 && loopMode !== 'off' && !!loopMode;
+    const isLoopOne = loopMode === 1 || loopMode === 'track' || loopMode === 'one' || loopMode === RepeatMode.Track;
+    // --------------------------------------------------------
 
-        if (index < thresholdIndex || isFetchingQueue.current) return;
+    const handleNavigateToPlayer = useCallback((params) => {
+        if (isPlaying) {
+            setIsPlaying(false);
+        }
+        router.push({ pathname: '/player', params });
+    }, [isPlaying, router, setIsPlaying]);
 
-        const seed = queue[index];
-        if (!seed) return;
-
-        isFetchingQueue.current = true;
-
+    const handlePlayMusic = async (arg1, arg2) => {
         try {
-            let newTracks = [];
-            if (token) {
-                const res = await fetch(`${BACKEND_URL}/user/music/recommendations?seedSongId=${seed.id}&seedArtist=${encodeURIComponent(seed.artist)}`, {
-                    headers: { Authorization: `Bearer ${token}` }
-                });
-                const json = await res.json();
+            let queue = [];
+            let track = null;
 
-                if (json && json.data) {
-                    newTracks = json.data.map(t => ({
-                        id: t.id,
-                        title: t.name,
-                        artist: t.artists?.primary?.map(a => a.name).join(', ') || 'Unknown',
-                        image: t.image?.find(i => i.quality === '500x500')?.url || t.image?.[0]?.url,
-                        url: t.downloadUrl?.find(d => d.quality === '320kbps')?.url || t.downloadUrl?.[0]?.url
-                    }));
-                }
+            if (Array.isArray(arg1)) {
+                queue = arg1;
+                track = arg2;
+            } else if (Array.isArray(arg2)) {
+                queue = arg2;
+                track = arg1;
             } else {
-                const searchQ = encodeURIComponent(seed.artist || 'Trending');
-                const randomPage = Math.floor(Math.random() * 8) + 1;
-                const json = await safeFetchJson(`/search/songs?query=${searchQ}&page=${randomPage}&limit=15`);
-
-                if (json && json.success && json.data?.results) {
-                    newTracks = json.data.results.map(t => ({
-                        id: t.id,
-                        title: t.name,
-                        artist: t.artists?.primary?.map(a => a.name).join(', ') || 'Unknown',
-                        image: t.image?.find(i => i.quality === '500x500')?.url || t.image?.[0]?.url,
-                        url: t.downloadUrl?.find(d => d.quality === '320kbps')?.url || t.downloadUrl?.[0]?.url
-                    }));
-                }
+                queue = [arg1];
+                track = arg1;
             }
 
-            if (newTracks.length > 0) {
-                setMusicQueue(prev => {
-                    const existingNames = new Set(prev.map(t => normalizeString(t.title)));
-                    const filteredTracks = newTracks.filter(s => {
-                        const normName = normalizeString(s.title);
-                        if (!s.url || existingNames.has(normName)) return false;
-                        existingNames.add(normName);
-                        return true;
-                    });
+            const trackId = typeof track === 'string' ? track : (track?.id || track?.mediaId || track?.videoId);
+            console.log(`🎵 Playing track ID: ${trackId} from a queue of ${queue.length} songs.`);
+            await setMusicQueue(queue, trackId);
 
-                    const strictly10Tracks = filteredTracks.slice(0, 10);
-                    if (strictly10Tracks.length === 0) return prev;
-
-                    return [...prev, ...strictly10Tracks];
-                });
-            }
-        } catch (e) {
-        } finally {
-            isFetchingQueue.current = false;
+        } catch (error) {
+            console.error("❌ ERROR in handlePlayMusic:", error);
         }
-    }, [token]);
-
-    useEffect(() => {
-        if (currentMusicIndex < 0 || !musicQueue[currentMusicIndex]) return;
-
-        const track = musicQueue[currentMusicIndex];
-
-        if (playingTrackId.current === track.id) return;
-        playingTrackId.current = track.id;
-
-        extendQueueIfNeeded(currentMusicIndex, musicQueue);
-
-        const requestId = ++playRequestId.current;
-
-        if (!track.url || track.url.includes('jiosaavn.com/song')) {
-            handleNextTrack();
-            return;
-        }
-
-        const loadAndPlayTrack = async () => {
-            try {
-                setIsMusicPlaying(false);
-                setMusicProgress(0);
-
-                globalMusicPlayer.pause();
-                await globalMusicPlayer.replaceAsync({ uri: track.url, metadata: { title: track.title, artist: track.artist, artwork: track.image, }, });
-
-                if (requestId !== playRequestId.current) return;
-
-                globalMusicPlayer.play();
-                setIsMusicPlaying(true);
-
-            } catch (err) {
-                if (requestId !== playRequestId.current) return;
-                setIsMusicPlaying(false);
-                Toast.show({ type: 'error', text1: `Couldn't play "${track.title}", skipping...` });
-                handleNextTrack();
-            }
-        };
-
-        loadAndPlayTrack();
-    }, [currentMusicIndex, musicQueue, globalMusicPlayer, extendQueueIfNeeded]);
-
-    // NEW: Handle Next and Prev tracks (incorporating Shuffle & Loop states)
-    const handleNextTrack = useCallback(() => {
-        if (isShuffle) {
-            setCurrentMusicIndex(Math.floor(Math.random() * musicQueue.length));
-        } else if (currentMusicIndex < musicQueue.length - 1) {
-            setCurrentMusicIndex(prev => prev + 1);
-        } else if (loopMode === 1) { // Loop All
-            setCurrentMusicIndex(0);
-        } else {
-            globalMusicPlayer.pause();
-            setIsMusicPlaying(false);
-        }
-    }, [isShuffle, loopMode, currentMusicIndex, musicQueue.length, globalMusicPlayer]);
-
-    const handlePrevTrack = useCallback(() => {
-        if (musicProgress > 3) {
-            globalMusicPlayer.currentTime = 0;
-        } else if (isShuffle) {
-            setCurrentMusicIndex(Math.floor(Math.random() * musicQueue.length));
-        } else if (currentMusicIndex > 0) {
-            setCurrentMusicIndex(prev => prev - 1);
-        } else if (loopMode === 1) { // Loop All
-            setCurrentMusicIndex(musicQueue.length - 1);
-        }
-    }, [isShuffle, loopMode, currentMusicIndex, musicQueue.length, musicProgress, globalMusicPlayer]);
-
-    useEffect(() => {
-        const interval = setInterval(() => {
-            if (isMusicPlaying && globalMusicPlayer) {
-                setMusicProgress(globalMusicPlayer.currentTime);
-                setMusicDuration(globalMusicPlayer.duration);
-            }
-        }, 1000);
-
-        const sub = globalMusicPlayer.addListener('playToEnd', async () => {
-            setIsMusicPlaying(false);
-            if (loopMode === 2) { // Loop One
-                globalMusicPlayer.currentTime = 0;
-                globalMusicPlayer.play();
-                setIsMusicPlaying(true);
-            } else {
-                handleNextTrack();
-            }
-        });
-
-        return () => { clearInterval(interval); sub.remove(); };
-    }, [globalMusicPlayer, isMusicPlaying, loopMode, handleNextTrack]);
+    };
 
     const handleSeek = (event) => {
         if (barWidth > 0 && musicDuration > 0) {
             const tapX = event.nativeEvent.locationX;
             const percentage = Math.max(0, Math.min(1, tapX / barWidth));
             const newTime = percentage * musicDuration;
-            globalMusicPlayer.currentTime = newTime;
-            setMusicProgress(newTime);
+            handleSeekTo(newTime);
         }
-    };
-
-    const handleMusicInteraction = async (songId, action) => {
-        if (action === 'listen' && !token) return;
-        if (!token) return Toast.show({ type: 'hotstarInfo', text1: 'Log in for personalization', position: 'top', topOffset: 60 });
-
-        let finalAction = action;
-        if (action === 'toggleLike') {
-            finalAction = musicPrefs[songId] === 'like' ? 'removeLike' : 'like';
-        }
-
-        if (action !== 'listen') {
-            setMusicPrefs(prev => ({ ...prev, [songId]: finalAction === 'removeLike' ? null : finalAction }));
-        }
-
-        try {
-            await fetch(`${BACKEND_URL}/user/music/interact`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-                body: JSON.stringify({ songId, action: finalAction })
-            });
-            if (finalAction === 'like') {
-                Toast.show({ type: 'hotstarSuccess', text1: 'Saved to Liked Songs' });
-            } else if (finalAction === 'dislike') {
-                Toast.show({ type: 'hotstarSuccess', text1: 'We will recommend less of this' });
-                handleNextTrack();
-            }
-        } catch (error) {
-            console.error('Failed to register interaction:', error?.message || error);
-        }
-    };
-
-    const handleDoubleTapLike = (songId) => {
-        const now = Date.now();
-        if (now - lastTap < 300) handleMusicInteraction(songId, 'toggleLike');
-        setLastTap(now);
     };
 
     const panResponderMusic = useMemo(() => PanResponder.create({
@@ -391,19 +166,16 @@ const HomeScreen = () => {
                 if (dx > 0) handlePrevTrack();
                 else handleNextTrack();
             } else if (dy > 60) {
-                setIsMusicModalOpen(false); // Swipe down to minimize
+                setIsMusicModalOpen(false);
             } else if (Math.abs(dx) < 10 && Math.abs(dy) < 10) {
-                if (musicQueue[currentMusicIndex]) handleDoubleTapLike(musicQueue[currentMusicIndex].id);
+                if (currentTrack) {
+                    const now = Date.now();
+                    if (now - lastTap < 300) handleMusicAction(currentTrack.mediaId, 'toggleLike');
+                    setLastTap(now);
+                }
             }
         }
-    }), [currentMusicIndex, musicQueue, lastTap, handleNextTrack, handlePrevTrack]);
-
-    useEffect(() => {
-        if (currentMusicIndex >= 0 && musicQueue[currentMusicIndex]) {
-            handleMusicInteraction(musicQueue[currentMusicIndex].id, 'listen');
-        }
-    }, [currentMusicIndex]);
-
+    }), [currentTrack, lastTap, handleNextTrack, handlePrevTrack, handleMusicAction]);
 
     const moviesLengthRef = useRef(0);
     useEffect(() => { moviesLengthRef.current = trendingList.length; }, [trendingList]);
@@ -424,12 +196,6 @@ const HomeScreen = () => {
 
                     if (isMounted) {
                         useUserListStore.setState({ watchlist: arrayToMap(data.watchlist || []), watched: arrayToMap(data.watched || []) });
-
-                        if (data.likedSongs) {
-                            const initialPrefs = {};
-                            data.likedSongs.forEach(id => { initialPrefs[id] = 'like'; });
-                            setMusicPrefs(initialPrefs);
-                        }
                     }
                 }
             } catch (error) { }
@@ -463,7 +229,7 @@ const HomeScreen = () => {
     const forceSwipe = (direction, isAuto = false) => {
         isTransitioning.current = true;
         const x = direction === 'right' ? width * 1.5 : -width * 1.5;
-        Animated.timing(pan, { toValue: { x, y: 0 }, duration: isAuto ? 700 : 300, easing: isAuto ? Easing.inOut(Easing.sin) : Easing.out(Easing.quad), useNativeDriver: false }).start(() => onSwipeComplete());
+        Animated.timing(pan, { toValue: { x, y: 0 }, duration: isAuto ? 700 : 300, useNativeDriver: false }).start(() => onSwipeComplete());
     };
 
     const onSwipeComplete = () => { setPan(new Animated.ValueXY()); setCurrentIndex((prevIndex) => (prevIndex + 1) % (moviesLengthRef.current || 1)); };
@@ -553,14 +319,12 @@ const HomeScreen = () => {
 
     const categoryData = [
         { title: "Trending", data: trendingList }, { title: "Top Rated", data: topRatedList }, { title: "Latest", data: latestList }, { title: "Action Blockbusters", data: actionList },
-        { title: "Comedy", data: comedyList }, { title: "Thriller", data: thrillerList }, { title: "Horror", data: horrorList }, { title: "Romance", data: romanceList },
+        { title: "Comedy", data: comedyList }, { title: "Thriller", data: thrillerList }, { title: "Horror", data: romanceList }, { title: "Romance", data: romanceList },
         { title: "Sci-Fi", data: scifiList }, { title: "Feel Good", data: feelGoodList }, { title: "Biopics", data: biopicsList }
     ];
 
     const activeLiveCategory = filters.liveCategory || 'Cricket';
     const isLiveSportsFeed = ['Cricket', 'Football', 'Basketball'].includes(activeLiveCategory);
-
-    const currentTrack = musicQueue[currentMusicIndex] || null;
 
     const headerOpacity = scrollY.interpolate({ inputRange: [0, 150], outputRange: [0, 1], extrapolate: 'clamp' });
     const mainContentOpacity = scrollY.interpolate({ inputRange: [0, 150], outputRange: [1, 0], extrapolate: 'clamp' });
@@ -569,9 +333,6 @@ const HomeScreen = () => {
 
     return (
         <LinearGradient colors={['#170D22', '#0A0A0C']} style={styles.background}>
-
-            <VideoView player={globalMusicPlayer} style={{ width: 0, height: 0, position: 'absolute' }} nativeControls={false} />
-
             <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
                 <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
 
@@ -620,7 +381,7 @@ const HomeScreen = () => {
                         {isLoading && filters.type !== 'music' ? (
                             <ActivityIndicator size="large" color="#00E5FF" style={{ marginTop: 40, marginBottom: 80 }} />
                         ) : filters.type === 'music' ? (
-                            <YTMusicFeed onPlayMusic={handlePlayMusic} activeTrackId={currentTrack?.id} />
+                            <YTMusicFeed onPlayMusic={handlePlayMusic} activeTrackId={currentTrack?.mediaId} />
                         ) : filters.type === 'live' ? (
                             isLiveSportsFeed
                                 ? <LiveSportsFeed selectedSport={activeLiveCategory} />
@@ -647,24 +408,19 @@ const HomeScreen = () => {
             {currentTrack && !isMusicModalOpen && (
                 <MiniPlayer
                     currentTrack={currentTrack}
-                    isMusicPlaying={isMusicPlaying}
+                    isMusicPlaying={isPlaying}
                     musicProgress={musicProgress}
                     musicDuration={musicDuration}
                     isShuffle={isShuffle}
                     setIsShuffle={setIsShuffle}
                     loopMode={loopMode}
                     setLoopMode={setLoopMode}
-                    onTogglePlay={() => {
-                        if (isMusicPlaying) { globalMusicPlayer.pause(); setIsMusicPlaying(false); }
-                        else { globalMusicPlayer.play(); setIsMusicPlaying(true); }
-                    }}
+                    onTogglePlay={() => setIsPlaying(!isPlaying)}
                     handleNextTrack={handleNextTrack}
                     handlePrevTrack={handlePrevTrack}
                     onOpenModal={() => setIsMusicModalOpen(true)}
                     onDismiss={() => {
-                        globalMusicPlayer.pause();
-                        setIsMusicPlaying(false);
-                        setCurrentMusicIndex(-1);
+                        setIsPlaying(false);
                         setMusicQueue([]);
                     }}
                     bottomOffset={insets.bottom + 60}
@@ -681,22 +437,16 @@ const HomeScreen = () => {
                             <TouchableOpacity onPress={() => setIsMusicModalOpen(false)} style={{ paddingRight: 10 }}>
                                 <Ionicons name="chevron-down" size={28} color="#FFFFFF" />
                             </TouchableOpacity>
-                            <Image source={{ uri: currentTrack?.image }} style={{ width: 40, height: 40, borderRadius: 6, marginRight: 10 }} />
+                            <Image source={{ uri: currentTrack?.artwork || currentTrack?.artworkUrl || currentTrack?.image }} style={{ width: 40, height: 40, borderRadius: 6, marginRight: 10 }} />
                             <View style={{ flex: 1, marginRight: 10 }}>
                                 <Text style={{ color: '#FFF', fontSize: 14, fontWeight: 'bold' }} numberOfLines={1}>{currentTrack?.title}</Text>
                                 <Text style={{ color: '#8F98A0', fontSize: 12 }} numberOfLines={1}>{currentTrack?.artist}</Text>
                             </View>
-                            <TouchableOpacity onPress={() => handleMusicInteraction(currentTrack?.id, 'toggleLike')} style={{ paddingHorizontal: 8 }}>
-                                <Ionicons name={musicPrefs[currentTrack?.id] === 'like' ? "heart" : "heart-outline"} size={22} color={musicPrefs[currentTrack?.id] === 'like' ? "#FF007A" : "#FFF"} />
+                            <TouchableOpacity onPress={() => handleMusicAction(currentTrack?.mediaId, 'toggleLike')} style={{ paddingHorizontal: 8 }}>
+                                <Ionicons name={musicPrefs[currentTrack?.mediaId] === 'like' ? "heart" : "heart-outline"} size={22} color={musicPrefs[currentTrack?.mediaId] === 'like' ? "#FF007A" : "#FFF"} />
                             </TouchableOpacity>
-                            <TouchableOpacity
-                                onPress={() => {
-                                    if (isMusicPlaying) { globalMusicPlayer.pause(); setIsMusicPlaying(false); }
-                                    else { globalMusicPlayer.play(); setIsMusicPlaying(true); }
-                                }}
-                                style={{ paddingHorizontal: 8 }}
-                            >
-                                <Ionicons name={isMusicPlaying ? "pause" : "play"} size={26} color="#FFF" />
+                            <TouchableOpacity onPress={handleTogglePlay} style={{ paddingHorizontal: 8 }}>
+                                <Ionicons name={uiPlaying ? "pause" : "play"} size={26} color="#FFF" />
                             </TouchableOpacity>
                             <TouchableOpacity onPress={handleNextTrack} style={{ paddingLeft: 8 }}>
                                 <Ionicons name="play-skip-forward" size={22} color="#FFF" />
@@ -725,12 +475,12 @@ const HomeScreen = () => {
                             {/* Interactive Main Player Section */}
                             <Animated.View style={{ opacity: mainContentOpacity, transform: [{ scale: artScale }, { translateY: artTranslateY }] }} {...panResponderMusic.panHandlers}>
                                 <View style={styles.albumArtContainer}>
-                                    <Image source={{ uri: currentTrack?.image }} style={[styles.albumArt, { width: width * 0.75, height: width * 0.75 }]} />
+                                    <Image source={{ uri: currentTrack?.artwork || currentTrack?.artworkUrl || currentTrack?.image }} style={[styles.albumArt, { width: width * 0.75, height: width * 0.75 }]} />
                                 </View>
 
                                 <View style={[styles.musicTrackInfo, { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20 }]}>
-                                    <TouchableOpacity onPress={() => handleMusicInteraction(currentTrack?.id, 'dislike')} style={{ padding: 10 }}>
-                                        <Ionicons name={musicPrefs[currentTrack?.id] === 'dislike' ? "thumbs-down" : "thumbs-down-outline"} size={28} color="#8F98A0" />
+                                    <TouchableOpacity onPress={() => handleMusicAction(currentTrack?.mediaId, 'dislike')} style={{ padding: 10 }}>
+                                        <Ionicons name="thumbs-down-outline" size={28} color="#8F98A0" />
                                     </TouchableOpacity>
 
                                     <View style={{ flex: 1, alignItems: 'center', paddingHorizontal: 10 }}>
@@ -738,8 +488,8 @@ const HomeScreen = () => {
                                         <Text style={styles.musicLargeArtist} numberOfLines={1}>{currentTrack?.artist}</Text>
                                     </View>
 
-                                    <TouchableOpacity onPress={() => handleMusicInteraction(currentTrack?.id, 'toggleLike')} style={{ padding: 10 }}>
-                                        <Ionicons name={musicPrefs[currentTrack?.id] === 'like' ? "heart" : "heart-outline"} size={28} color={musicPrefs[currentTrack?.id] === 'like' ? "#FF007A" : "#FFF"} />
+                                    <TouchableOpacity onPress={() => handleMusicAction(currentTrack?.mediaId, 'toggleLike')} style={{ padding: 10 }}>
+                                        <Ionicons name={musicPrefs[currentTrack?.mediaId] === 'like' ? "heart" : "heart-outline"} size={28} color={musicPrefs[currentTrack?.mediaId] === 'like' ? "#FF007A" : "#FFF"} />
                                     </TouchableOpacity>
                                 </View>
 
@@ -757,42 +507,28 @@ const HomeScreen = () => {
                                 </View>
 
                                 <View style={styles.musicControlsRow}>
-                                    {/* SHUFFLE BUTTON */}
                                     <TouchableOpacity onPress={() => setIsShuffle(!isShuffle)} style={{ padding: 10 }}>
                                         <Ionicons name="shuffle" size={24} color={isShuffle ? "#00E5FF" : "#8F98A0"} />
                                     </TouchableOpacity>
 
-                                    <TouchableOpacity
-                                        onPress={handlePrevTrack}
-                                        style={styles.skipBtn}
-                                    >
-                                        <Ionicons name="play-skip-back" size={32} color={currentMusicIndex > 0 || isShuffle || loopMode === 1 ? "#FFFFFF" : "#555"} />
+                                    <TouchableOpacity onPress={handlePrevTrack} style={styles.skipBtn}>
+                                        <Ionicons name="play-skip-back" size={32} color={currentMusicIndex > 0 || isShuffle || isLoopActive ? "#FFFFFF" : "#555"} />
                                     </TouchableOpacity>
 
-                                    <TouchableOpacity
-                                        style={styles.neonPlayWrapper}
-                                        activeOpacity={0.8}
-                                        onPress={() => {
-                                            if (isMusicPlaying) { globalMusicPlayer.pause(); setIsMusicPlaying(false); }
-                                            else { globalMusicPlayer.play(); setIsMusicPlaying(true); }
-                                        }}
-                                    >
+                                    <TouchableOpacity style={styles.neonPlayWrapper} activeOpacity={0.8} onPress={handleTogglePlay}>
                                         <LinearGradient colors={['#00E5FF', '#9B51E0', '#FF007A']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.neonPlayInner}>
-                                            <Ionicons name={isMusicPlaying ? "pause" : "play"} size={36} color="#FFFFFF" style={!isMusicPlaying ? { marginLeft: 6 } : {}} />
+                                            <Ionicons name={uiPlaying ? "pause" : "play"} size={36} color="#FFFFFF" style={!uiPlaying ? { marginLeft: 6 } : {}} />
                                         </LinearGradient>
                                     </TouchableOpacity>
 
-                                    <TouchableOpacity
-                                        onPress={handleNextTrack}
-                                        style={styles.skipBtn}
-                                    >
-                                        <Ionicons name="play-skip-forward" size={32} color={currentMusicIndex < musicQueue.length - 1 || isShuffle || loopMode === 1 ? "#FFFFFF" : "#555"} />
+                                    <TouchableOpacity onPress={handleNextTrack} style={styles.skipBtn}>
+                                        <Ionicons name="play-skip-forward" size={32} color={currentMusicIndex < musicQueue.length - 1 || isShuffle || isLoopActive ? "#FFFFFF" : "#555"} />
                                     </TouchableOpacity>
 
                                     {/* LOOP BUTTON */}
-                                    <TouchableOpacity onPress={() => setLoopMode((prev) => (prev + 1) % 3)} style={{ padding: 10, position: 'relative' }}>
-                                        <Ionicons name="repeat" size={24} color={loopMode !== 0 ? "#00E5FF" : "#8F98A0"} />
-                                        {loopMode === 2 && <Text style={{ position: 'absolute', fontSize: 10, color: '#00E5FF', top: 10, right: 6, fontWeight: 'bold' }}>1</Text>}
+                                    <TouchableOpacity onPress={setLoopMode} style={{ padding: 10, position: 'relative' }}>
+                                        <Ionicons name="repeat" size={24} color={isLoopActive ? "#00E5FF" : "#8F98A0"} />
+                                        {isLoopOne && <Text style={{ position: 'absolute', fontSize: 10, color: '#00E5FF', top: 10, right: 6, fontWeight: 'bold' }}>1</Text>}
                                     </TouchableOpacity>
                                 </View>
                             </Animated.View>
@@ -803,11 +539,11 @@ const HomeScreen = () => {
                                     const isActive = index === currentMusicIndex;
                                     return (
                                         <TouchableOpacity
-                                            key={track.id + index}
+                                            key={track.mediaId + index}
                                             style={[styles.queueItem, isActive && { borderColor: '#00E5FF', backgroundColor: 'rgba(0, 229, 255, 0.1)' }]}
                                             onPress={() => setCurrentMusicIndex(index)}
                                         >
-                                            <Image source={{ uri: track.image }} style={styles.queueImage} />
+                                            <Image source={{ uri: track?.artwork || track?.artworkUrl || track?.image }} style={styles.queueImage} />
                                             <View style={styles.queueInfo}>
                                                 <Text style={[styles.queueTrackTitle, isActive && { color: '#00E5FF' }]} numberOfLines={1}>{track.title}</Text>
                                                 <Text style={styles.queueTrackArtist} numberOfLines={1}>{track.artist}</Text>

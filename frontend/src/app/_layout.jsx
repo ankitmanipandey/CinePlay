@@ -11,9 +11,11 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import * as SecureStore from 'expo-secure-store';
 import { ThemeProvider, DarkTheme } from 'expo-router/react-navigation';
-
-// <-- ADD THIS IMPORT -->
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+
+// --- RNTP V5 IMPORT ---
+// Removed AppKilledPlaybackBehavior entirely
+import TrackPlayer, { PlayerCommand, Event } from '@rntp/player';
 
 // --- GLOBAL STORES ---
 import { useAuthStore } from '../store/useAuthStore';
@@ -24,6 +26,31 @@ import { registerUploadForegroundService } from '../services/uploadManager';
 
 // Execute registerUploadForegroundService unconditionally at the top level.
 registerUploadForegroundService();
+
+// --- TRACK PLAYER BACKGROUND SERVICE (v5) ---
+if (TrackPlayer) {
+  TrackPlayer.registerBackgroundEventHandler(() => async (event) => {
+    switch (event.type) {
+      case Event.RemotePlay:
+        await TrackPlayer.play();
+        break;
+      case Event.RemotePause:
+        await TrackPlayer.pause();
+        break;
+      case Event.RemoteNext:
+        await TrackPlayer.skipToNext();
+        break;
+      case Event.RemotePrevious:
+        await TrackPlayer.skipToPrevious();
+        break;
+      case Event.RemoteSeek:
+        await TrackPlayer.seekTo(event.position);
+        break;
+    }
+  });
+} else {
+  console.warn("⚠️ TrackPlayer native module is not linked. Please rebuild the app.");
+}
 
 const { width } = Dimensions.get('window');
 
@@ -150,6 +177,35 @@ export default function RootLayout() {
   const lastNotificationResponse = Notifications.useLastNotificationResponse();
   const handledNotificationId = useRef(null);
 
+  // 0. Track Player Setup Initialization (v5)
+  useEffect(() => {
+    async function setupPlayer() {
+      try {
+        await TrackPlayer.setupPlayer({
+          contentType: 'music',
+          // Note: In v5, audio background playback is natively continuous out of the box.
+        });
+
+        // Configures the notification/lock screen capabilities
+        await TrackPlayer.setCommands({
+          capabilities: [
+            PlayerCommand.PlayPause,
+            PlayerCommand.Next,
+            PlayerCommand.Previous,
+            PlayerCommand.Seek,
+          ],
+          forwardInterval: 15,
+          backwardInterval: 15,
+        });
+
+        console.log('✅ TrackPlayer setup completed.');
+      } catch (e) {
+        console.error('❌ TrackPlayer setup failed:', e);
+      }
+    }
+    setupPlayer();
+  }, []);
+
   // 1. Initial Auth Check
   useEffect(() => {
     const checkUserAuth = async () => {
@@ -257,41 +313,27 @@ export default function RootLayout() {
     let backPressCount = 0;
 
     const onBackPress = () => {
-      // 1. If we can naturally go back in the stack, let it happen
-      if (router.canGoBack()) {
-        return false;
-      }
-
-      // 2. If we are at the root, but NOT on the Home tab -> Go to Home
+      if (router.canGoBack()) return false;
       if (pathname !== '/tabs/home') {
         router.replace('/tabs/home');
         return true;
       }
-
-      // 3. We are on the Home tab and have no history -> Double back to exit
       if (backPressCount === 1) {
         BackHandler.exitApp();
         return true;
       }
-
       backPressCount = 1;
-
       Toast.show({
         type: 'hotstarInfo',
         text1: 'Press back again to exit',
         position: 'bottom',
         bottomOffset: 100,
       });
-
-      setTimeout(() => {
-        backPressCount = 0;
-      }, 2000);
-
+      setTimeout(() => { backPressCount = 0; }, 2000);
       return true;
     };
 
     const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
-
     return () => subscription.remove();
   }, [router, pathname]);
 
@@ -303,7 +345,6 @@ export default function RootLayout() {
     );
   }
 
-  // <-- WRAPPED THE ENTIRE RETURN BLOCK -->
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <ThemeProvider value={DarkTheme}>
@@ -323,42 +364,10 @@ export default function RootLayout() {
 }
 
 const styles = StyleSheet.create({
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  toastWrapper: {
-    width: '100%',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-  },
-  toastContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    width: '100%',
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 16,
-    elevation: 5,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
-  },
-  toastTextContainer: {
-    marginLeft: 12,
-    flex: 1,
-  },
-  toastText: {
-    color: '#FFFFFF',
-    fontWeight: 'bold',
-    fontSize: 14,
-  },
-  toastSubText: {
-    color: '#E0E0E0',
-    fontSize: 13,
-    marginTop: 4,
-    lineHeight: 18,
-  }
+  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  toastWrapper: { width: '100%', alignItems: 'center', paddingHorizontal: 16 },
+  toastContainer: { flexDirection: 'row', alignItems: 'center', width: '100%', paddingVertical: 12, paddingHorizontal: 16, borderRadius: 16, elevation: 5, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 3.84 },
+  toastTextContainer: { marginLeft: 12, flex: 1 },
+  toastText: { color: '#FFFFFF', fontWeight: 'bold', fontSize: 14 },
+  toastSubText: { color: '#E0E0E0', fontSize: 13, marginTop: 4, lineHeight: 18 }
 });

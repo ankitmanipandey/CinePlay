@@ -3,15 +3,15 @@ import { View, Text, Image, TouchableOpacity, Animated, PanResponder, StyleSheet
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { VideoView } from 'expo-video';
+import { RepeatMode } from '@rntp/player';
 import { formatTime } from '../../utils/homehelpers';
 
 export const MusicPlayerUI = ({
     currentTrack, musicQueue, currentMusicIndex, setCurrentMusicIndex,
     musicProgress, musicDuration, isPlaying, setIsPlaying,
     isShuffle, setIsShuffle, loopMode, setLoopMode,
-    handleNextTrack, handlePrevTrack, handleMusicAction, musicPrefs,
-    livePlayer, router
+    handleNextTrack, handlePrevTrack, handleSeekTo, handleMusicAction, musicPrefs,
+    router
 }) => {
     const { width, height } = useWindowDimensions();
     const insets = useSafeAreaInsets();
@@ -23,6 +23,9 @@ export const MusicPlayerUI = ({
     const [barWidth, setBarWidth] = useState(0);
     const [miniBarInteractive, setMiniBarInteractive] = useState(false);
     const [lastTap, setLastTap] = useState(0);
+
+    const isLoopActive = loopMode !== 0 && loopMode !== 'off' && !!loopMode;
+    const isLoopOne = loopMode === 1 || loopMode === 'track' || loopMode === 'one' || loopMode === RepeatMode.Track;
 
     const SCROLL_RANGE = 260;
     const ART_ORIG_SIZE = width * 0.75;
@@ -49,7 +52,7 @@ export const MusicPlayerUI = ({
         if (barWidth > 0 && musicDuration > 0) {
             const percentage = Math.max(0, Math.min(1, event.nativeEvent.locationX / barWidth));
             const newTime = percentage * musicDuration;
-            livePlayer.currentTime = newTime;
+            handleSeekTo(newTime);
         }
     };
 
@@ -70,7 +73,7 @@ export const MusicPlayerUI = ({
                 Animated.timing(slideAnim, { toValue: height, duration: 250, useNativeDriver: true }).start(() => router.back());
             } else if (Math.abs(dx) < 10 && Math.abs(dy) < 10) {
                 const now = Date.now();
-                if (now - lastTap < 300 && currentTrack) handleMusicAction(currentTrack.id, 'toggleLike');
+                if (now - lastTap < 300 && currentTrack) handleMusicAction(currentTrack.mediaId, 'toggleLike');
                 setLastTap(now);
                 Animated.spring(slideAnim, { toValue: 0, useNativeDriver: true }).start();
             } else {
@@ -83,8 +86,6 @@ export const MusicPlayerUI = ({
         <Animated.View style={{ flex: 1, backgroundColor: 'transparent', transform: [{ translateY: slideAnim }] }}>
             <SafeAreaView style={styles.safeArea}>
                 <LinearGradient colors={['#170D22', '#0A0A0C']} style={styles.container}>
-                    <VideoView player={livePlayer} style={{ width: 0, height: 0, position: 'absolute' }} nativeControls={false} />
-
                     <View style={styles.musicFixedHeader}>
                         <TouchableOpacity
                             onPress={() => Animated.timing(slideAnim, { toValue: height, duration: 250, useNativeDriver: true }).start(() => router.back())}
@@ -94,7 +95,7 @@ export const MusicPlayerUI = ({
                         </TouchableOpacity>
                         <Animated.View style={{ alignItems: 'center', opacity: heroOpacity }}>
                             <Text style={styles.musicHeaderSubtitle}>NOW PLAYING</Text>
-                            <Text style={styles.musicHeaderTitle} numberOfLines={1}>{currentTrack.title}</Text>
+                            <Text style={styles.musicHeaderTitle} numberOfLines={1}>{currentTrack?.title}</Text>
                         </Animated.View>
                         <View style={{ width: 48 }} />
                     </View>
@@ -109,17 +110,17 @@ export const MusicPlayerUI = ({
                             <Animated.View style={{ position: 'absolute', top: -100, left: 0, right: 0, height: 200, backgroundColor: '#170D22', opacity: headerBgOpacity, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.06)' }} />
 
                             <Animated.View style={[styles.albumArtContainer, { transform: [{ translateX: artTranslateX }, { translateY: artTranslateY }, { scale: artScale }] }]}>
-                                <Image source={{ uri: currentTrack.image }} style={[styles.albumArt, { width: ART_ORIG_SIZE, height: ART_ORIG_SIZE }]} />
+                                <Image source={{ uri: currentTrack?.artwork || currentTrack?.artworkUrl || currentTrack?.image }} style={[styles.albumArt, { width: ART_ORIG_SIZE, height: ART_ORIG_SIZE }]} />
                             </Animated.View>
 
                             <Animated.View style={[styles.miniPlayerBar, { opacity: miniOpacity }]} pointerEvents={miniBarInteractive ? 'auto' : 'none'}>
                                 <View style={{ flex: 1, marginRight: 10 }}>
-                                    <Text style={styles.miniPlayerTitle} numberOfLines={1}>{currentTrack.title}</Text>
-                                    <Text style={styles.miniPlayerArtist} numberOfLines={1}>{currentTrack.artist}</Text>
+                                    <Text style={styles.miniPlayerTitle} numberOfLines={1}>{currentTrack?.title}</Text>
+                                    <Text style={styles.miniPlayerArtist} numberOfLines={1}>{currentTrack?.artist}</Text>
                                 </View>
                                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16 }}>
                                     <TouchableOpacity onPress={handlePrevTrack}><Ionicons name="play-skip-back" size={24} color="#FFFFFF" /></TouchableOpacity>
-                                    <TouchableOpacity onPress={() => { if (isPlaying) { livePlayer.pause(); setIsPlaying(false); } else { livePlayer.play(); setIsPlaying(true); } }}>
+                                    <TouchableOpacity onPress={() => setIsPlaying(!isPlaying)}>
                                         <Ionicons name={isPlaying ? "pause" : "play"} size={28} color="#FFFFFF" />
                                     </TouchableOpacity>
                                     <TouchableOpacity onPress={handleNextTrack}><Ionicons name="play-skip-forward" size={24} color="#FFFFFF" /></TouchableOpacity>
@@ -127,19 +128,23 @@ export const MusicPlayerUI = ({
                             </Animated.View>
 
                             <Animated.View style={{ opacity: heroOpacity }}>
+                                {/* DISLIKE, TRACK INFO, AND LIKE BUTTONS */}
                                 <View style={[styles.musicTrackInfo, { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20 }]}>
-                                    <TouchableOpacity onPress={() => handleMusicAction(currentTrack.id, 'dislike')} style={{ padding: 10 }}>
-                                        <Ionicons name="thumbs-down-outline" size={28} color="#8F98A0" />
+                                    <TouchableOpacity onPress={() => handleMusicAction(currentTrack?.mediaId, 'dislike')} style={{ padding: 10 }}>
+                                        <Ionicons name={musicPrefs[currentTrack?.mediaId] === 'dislike' ? "thumbs-down" : "thumbs-down-outline"} size={28} color={musicPrefs[currentTrack?.mediaId] === 'dislike' ? "#FF007A" : "#8F98A0"} />
                                     </TouchableOpacity>
+
                                     <View style={{ flex: 1, alignItems: 'center', paddingHorizontal: 10 }}>
-                                        <Text style={styles.musicLargeTitle} numberOfLines={1}>{currentTrack.title}</Text>
-                                        <Text style={styles.musicLargeArtist} numberOfLines={1}>{currentTrack.artist}</Text>
+                                        <Text style={styles.musicLargeTitle} numberOfLines={1}>{currentTrack?.title}</Text>
+                                        <Text style={styles.musicLargeArtist} numberOfLines={1}>{currentTrack?.artist}</Text>
                                     </View>
-                                    <TouchableOpacity onPress={() => handleMusicAction(currentTrack.id, 'toggleLike')} style={{ padding: 10 }}>
-                                        <Ionicons name={musicPrefs[currentTrack.id] === 'like' ? "heart" : "heart-outline"} size={28} color={musicPrefs[currentTrack.id] === 'like' ? "#FF007A" : "#FFF"} />
+
+                                    <TouchableOpacity onPress={() => handleMusicAction(currentTrack?.mediaId, 'toggleLike')} style={{ padding: 10 }}>
+                                        <Ionicons name={musicPrefs[currentTrack?.mediaId] === 'like' ? "heart" : "heart-outline"} size={28} color={musicPrefs[currentTrack?.mediaId] === 'like' ? "#FF007A" : "#FFF"} />
                                     </TouchableOpacity>
                                 </View>
 
+                                {/* INTERACTIVE PROGRESS / SCRUBBER BAR */}
                                 <View style={styles.seekContainer}>
                                     <TouchableOpacity activeOpacity={1} style={styles.progressBarTouchArea} onLayout={(e) => setBarWidth(e.nativeEvent.layout.width)} onPress={handleSeek}>
                                         <View style={styles.progressBarBg}>
@@ -157,20 +162,24 @@ export const MusicPlayerUI = ({
                                     <TouchableOpacity onPress={() => setIsShuffle(!isShuffle)} style={{ padding: 10 }}>
                                         <Ionicons name="shuffle" size={24} color={isShuffle ? "#00E5FF" : "#8F98A0"} />
                                     </TouchableOpacity>
+
                                     <TouchableOpacity onPress={handlePrevTrack} style={styles.skipBtn}>
-                                        <Ionicons name="play-skip-back" size={32} color={currentMusicIndex > 0 || isShuffle || loopMode === 1 ? "#FFFFFF" : "#555"} />
+                                        <Ionicons name="play-skip-back" size={32} color={currentMusicIndex > 0 || isShuffle || isLoopActive ? "#FFFFFF" : "#555"} />
                                     </TouchableOpacity>
-                                    <TouchableOpacity style={styles.neonPlayWrapper} activeOpacity={0.8} onPress={() => { if (isPlaying) { livePlayer.pause(); setIsPlaying(false); } else { livePlayer.play(); setIsPlaying(true); } }}>
+
+                                    <TouchableOpacity style={styles.neonPlayWrapper} activeOpacity={0.8} onPress={() => setIsPlaying(!isPlaying)}>
                                         <LinearGradient colors={['#00E5FF', '#9B51E0', '#FF007A']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.neonPlayInner}>
                                             <Ionicons name={isPlaying ? "pause" : "play"} size={36} color="#FFFFFF" style={!isPlaying ? { marginLeft: 6 } : {}} />
                                         </LinearGradient>
                                     </TouchableOpacity>
+
                                     <TouchableOpacity onPress={handleNextTrack} style={styles.skipBtn}>
-                                        <Ionicons name="play-skip-forward" size={32} color={currentMusicIndex < musicQueue.length - 1 || isShuffle || loopMode === 1 ? "#FFFFFF" : "#555"} />
+                                        <Ionicons name="play-skip-forward" size={32} color={currentMusicIndex < musicQueue.length - 1 || isShuffle || isLoopActive ? "#FFFFFF" : "#555"} />
                                     </TouchableOpacity>
-                                    <TouchableOpacity onPress={() => setLoopMode((prev) => (prev + 1) % 3)} style={{ padding: 10, position: 'relative' }}>
-                                        <Ionicons name="repeat" size={24} color={loopMode !== 0 ? "#00E5FF" : "#8F98A0"} />
-                                        {loopMode === 2 && <Text style={{ position: 'absolute', fontSize: 10, color: '#00E5FF', top: 10, right: 6, fontWeight: 'bold' }}>1</Text>}
+
+                                    <TouchableOpacity onPress={setLoopMode} style={{ padding: 10, position: 'relative' }}>
+                                        <Ionicons name="repeat" size={24} color={isLoopActive ? "#00E5FF" : "#8F98A0"} />
+                                        {isLoopOne && <Text style={{ position: 'absolute', fontSize: 10, color: '#00E5FF', top: 10, right: 6, fontWeight: 'bold' }}>1</Text>}
                                     </TouchableOpacity>
                                 </View>
                             </Animated.View>
@@ -181,8 +190,8 @@ export const MusicPlayerUI = ({
                             {musicQueue.map((track, index) => {
                                 const isActive = index === currentMusicIndex;
                                 return (
-                                    <TouchableOpacity key={track.id + index} style={[styles.queueItem, isActive && { borderColor: '#00E5FF', backgroundColor: 'rgba(0, 229, 255, 0.1)' }]} onPress={() => setCurrentMusicIndex(index)}>
-                                        <Image source={{ uri: track.image }} style={styles.queueImage} />
+                                    <TouchableOpacity key={track.mediaId + index} style={[styles.queueItem, isActive && { borderColor: '#00E5FF', backgroundColor: 'rgba(0, 229, 255, 0.1)' }]} onPress={() => setCurrentMusicIndex(index)}>
+                                        <Image source={{ uri: track?.artwork || track?.artworkUrl || track?.image }} style={styles.queueImage} />
                                         <View style={styles.queueInfo}>
                                             <Text style={[styles.queueTrackTitle, isActive && { color: '#00E5FF' }]} numberOfLines={1}>{track.title}</Text>
                                             <Text style={styles.queueTrackArtist} numberOfLines={1}>{track.artist}</Text>
@@ -199,7 +208,6 @@ export const MusicPlayerUI = ({
     );
 };
 
-// ... Include all the Music-specific styles from PlayerScreen here (safeArea, container, albumArtContainer, queueContainer, etc.)
 const styles = StyleSheet.create({
     safeArea: { flex: 1, backgroundColor: '#000' },
     container: { flex: 1, backgroundColor: '#0A0A0C' },

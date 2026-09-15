@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Text, TouchableOpacity, ActivityIndicator, StyleSheet } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -29,6 +29,9 @@ export default function PlayerScreen() {
     const [selectedSeason, setSelectedSeason] = useState(1);
     const [selectedEpisode, setSelectedEpisode] = useState(1);
 
+    // NEW: Separate local state specifically for the Video/Trailer player
+    const [isVideoPlaying, setIsVideoPlaying] = useState(true);
+
     const livePlayer = useVideoPlayer(null, (player) => {
         player.loop = false;
         player.staysActiveInBackground = true;
@@ -37,6 +40,13 @@ export default function PlayerScreen() {
 
     // 1. Music Logic Hook
     const musicState = useMusicEngine(type, livePlayer, token, insets);
+
+    // NEW: Automatically pause background music when opening a movie/show screen
+    useEffect(() => {
+        if (type !== 'music' && musicState.isPlaying) {
+            musicState.setIsPlaying(false);
+        }
+    }, [type]);
 
     // 2. Data Fetching Hook
     const { isLoading, mediaDetails, trailerKey, isVidkingAvailable } = useMediaDetails({
@@ -92,7 +102,7 @@ export default function PlayerScreen() {
     return (
         <VideoPlayerUI
             mediaDetails={mediaDetails} streamUrl={streamUrl} ytId={ytId} trailerKey={trailerKey}
-            isPlaying={musicState.isPlaying} setIsPlaying={musicState.setIsPlaying}
+            isPlaying={isVideoPlaying} setIsPlaying={setIsVideoPlaying} // UPDATED: Now uses local video state
             activeMediaView={activeMediaView} setActiveMediaView={setActiveMediaView}
             isVidkingAvailable={isVidkingAvailable}
             selectedSeason={selectedSeason} setSelectedSeason={setSelectedSeason}

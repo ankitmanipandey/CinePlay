@@ -1,26 +1,44 @@
-// src/hooks/useMusicEngine.js
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Toast from 'react-native-toast-message';
+import TrackPlayer, {
+    useActiveMediaItem,
+    useIsPlaying,
+    useProgress,
+    RepeatMode
+} from '@rntp/player';
 import { safeFetchJson, mapSaavnSong } from '../services/jioSaavnApi';
 import { normalizeString } from '../utils/homehelpers';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL;
 
-export const useMusicEngine = (type, livePlayer, token, insets) => {
-    const [musicQueue, setMusicQueue] = useState([]);
-    const [currentMusicIndex, setCurrentMusicIndex] = useState(0);
+export const useMusicEngine = (type, token, insets) => {
+    const activeTrack = useActiveMediaItem();
+    // Rename native playing state so we can wrap it in our own fast UI state
+    const { playing: nativePlaying } = useIsPlaying();
+    const { position: musicProgress, duration: musicDuration } = useProgress();
+
     const [musicPrefs, setMusicPrefs] = useState({});
     const [isShuffle, setIsShuffle] = useState(false);
-    const [loopMode, setLoopMode] = useState(0);
-    const [musicProgress, setMusicProgress] = useState(0);
-    const [musicDuration, setMusicDuration] = useState(0);
-    const [isPlaying, setIsPlaying] = useState(false);
+    const [loopMode, setLoopMode] = useState(RepeatMode.Off);
 
-    const playRequestId = useRef(0);
-    const playingTrackId = useRef(null);
-    const isFetchingQueue = useRef(false);
+    const [localQueueUI, setLocalQueueUI] = useState([]);
 
-    // Fetch User Liked Songs
+    // NEW: Centralized optimistic playing state
+    const [isPlaying, setLocalIsPlaying] = useState(false);
+
+    const currentMusicIndex = localQueueUI.findIndex(
+        t => t.mediaId === activeTrack?.mediaId || t.id === activeTrack?.id || t.id === activeTrack?.mediaId
+    );
+
+    const isExtendingRef = useRef(false);
+
+    // Keep our fast local state synced with the true native state
+    useEffect(() => {
+        if (nativePlaying !== undefined) {
+            setLocalIsPlaying(nativePlaying);
+        }
+    }, [nativePlaying]);
+
     useEffect(() => {
         if (token) {
             fetch(`${BACKEND_URL}/user/lists`, { headers: { Authorization: `Bearer ${token}` } })
@@ -35,92 +53,149 @@ export const useMusicEngine = (type, livePlayer, token, insets) => {
         }
     }, [token]);
 
-    const extendQueueIfNeeded = useCallback(async (index, queue) => {
-        const thresholdIndex = Math.floor(queue.length * 0.70);
-        if (queue.length < 5 || index < thresholdIndex || isFetchingQueue.current) return;
-        const seed = queue[index];
-        if (!seed) return;
+    const setMusicQueue = async (initialQueue, selectedTrackId = null) => {
+        const refinedQueue = initialQueue.map(s => {
+            const actualStreamUrl = s.downloadUrl?.find?.(d => d.quality === '320kbps')?.url || s.downloadUrl?.[0]?.url || s.url;
+            const actualImgUrl = Array.isArray(s.image) ? (s.image?.find?.(i => i.quality === '500x500')?.url || s.image?.[0]?.url) : s.image;
 
-        isFetchingQueue.current = true;
-        try {
-            let newTracks = [];
-            const searchQ = encodeURIComponent(seed.artist || 'Trending');
-            const randomPage = Math.floor(Math.random() * 8) + 1;
-            const json = await safeFetchJson(`/search/songs?query=${searchQ}&page=${randomPage}&limit=15`);
-            if (json?.success && json.data?.results) newTracks = json.data.results.map(mapSaavnSong).filter(t => t.url);
+            return {
+                id: String(s.id),
+                mediaId: String(s.id),
+                url: actualStreamUrl,
+                title: s.title || s.name,
+                artist: s.artist || s.description || s.subtitle || (s.artists?.primary?.map(a => a.name).join(', ') || 'Unknown Artist'),
+                artwork: actualImgUrl,
+                artworkUrl: actualImgUrl,
+                duration: s.duration ? Number(s.duration) : 0,
+            };
+        }).filter(s => s.url && (s.url.includes('.mp4') || s.url.includes('.aac') || s.url.includes('http')));
 
-            if (newTracks.length > 0) {
-                setMusicQueue(prev => {
-                    const existingNames = new Set(prev.map(t => normalizeString(t.title)));
+        const seenNames = new Set();
+        const rntpQueue = [];
+        for (const s of refinedQueue) {
+            const norm = normalizeString(s.title);
+            if (!seenNames.has(norm)) { seenNames.add(norm); rntpQueue.push(s); }
+        }
+
+        let selectedIndex = rntpQueue.findIndex(s => s.mediaId === String(selectedTrackId));
+        if (selectedIndex === -1) selectedIndex = 0;
+
+        setLocalQueueUI(rntpQueue);
+
+        await TrackPlayer.setMediaItems(rntpQueue, selectedIndex);
+
+        // INSTANT UI FIX: Immediately tell the app it is playing!
+        setLocalIsPlaying(true);
+        TrackPlayer.play();
+    };
+
+    useEffect(() => {
+        if (!activeTrack || currentMusicIndex < 0 || localQueueUI.length === 0) return;
+
+        const thresholdIndex = Math.floor(localQueueUI.length * 0.70);
+        if (currentMusicIndex < thresholdIndex || isExtendingRef.current) return;
+
+        const extendQueue = async () => {
+            isExtendingRef.current = true;
+            const seed = localQueueUI[currentMusicIndex];
+            try {
+                let newTracks = [];
+                const searchQ = encodeURIComponent(seed.artist || 'Trending');
+                const randomPage = Math.floor(Math.random() * 8) + 1;
+                const json = await safeFetchJson(`/search/songs?query=${searchQ}&page=${randomPage}&limit=15`);
+
+                if (json?.success && json.data?.results) {
+                    newTracks = json.data.results.map(mapSaavnSong).filter(t => t.url);
+                }
+
+                if (newTracks.length > 0) {
+                    const existingNames = new Set(localQueueUI.map(t => normalizeString(t.title)));
                     const filteredTracks = newTracks.filter(s => {
                         const normName = normalizeString(s.title);
                         if (!s.url || existingNames.has(normName)) return false;
                         existingNames.add(normName);
                         return true;
                     });
-                    return [...prev, ...filteredTracks.slice(0, 10)];
-                });
+
+                    const formatForRntp = filteredTracks.slice(0, 10).map(s => ({
+                        id: String(s.id),
+                        mediaId: String(s.id),
+                        url: s.downloadUrl?.find?.(d => d.quality === '320kbps')?.url || s.downloadUrl?.[0]?.url || s.url,
+                        title: s.title || s.name,
+                        artist: s.artist || s.description || 'Unknown Artist',
+                        artwork: Array.isArray(s.image) ? s.image[0]?.url : s.image,
+                        artworkUrl: Array.isArray(s.image) ? s.image[0]?.url : s.image,
+                        duration: s.duration ? Number(s.duration) : 0,
+                    }));
+
+                    if (formatForRntp.length > 0) {
+                        setLocalQueueUI(prev => [...prev, ...formatForRntp]);
+
+                        if (typeof TrackPlayer.addMediaItems === 'function') {
+                            await TrackPlayer.addMediaItems(formatForRntp);
+                        } else if (typeof TrackPlayer.add === 'function') {
+                            await TrackPlayer.add(formatForRntp);
+                        } else {
+                            const currentQueue = await TrackPlayer.getQueue();
+                            await TrackPlayer.setMediaItems([...currentQueue, ...formatForRntp]);
+                        }
+                    }
+                }
+            } catch (e) {
+                console.error("Queue extend failed:", e);
+            } finally {
+                isExtendingRef.current = false;
             }
-        } catch (e) { }
-        finally { isFetchingQueue.current = false; }
-    }, []);
+        };
 
-    const handleNextTrack = useCallback(() => {
-        if (isShuffle) setCurrentMusicIndex(Math.floor(Math.random() * musicQueue.length));
-        else if (currentMusicIndex < musicQueue.length - 1) setCurrentMusicIndex(prev => prev + 1);
-        else if (loopMode === 1) setCurrentMusicIndex(0);
-        else { livePlayer?.pause(); setIsPlaying(false); }
-    }, [isShuffle, loopMode, currentMusicIndex, musicQueue.length, livePlayer]);
+        extendQueue();
+    }, [activeTrack, currentMusicIndex, localQueueUI]);
 
-    const handlePrevTrack = useCallback(() => {
-        if (musicProgress > 3) livePlayer.currentTime = 0;
-        else if (isShuffle) setCurrentMusicIndex(Math.floor(Math.random() * musicQueue.length));
-        else if (currentMusicIndex > 0) setCurrentMusicIndex(prev => prev - 1);
-        else if (loopMode === 1) setCurrentMusicIndex(musicQueue.length - 1);
-    }, [isShuffle, loopMode, currentMusicIndex, musicQueue.length, musicProgress, livePlayer]);
-
-    useEffect(() => {
-        if (type !== 'music' || currentMusicIndex < 0 || !musicQueue[currentMusicIndex] || !livePlayer) return;
-        const track = musicQueue[currentMusicIndex];
-        if (playingTrackId.current === track.id) return;
-        playingTrackId.current = track.id;
-
-        extendQueueIfNeeded(currentMusicIndex, musicQueue);
-        const requestId = ++playRequestId.current;
-
-        if (!track.url) { handleNextTrack(); return; }
-
-        (async () => {
-            try {
-                setIsPlaying(false); setMusicProgress(0);
-                await livePlayer.replaceAsync({ uri: track.url, metadata: { title: track.title, artist: track.artist, artwork: track.image } });
-                if (requestId !== playRequestId.current) return;
-                livePlayer.play();
-                setIsPlaying(true);
-            } catch (err) {
-                if (requestId !== playRequestId.current) return;
-                setIsPlaying(false);
-                handleNextTrack();
+    const handleNextTrack = async () => {
+        try {
+            if (isShuffle && localQueueUI.length > 1) {
+                let randomIndex = currentMusicIndex;
+                while (randomIndex === currentMusicIndex) {
+                    randomIndex = Math.floor(Math.random() * localQueueUI.length);
+                }
+                await TrackPlayer.skipToIndex(randomIndex);
+            } else {
+                await TrackPlayer.skipToNext();
             }
-        })();
-    }, [currentMusicIndex, musicQueue, type, livePlayer, extendQueueIfNeeded, handleNextTrack]);
+        } catch (error) { }
+    };
 
-    useEffect(() => {
-        if (type !== 'music' || !livePlayer) return;
-        const interval = setInterval(() => {
-            if (isPlaying && livePlayer) {
-                setMusicProgress(livePlayer.currentTime);
-                setMusicDuration(livePlayer.duration);
+    const handlePrevTrack = async () => {
+        try {
+            if (isShuffle && localQueueUI.length > 1) {
+                let randomIndex = currentMusicIndex;
+                while (randomIndex === currentMusicIndex) {
+                    randomIndex = Math.floor(Math.random() * localQueueUI.length);
+                }
+                await TrackPlayer.skipToIndex(randomIndex);
+            } else {
+                await TrackPlayer.skipToPrevious();
             }
-        }, 1000);
+        } catch (error) {
+            await TrackPlayer.seekTo(0);
+        }
+    };
 
-        const sub = livePlayer.addListener('playToEnd', async () => {
-            setIsPlaying(false);
-            if (loopMode === 2) { livePlayer.currentTime = 0; livePlayer.play(); setIsPlaying(true); }
-            else { handleNextTrack(); }
-        });
-        return () => { clearInterval(interval); sub?.remove(); };
-    }, [livePlayer, currentMusicIndex, musicQueue, isPlaying, type, loopMode, handleNextTrack]);
+    const handleSeekTo = (time) => TrackPlayer.seekTo(time);
+
+    // UPDATED: Now drives our local state instantly too!
+    const handleSetIsPlaying = (playState) => {
+        setLocalIsPlaying(playState);
+        if (playState) TrackPlayer.play();
+        else TrackPlayer.pause();
+    };
+
+    const toggleLoopMode = () => {
+        const nextMode = loopMode === RepeatMode.Off ? RepeatMode.All :
+            loopMode === RepeatMode.All ? RepeatMode.One : RepeatMode.Off;
+        setLoopMode(nextMode);
+        TrackPlayer.setRepeatMode(nextMode);
+    };
 
     const handleMusicAction = async (songId, action) => {
         if (!token) return Toast.show({ type: 'hotstarInfo', text1: 'Log in for personalization', position: 'top', topOffset: insets.top > 0 ? insets.top + 10 : 50 });
@@ -135,9 +210,22 @@ export const useMusicEngine = (type, livePlayer, token, insets) => {
     };
 
     return {
-        musicQueue, setMusicQueue, currentMusicIndex, setCurrentMusicIndex,
-        musicPrefs, isShuffle, setIsShuffle, loopMode, setLoopMode,
-        musicProgress, musicDuration, isPlaying, setIsPlaying,
-        handleNextTrack, handlePrevTrack, handleMusicAction
+        musicQueue: localQueueUI,
+        setMusicQueue,
+        currentMusicIndex,
+        setCurrentMusicIndex: (idx) => TrackPlayer.skipToIndex(idx),
+        musicPrefs,
+        isShuffle,
+        setIsShuffle,
+        loopMode,
+        setLoopMode: toggleLoopMode,
+        musicProgress,
+        musicDuration,
+        isPlaying,
+        setIsPlaying: handleSetIsPlaying, // Use the new instantaneous method
+        handleNextTrack,
+        handlePrevTrack,
+        handleSeekTo,
+        handleMusicAction
     };
 };

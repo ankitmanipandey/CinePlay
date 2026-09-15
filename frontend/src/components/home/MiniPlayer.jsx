@@ -1,9 +1,9 @@
-// src/components/home/MiniPlayer.jsx
 import React from 'react';
 import { View, Text, Image, TouchableOpacity, StyleSheet } from 'react-native';
 import { GestureDetector, Gesture } from 'react-native-gesture-handler';
 import ReAnimated, { FadeInUp, runOnJS } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
+import { RepeatMode } from '@rntp/player';
 
 export const MiniPlayer = ({
     currentTrack, isMusicPlaying, musicProgress, musicDuration,
@@ -11,6 +11,10 @@ export const MiniPlayer = ({
     onTogglePlay, handleNextTrack, handlePrevTrack,
     onOpenModal, onDismiss, bottomOffset,
 }) => {
+
+    // Safe loop checks
+    const isLoopActive = loopMode !== 0 && loopMode !== 'off' && !!loopMode;
+    const isLoopOne = loopMode === 1 || loopMode === 'track' || loopMode === 'one' || loopMode === RepeatMode.Track;
 
     const panGesture = Gesture.Pan()
         .activeOffsetX([-10, 10])
@@ -43,7 +47,7 @@ export const MiniPlayer = ({
                 <View style={styles.miniPlayerContent}>
                     <GestureDetector gesture={tapGesture}>
                         <ReAnimated.View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
-                            <Image source={{ uri: currentTrack.image }} style={styles.miniPlayerArt} />
+                            <Image source={{ uri: currentTrack?.artwork || currentTrack?.artworkUrl || currentTrack?.image }} style={styles.miniPlayerArt} />
                             <View style={styles.miniPlayerTextWrap}>
                                 <Text style={styles.miniPlayerTitle} numberOfLines={1}>{currentTrack.title}</Text>
                                 <Text style={styles.miniPlayerArtist} numberOfLines={1}>{currentTrack.artist}</Text>
@@ -55,15 +59,18 @@ export const MiniPlayer = ({
                         <TouchableOpacity onPress={() => setIsShuffle(!isShuffle)} style={styles.miniPlayerBtn} hitSlop={8}>
                             <Ionicons name="shuffle" size={20} color={isShuffle ? "#00E5FF" : "#8F98A0"} />
                         </TouchableOpacity>
+
                         <TouchableOpacity onPress={onTogglePlay} style={styles.miniPlayerBtn} hitSlop={8}>
                             <Ionicons name={isMusicPlaying ? "pause" : "play"} size={26} color="#FFF" />
                         </TouchableOpacity>
+
                         <TouchableOpacity onPress={handleNextTrack} style={styles.miniPlayerBtn} hitSlop={8}>
                             <Ionicons name="play-skip-forward" size={24} color="#FFF" />
                         </TouchableOpacity>
-                        <TouchableOpacity onPress={() => setLoopMode((prev) => (prev + 1) % 3)} style={[styles.miniPlayerBtn, { position: 'relative' }]} hitSlop={8}>
-                            <Ionicons name="repeat" size={20} color={loopMode !== 0 ? "#00E5FF" : "#8F98A0"} />
-                            {loopMode === 2 && <Text style={{ position: 'absolute', fontSize: 8, color: '#00E5FF', top: 4, right: 2, fontWeight: 'bold' }}>1</Text>}
+
+                        <TouchableOpacity onPress={setLoopMode} style={[styles.miniPlayerBtn, { position: 'relative' }]} hitSlop={8}>
+                            <Ionicons name="repeat" size={20} color={isLoopActive ? "#00E5FF" : "#8F98A0"} />
+                            {isLoopOne && <Text style={{ position: 'absolute', fontSize: 8, color: '#00E5FF', top: 4, right: 2, fontWeight: 'bold' }}>1</Text>}
                         </TouchableOpacity>
                     </View>
                 </View>

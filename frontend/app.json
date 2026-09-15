@@ -3,6 +3,7 @@
     "name": "CinePlay",
     "slug": "cineplay",
     "version": "1.0.0",
+    "newArchEnabled": true,
     "runtimeVersion": {
       "policy": "appVersion"
     },
@@ -21,7 +22,10 @@
       "infoPlist": {
         "NSSpeechRecognitionUsageDescription": "Allow CinePlay to securely transcribe your voice into text for search.",
         "NSMicrophoneUsageDescription": "Allow CinePlay to access your microphone to search for movies and shows.",
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "UIBackgroundModes": [
+          "audio"
+        ]
       }
     },
     "android": {
