@@ -1,3 +1,4 @@
+// src/hooks/useMusicEngine.js
 import { useState, useEffect, useRef } from 'react';
 import Toast from 'react-native-toast-message';
 import TrackPlayer, {
@@ -23,8 +24,14 @@ export const useMusicEngine = (type, token, insets) => {
 
     const [localQueueUI, setLocalQueueUI] = useState([]);
 
-    // NEW: Centralized optimistic playing state
+    // Centralized optimistic playing state
     const [isPlaying, setLocalIsPlaying] = useState(false);
+
+    // ==========================================
+    // ⏰ SLEEP TIMER STATE & REFS
+    // ==========================================
+    const [sleepTimerRemaining, setSleepTimerRemaining] = useState(null); // stores seconds
+    const sleepTimerRef = useRef(null);
 
     const currentMusicIndex = localQueueUI.findIndex(
         t => t.mediaId === activeTrack?.mediaId || t.id === activeTrack?.id || t.id === activeTrack?.mediaId
@@ -39,6 +46,48 @@ export const useMusicEngine = (type, token, insets) => {
         }
     }, [nativePlaying]);
 
+    // ==========================================
+    // ⏰ SLEEP TIMER LOGIC
+    // ==========================================
+    const startSleepTimer = (minutes) => {
+        // Clear any existing timer first
+        if (sleepTimerRef.current) clearInterval(sleepTimerRef.current);
+
+        if (!minutes || minutes <= 0) {
+            setSleepTimerRemaining(null);
+            Toast.show({ type: 'hotstarInfo', text1: 'Sleep timer cancelled' });
+            return;
+        }
+
+        const endTime = Date.now() + minutes * 60000;
+        setSleepTimerRemaining(minutes * 60); // Store in seconds for the UI
+        Toast.show({ type: 'hotstarSuccess', text1: `Sleep timer set for ${minutes} minutes` });
+
+        // Start the countdown
+        sleepTimerRef.current = setInterval(() => {
+            const remainingSecs = Math.round((endTime - Date.now()) / 1000);
+
+            if (remainingSecs <= 0) {
+                // Time's up! Stop the timer and pause the music
+                clearInterval(sleepTimerRef.current);
+                setSleepTimerRemaining(null);
+                handleSetIsPlaying(false); // Pause TrackPlayer natively
+            } else {
+                setSleepTimerRemaining(remainingSecs);
+            }
+        }, 1000);
+    };
+
+    // Cleanup timer if the component/hook unmounts completely
+    useEffect(() => {
+        return () => {
+            if (sleepTimerRef.current) clearInterval(sleepTimerRef.current);
+        };
+    }, []);
+
+    // ==========================================
+    // 🎵 STANDARD MUSIC ENGINE LOGIC
+    // ==========================================
     useEffect(() => {
         if (token) {
             fetch(`${BACKEND_URL}/user/lists`, { headers: { Authorization: `Bearer ${token}` } })
@@ -183,7 +232,6 @@ export const useMusicEngine = (type, token, insets) => {
 
     const handleSeekTo = (time) => TrackPlayer.seekTo(time);
 
-    // UPDATED: Now drives our local state instantly too!
     const handleSetIsPlaying = (playState) => {
         setLocalIsPlaying(playState);
         if (playState) TrackPlayer.play();
@@ -222,10 +270,14 @@ export const useMusicEngine = (type, token, insets) => {
         musicProgress,
         musicDuration,
         isPlaying,
-        setIsPlaying: handleSetIsPlaying, // Use the new instantaneous method
+        setIsPlaying: handleSetIsPlaying,
         handleNextTrack,
         handlePrevTrack,
         handleSeekTo,
-        handleMusicAction
+        handleMusicAction,
+
+        // --- NEW EXPORTS FOR SLEEP TIMER ---
+        startSleepTimer,
+        sleepTimerRemaining
     };
 };

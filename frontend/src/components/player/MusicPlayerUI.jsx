@@ -1,9 +1,22 @@
-import React, { useRef, useState, useMemo, useEffect } from 'react';
-import { View, Text, Image, TouchableOpacity, Animated, PanResponder, StyleSheet, useWindowDimensions } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { RepeatMode } from '@rntp/player';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+    Alert,
+    Animated,
+    Image,
+    Modal,
+    PanResponder,
+    Platform,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    useWindowDimensions,
+    View
+} from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { formatTime } from '../../utils/homehelpers';
 
 export const MusicPlayerUI = ({
@@ -11,7 +24,7 @@ export const MusicPlayerUI = ({
     musicProgress, musicDuration, isPlaying, setIsPlaying,
     isShuffle, setIsShuffle, loopMode, setLoopMode,
     handleNextTrack, handlePrevTrack, handleSeekTo, handleMusicAction, musicPrefs,
-    router
+    router, startSleepTimer, sleepTimerRemaining // <-- Added sleep timer props
 }) => {
     const { width, height } = useWindowDimensions();
     const insets = useSafeAreaInsets();
@@ -23,6 +36,11 @@ export const MusicPlayerUI = ({
     const [barWidth, setBarWidth] = useState(0);
     const [miniBarInteractive, setMiniBarInteractive] = useState(false);
     const [lastTap, setLastTap] = useState(0);
+
+    // --- SLEEP TIMER STATE ---
+    const [isSleepTimerModalOpen, setIsSleepTimerModalOpen] = useState(false);
+    const [showCustomTimerInput, setShowCustomTimerInput] = useState(false);
+    const [customTimerValue, setCustomTimerValue] = useState('');
 
     const isLoopActive = loopMode !== 0 && loopMode !== 'off' && !!loopMode;
     const isLoopOne = loopMode === 1 || loopMode === 'track' || loopMode === 'one' || loopMode === RepeatMode.Track;
@@ -54,6 +72,41 @@ export const MusicPlayerUI = ({
             const newTime = percentage * musicDuration;
             handleSeekTo(newTime);
         }
+    };
+
+    // --- SLEEP TIMER HANDLERS ---
+    const handleTimerPress = () => {
+        setShowCustomTimerInput(false);
+        setCustomTimerValue('');
+        if (sleepTimerRemaining > 0) {
+            Alert.alert(
+                "Sleep Timer Active",
+                `Audio will stop in ${Math.floor(sleepTimerRemaining / 60)}m ${(sleepTimerRemaining % 60).toString().padStart(2, '0')}s.\n\nDo you want to cancel or change it?`,
+                [
+                    { text: "Turn Off Timer", onPress: () => startSleepTimer(0), style: 'destructive' },
+                    { text: "Change Time", onPress: () => setIsSleepTimerModalOpen(true) },
+                    { text: "Keep Timer", style: 'cancel' }
+                ]
+            );
+        } else {
+            setIsSleepTimerModalOpen(true);
+        }
+    };
+
+    const handleStartCustomTimer = () => {
+        const mins = parseInt(customTimerValue, 10);
+        if (isNaN(mins) || mins <= 0 || mins > 180) {
+            Alert.alert("Invalid Time", "Please enter a valid time between 1 and 180 minutes.");
+            return;
+        }
+        startSleepTimer(mins);
+        closeTimerModal();
+    };
+
+    const closeTimerModal = () => {
+        setIsSleepTimerModalOpen(false);
+        setShowCustomTimerInput(false);
+        setCustomTimerValue('');
     };
 
     const panResponderMusic = useMemo(() => PanResponder.create({
@@ -97,7 +150,16 @@ export const MusicPlayerUI = ({
                             <Text style={styles.musicHeaderSubtitle}>NOW PLAYING</Text>
                             <Text style={styles.musicHeaderTitle} numberOfLines={1}>{currentTrack?.title}</Text>
                         </Animated.View>
-                        <View style={{ width: 48 }} />
+
+                        {/* TIMER ICON WITH LIVE COUNTDOWN IN HEADER */}
+                        <TouchableOpacity onPress={handleTimerPress} style={{ padding: 10, alignItems: 'center', minWidth: 48, zIndex: 30 }}>
+                            <Ionicons name="timer-outline" size={26} color={sleepTimerRemaining ? "#00E5FF" : "#FFFFFF"} />
+                            {sleepTimerRemaining > 0 && (
+                                <Text style={{ color: '#00E5FF', fontSize: 10, fontWeight: 'bold', marginTop: 2 }}>
+                                    {Math.floor(sleepTimerRemaining / 60)}:{(sleepTimerRemaining % 60).toString().padStart(2, '0')}
+                                </Text>
+                            )}
+                        </TouchableOpacity>
                     </View>
 
                     <Animated.ScrollView
@@ -131,7 +193,7 @@ export const MusicPlayerUI = ({
                                 {/* DISLIKE, TRACK INFO, AND LIKE BUTTONS */}
                                 <View style={[styles.musicTrackInfo, { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20 }]}>
                                     <TouchableOpacity onPress={() => handleMusicAction(currentTrack?.mediaId, 'dislike')} style={{ padding: 10 }}>
-                                        <Ionicons name={musicPrefs[currentTrack?.mediaId] === 'dislike' ? "thumbs-down" : "thumbs-down-outline"} size={28} color={musicPrefs[currentTrack?.mediaId] === 'dislike' ? "#FF007A" : "#8F98A0"} />
+                                        <Ionicons name={musicPrefs?.[currentTrack?.mediaId] === 'dislike' ? "thumbs-down" : "thumbs-down-outline"} size={28} color={musicPrefs?.[currentTrack?.mediaId] === 'dislike' ? "#FF007A" : "#8F98A0"} />
                                     </TouchableOpacity>
 
                                     <View style={{ flex: 1, alignItems: 'center', paddingHorizontal: 10 }}>
@@ -140,7 +202,7 @@ export const MusicPlayerUI = ({
                                     </View>
 
                                     <TouchableOpacity onPress={() => handleMusicAction(currentTrack?.mediaId, 'toggleLike')} style={{ padding: 10 }}>
-                                        <Ionicons name={musicPrefs[currentTrack?.mediaId] === 'like' ? "heart" : "heart-outline"} size={28} color={musicPrefs[currentTrack?.mediaId] === 'like' ? "#FF007A" : "#FFF"} />
+                                        <Ionicons name={musicPrefs?.[currentTrack?.mediaId] === 'like' ? "heart" : "heart-outline"} size={28} color={musicPrefs?.[currentTrack?.mediaId] === 'like' ? "#FF007A" : "#FFF"} />
                                     </TouchableOpacity>
                                 </View>
 
@@ -174,7 +236,7 @@ export const MusicPlayerUI = ({
                                     </TouchableOpacity>
 
                                     <TouchableOpacity onPress={handleNextTrack} style={styles.skipBtn}>
-                                        <Ionicons name="play-skip-forward" size={32} color={currentMusicIndex < musicQueue.length - 1 || isShuffle || isLoopActive ? "#FFFFFF" : "#555"} />
+                                        <Ionicons name="play-skip-forward" size={32} color={currentMusicIndex < musicQueue?.length - 1 || isShuffle || isLoopActive ? "#FFFFFF" : "#555"} />
                                     </TouchableOpacity>
 
                                     <TouchableOpacity onPress={setLoopMode} style={{ padding: 10, position: 'relative' }}>
@@ -187,7 +249,7 @@ export const MusicPlayerUI = ({
 
                         <View style={styles.queueContainer}>
                             <Text style={styles.queueTitle}>Playlist</Text>
-                            {musicQueue.map((track, index) => {
+                            {musicQueue?.map((track, index) => {
                                 const isActive = index === currentMusicIndex;
                                 return (
                                     <TouchableOpacity key={track.mediaId + index} style={[styles.queueItem, isActive && { borderColor: '#00E5FF', backgroundColor: 'rgba(0, 229, 255, 0.1)' }]} onPress={() => setCurrentMusicIndex(index)}>
@@ -203,6 +265,79 @@ export const MusicPlayerUI = ({
                         </View>
                     </Animated.ScrollView>
                 </LinearGradient>
+
+                {/* DIGITAL SLEEP TIMER MODAL (WITH CUSTOM OPTION) */}
+                <Modal visible={isSleepTimerModalOpen} animationType="fade" transparent={true} onRequestClose={closeTimerModal}>
+                    <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', alignItems: 'center' }}>
+                        <View style={{ backgroundColor: '#170D22', padding: 24, borderRadius: 20, width: '85%', borderWidth: 1, borderColor: 'rgba(0,229,255,0.3)', shadowColor: '#00E5FF', shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.2, shadowRadius: 10 }}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginBottom: 24 }}>
+                                <Ionicons name="timer" size={24} color="#00E5FF" style={{ marginRight: 8 }} />
+                                <Text style={{ color: '#FFF', fontSize: 20, fontWeight: 'bold', letterSpacing: 1 }}>SLEEP TIMER</Text>
+                            </View>
+
+                            {showCustomTimerInput ? (
+                                <View style={{ width: '100%', alignItems: 'center' }}>
+                                    <Text style={{ color: '#8F98A0', marginBottom: 12, fontSize: 14 }}>Enter minutes (1 - 180)</Text>
+                                    <TextInput
+                                        style={styles.customTimerInput}
+                                        keyboardType="numeric"
+                                        maxLength={3}
+                                        value={customTimerValue}
+                                        onChangeText={setCustomTimerValue}
+                                        placeholder="0"
+                                        placeholderTextColor="#555"
+                                        autoFocus={true}
+                                    />
+                                    <TouchableOpacity style={styles.startCustomBtn} onPress={handleStartCustomTimer}>
+                                        <Text style={styles.startCustomBtnText}>START TIMER</Text>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity style={{ marginTop: 24 }} onPress={() => setShowCustomTimerInput(false)}>
+                                        <Text style={{ color: '#8F98A0', fontWeight: 'bold', letterSpacing: 1, fontSize: 12 }}>BACK TO PRESETS</Text>
+                                    </TouchableOpacity>
+                                </View>
+                            ) : (
+                                <View>
+                                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', gap: 12 }}>
+                                        {[15, 30, 45, 60].map(mins => (
+                                            <TouchableOpacity
+                                                key={mins}
+                                                style={{ width: '47%', backgroundColor: 'rgba(255,255,255,0.05)', paddingVertical: 20, borderRadius: 12, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' }}
+                                                onPress={() => { startSleepTimer(mins); closeTimerModal(); }}
+                                            >
+                                                <Text style={{ color: '#00E5FF', fontSize: 28, fontWeight: '900', fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }}>{mins}</Text>
+                                                <Text style={{ color: '#8F98A0', fontSize: 12, marginTop: 4, fontWeight: 'bold', letterSpacing: 1 }}>MINUTES</Text>
+                                            </TouchableOpacity>
+                                        ))}
+                                    </View>
+
+                                    {/* CUSTOM TIMER TOGGLE BUTTON */}
+                                    <TouchableOpacity
+                                        style={styles.customTimerBtn}
+                                        onPress={() => setShowCustomTimerInput(true)}
+                                    >
+                                        <Ionicons name="create-outline" size={20} color="#00E5FF" style={{ marginRight: 8 }} />
+                                        <Text style={{ color: '#00E5FF', fontWeight: 'bold', letterSpacing: 1 }}>CUSTOM TIMER</Text>
+                                    </TouchableOpacity>
+                                </View>
+                            )}
+
+                            <TouchableOpacity
+                                style={{ marginTop: 24, paddingVertical: 14, backgroundColor: 'rgba(255, 0, 122, 0.15)', borderRadius: 12, borderWidth: 1, borderColor: 'rgba(255, 0, 122, 0.3)' }}
+                                onPress={() => { startSleepTimer(0); closeTimerModal(); }}
+                            >
+                                <Text style={{ color: '#FF007A', fontSize: 14, textAlign: 'center', fontWeight: 'bold', letterSpacing: 1 }}>TURN OFF TIMER</Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity
+                                style={{ marginTop: 12, paddingVertical: 14 }}
+                                onPress={closeTimerModal}
+                            >
+                                <Text style={{ color: '#8F98A0', fontSize: 14, textAlign: 'center', fontWeight: 'bold' }}>CANCEL</Text>
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+                </Modal>
+
             </SafeAreaView>
         </Animated.View>
     );
@@ -239,5 +374,11 @@ const styles = StyleSheet.create({
     progressBarFill: { height: '100%', borderRadius: 3 },
     progressKnob: { position: 'absolute', top: -5, width: 16, height: 16, borderRadius: 8, backgroundColor: '#FFFFFF', elevation: 4, transform: [{ translateX: -8 }] },
     timeRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 },
-    timeText: { color: '#8F98A0', fontSize: 12, fontWeight: '600' }
+    timeText: { color: '#8F98A0', fontSize: 12, fontWeight: '600' },
+
+    // --- CUSTOM TIMER STYLES ---
+    customTimerBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,229,255,0.1)', paddingVertical: 14, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(0,229,255,0.3)', marginTop: 12 },
+    customTimerInput: { fontSize: 48, fontWeight: '900', color: '#00E5FF', textAlign: 'center', borderBottomWidth: 2, borderBottomColor: '#00E5FF', width: 120, marginBottom: 20, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', paddingBottom: 5 },
+    startCustomBtn: { backgroundColor: '#00E5FF', paddingVertical: 12, paddingHorizontal: 30, borderRadius: 25, elevation: 5, shadowColor: '#00E5FF', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.4, shadowRadius: 10 },
+    startCustomBtnText: { color: '#0A0A0C', fontWeight: 'bold', fontSize: 14, letterSpacing: 1 },
 });

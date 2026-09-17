@@ -1,54 +1,58 @@
-import React, { useRef, useState, useEffect, useMemo, useCallback } from 'react';
+// src/app/index.jsx
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+    ActivityIndicator,
+    Animated,
+    Dimensions,
+    Image,
+    Modal,
+    PanResponder,
+    Platform,
+    ScrollView,
+    StatusBar,
     StyleSheet,
     Text,
-    View,
-    StatusBar,
     TouchableOpacity,
-    Image,
-    Dimensions,
-    Animated,
-    PanResponder,
-    ScrollView,
-    ActivityIndicator,
-    Platform,
     UIManager,
-    Modal
+    View,
+    TextInput
 } from 'react-native';
 import ReAnimated, {
-    FadeIn, FadeOut, LinearTransition, FadeInUp, FadeOutUp,
+    FadeIn,
+    FadeOut,
+    LinearTransition,
 } from 'react-native-reanimated';
-import Svg, { Defs, LinearGradient as SvgLinearGradient, Stop, Circle, Path } from 'react-native-svg';
-import { toastConfig } from '../app/_layout'
+import Svg, { Circle, Defs, Path, Stop, LinearGradient as SvgLinearGradient } from 'react-native-svg';
+import { toastConfig } from '../app/_layout';
 
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { LinearGradient } from 'expo-linear-gradient';
-import MaskedView from '@react-native-masked-view/masked-view';
 import { Ionicons } from '@expo/vector-icons';
+import MaskedView from '@react-native-masked-view/masked-view';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Toast from 'react-native-toast-message';
 
 // --- RNTP V5 Import for enums ---
 import { RepeatMode } from '@rntp/player';
 
-import { normalizeString, formatTime } from '../utils/homehelpers';
-import { MiniPlayer } from '../components/home/MiniPlayer';
 import { FilterDropdown } from '../components/home/FilterDropDown';
-import { YTMusicFeed } from '../components/home/YTMusicFeed';
-import { HorizontalRow, LanguageRow, GenreRow } from '../components/home/HomeRows';
-import { LiveTvFeed } from '../components/home/LiveTvFeed';
+import { GenreRow, HorizontalRow, LanguageRow } from '../components/home/HomeRows';
 import { LiveSportsFeed } from '../components/home/LiveSportsFeed';
+import { LiveTvFeed } from '../components/home/LiveTvFeed';
+import { MiniPlayer } from '../components/home/MiniPlayer';
+import { YTMusicFeed } from '../components/home/YTMusicFeed';
+import { formatTime } from '../utils/homehelpers';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
     UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
 // --- Global Stores ---
-import { useMovieStore } from '../store/useMovieStore';
-import { useUserListStore } from '../store/useUserListStore';
-import { useAuthStore } from '../store/useAuthStore';
 import { getImageUrl } from '../constants/config';
 import { useMusicEngine } from '../hooks/useMusicEngine';
+import { useAuthStore } from '../store/useAuthStore';
+import { useMovieStore } from '../store/useMovieStore';
+import { useUserListStore } from '../store/useUserListStore';
 
 const { width } = Dimensions.get('window');
 const SWIPE_THRESHOLD = 60;
@@ -86,23 +90,29 @@ const HomeScreen = () => {
     const isTransitioning = useRef(false);
 
     // ==========================================
-    // 🎵 GLOBAL MUSIC PLAYER (Hook integration)
+    // 🎵 GLOBAL MUSIC PLAYER 
     // ==========================================
     const {
         musicQueue, setMusicQueue, currentMusicIndex, setCurrentMusicIndex,
         musicPrefs, isShuffle, setIsShuffle, loopMode, setLoopMode,
         musicProgress, musicDuration, isPlaying, setIsPlaying,
-        handleNextTrack, handlePrevTrack, handleSeekTo, handleMusicAction
+        handleNextTrack, handlePrevTrack, handleSeekTo, handleMusicAction,
+        startSleepTimer, sleepTimerRemaining
     } = useMusicEngine('music', token, insets);
 
     const [isMusicModalOpen, setIsMusicModalOpen] = useState(false);
+
+    // --- SLEEP TIMER STATE ---
+    const [isSleepTimerModalOpen, setIsSleepTimerModalOpen] = useState(false);
+    const [isActiveTimerAlertOpen, setIsActiveTimerAlertOpen] = useState(false); // NEW STATE FOR ACTIVE THEMED ALERT
+    const [showCustomTimerInput, setShowCustomTimerInput] = useState(false);
+    const [customTimerValue, setCustomTimerValue] = useState('');
+
     const [barWidth, setBarWidth] = useState(0);
-    const [lastTap, setLastTap] = useState(0);
     const scrollY = useRef(new Animated.Value(0)).current;
 
     const currentTrack = musicQueue[currentMusicIndex] || null;
 
-    // --- NEW: Optimistic UI State for Play/Pause and Loop ---
     const [uiPlaying, setUiPlaying] = useState(!!isPlaying);
     useEffect(() => { setUiPlaying(!!isPlaying); }, [isPlaying]);
 
@@ -112,10 +122,35 @@ const HomeScreen = () => {
         setIsPlaying(nextState);
     };
 
-    // Safe RNTP v5 enum checks
     const isLoopActive = loopMode !== 0 && loopMode !== 'off' && !!loopMode;
     const isLoopOne = loopMode === 1 || loopMode === 'track' || loopMode === 'one' || loopMode === RepeatMode.Track;
-    // --------------------------------------------------------
+
+    // --- SLEEP TIMER HANDLERS ---
+    const handleTimerPress = () => {
+        setShowCustomTimerInput(false);
+        setCustomTimerValue('');
+        if (sleepTimerRemaining > 0) {
+            setIsActiveTimerAlertOpen(true); // OPENS THE NEW CUSTOM ALERT
+        } else {
+            setIsSleepTimerModalOpen(true);
+        }
+    };
+
+    const handleStartCustomTimer = () => {
+        const mins = parseInt(customTimerValue, 10);
+        if (isNaN(mins) || mins <= 0 || mins > 180) {
+            Toast.show({ type: 'error', text1: 'Please enter a valid time (1-180 mins)' });
+            return;
+        }
+        startSleepTimer(mins);
+        closeTimerModal();
+    };
+
+    const closeTimerModal = () => {
+        setIsSleepTimerModalOpen(false);
+        setShowCustomTimerInput(false);
+        setCustomTimerValue('');
+    };
 
     const handleNavigateToPlayer = useCallback((params) => {
         if (isPlaying) {
@@ -141,9 +176,7 @@ const HomeScreen = () => {
             }
 
             const trackId = typeof track === 'string' ? track : (track?.id || track?.mediaId || track?.videoId);
-            console.log(`🎵 Playing track ID: ${trackId} from a queue of ${queue.length} songs.`);
             await setMusicQueue(queue, trackId);
-
         } catch (error) {
             console.error("❌ ERROR in handlePlayMusic:", error);
         }
@@ -159,7 +192,12 @@ const HomeScreen = () => {
     };
 
     const panResponderMusic = useMemo(() => PanResponder.create({
-        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: (evt, gestureState) => {
+            return Math.abs(gestureState.dx) > 20 || Math.abs(gestureState.dy) > 20;
+        },
+        onMoveShouldSetPanResponderCapture: (evt, gestureState) => {
+            return Math.abs(gestureState.dx) > 20 || Math.abs(gestureState.dy) > 20;
+        },
         onPanResponderRelease: (evt, gestureState) => {
             const { dx, dy } = gestureState;
             if (Math.abs(dx) > 60) {
@@ -167,15 +205,9 @@ const HomeScreen = () => {
                 else handleNextTrack();
             } else if (dy > 60) {
                 setIsMusicModalOpen(false);
-            } else if (Math.abs(dx) < 10 && Math.abs(dy) < 10) {
-                if (currentTrack) {
-                    const now = Date.now();
-                    if (now - lastTap < 300) handleMusicAction(currentTrack.mediaId, 'toggleLike');
-                    setLastTap(now);
-                }
             }
         }
-    }), [currentTrack, lastTap, handleNextTrack, handlePrevTrack, handleMusicAction]);
+    }), [handleNextTrack, handlePrevTrack]);
 
     const moviesLengthRef = useRef(0);
     useEffect(() => { moviesLengthRef.current = trendingList.length; }, [trendingList]);
@@ -352,16 +384,8 @@ const HomeScreen = () => {
                     contentContainerStyle={[styles.scrollContent, currentTrack ? { paddingBottom: insets.bottom + 160 } : { paddingBottom: 80 }]}
                     bounces={false}
                 >
-
                     {filters.type !== 'live' && filters.type !== 'music' && (
-                        <ReAnimated.View
-                            entering={FadeInUp.duration(300)}
-                            exiting={FadeOutUp.duration(200)}
-                            layout={LinearTransition}
-                            pointerEvents={(filters.type === 'live' || filters.type === 'music') ? 'none' : 'auto'}
-                        >
-                            <View style={styles.deckArea}>{renderCardStack()}</View>
-                        </ReAnimated.View>
+                        <View style={styles.deckArea}>{renderCardStack()}</View>
                     )}
 
                     <ReAnimated.View layout={LinearTransition}>
@@ -438,31 +462,51 @@ const HomeScreen = () => {
                                 <Ionicons name="chevron-down" size={28} color="#FFFFFF" />
                             </TouchableOpacity>
                             <Image source={{ uri: currentTrack?.artwork || currentTrack?.artworkUrl || currentTrack?.image }} style={{ width: 40, height: 40, borderRadius: 6, marginRight: 10 }} />
+
+                            {/* Flex: 1 ensures the text gracefully truncates and NEVER pushes the right icons out */}
                             <View style={{ flex: 1, marginRight: 10 }}>
                                 <Text style={{ color: '#FFF', fontSize: 14, fontWeight: 'bold' }} numberOfLines={1}>{currentTrack?.title}</Text>
                                 <Text style={{ color: '#8F98A0', fontSize: 12 }} numberOfLines={1}>{currentTrack?.artist}</Text>
                             </View>
-                            <TouchableOpacity onPress={() => handleMusicAction(currentTrack?.mediaId, 'toggleLike')} style={{ paddingHorizontal: 8 }}>
-                                <Ionicons name={musicPrefs[currentTrack?.mediaId] === 'like' ? "heart" : "heart-outline"} size={22} color={musicPrefs[currentTrack?.mediaId] === 'like' ? "#FF007A" : "#FFF"} />
-                            </TouchableOpacity>
-                            <TouchableOpacity onPress={handleTogglePlay} style={{ paddingHorizontal: 8 }}>
-                                <Ionicons name={uiPlaying ? "pause" : "play"} size={26} color="#FFF" />
-                            </TouchableOpacity>
-                            <TouchableOpacity onPress={handleNextTrack} style={{ paddingLeft: 8 }}>
-                                <Ionicons name="play-skip-forward" size={22} color="#FFF" />
-                            </TouchableOpacity>
+
+                            {/* Wrapping buttons in a row prevents them from wrapping or getting pushed */}
+                            <View style={{ flexDirection: 'row', alignItems: 'center', flexShrink: 0 }}>
+                                <TouchableOpacity onPress={handleTimerPress} style={{ paddingHorizontal: 8 }}>
+                                    <Ionicons name="timer-outline" size={24} color={sleepTimerRemaining ? "#00E5FF" : "#FFF"} />
+                                </TouchableOpacity>
+
+                                <TouchableOpacity onPress={() => handleMusicAction(currentTrack?.mediaId, 'toggleLike')} style={{ paddingHorizontal: 8 }}>
+                                    <Ionicons name={musicPrefs[currentTrack?.mediaId] === 'like' ? "heart" : "heart-outline"} size={22} color={musicPrefs[currentTrack?.mediaId] === 'like' ? "#FF007A" : "#FFF"} />
+                                </TouchableOpacity>
+                                <TouchableOpacity onPress={handleTogglePlay} style={{ paddingHorizontal: 8 }}>
+                                    <Ionicons name={uiPlaying ? "pause" : "play"} size={26} color="#FFF" />
+                                </TouchableOpacity>
+                                <TouchableOpacity onPress={handleNextTrack} style={{ paddingLeft: 8 }}>
+                                    <Ionicons name="play-skip-forward" size={22} color="#FFF" />
+                                </TouchableOpacity>
+                            </View>
                         </Animated.View>
 
                         {/* STATIC TOP HEADER (Fades out on scroll) */}
-                        <Animated.View style={[styles.musicHeader, { opacity: mainContentOpacity, position: 'absolute', top: insets.top, left: 0, right: 0, zIndex: 10 }]}>
-                            <TouchableOpacity onPress={() => setIsMusicModalOpen(false)} style={{ padding: 10 }}>
+                        <Animated.View style={[styles.musicHeader, { opacity: mainContentOpacity, position: 'absolute', top: insets.top, left: 0, right: 0 }]}>
+                            <TouchableOpacity onPress={() => setIsMusicModalOpen(false)} style={{ padding: 10, width: 60, alignItems: 'flex-start' }}>
                                 <Ionicons name="chevron-down" size={32} color="#FFFFFF" />
                             </TouchableOpacity>
-                            <View style={{ alignItems: 'center' }}>
+
+                            {/* Flex: 1 will shrink if title is extremely long, preventing layout breakage */}
+                            <View style={{ flex: 1, alignItems: 'center', paddingHorizontal: 10 }}>
                                 <Text style={styles.musicHeaderSubtitle}>NOW PLAYING</Text>
                                 <Text style={styles.musicHeaderTitle} numberOfLines={1}>{currentTrack?.title}</Text>
                             </View>
-                            <View style={{ width: 48 }} />
+
+                            <TouchableOpacity onPress={handleTimerPress} style={{ padding: 10, alignItems: 'flex-end', width: 60 }}>
+                                <Ionicons name="timer-outline" size={26} color={sleepTimerRemaining ? "#00E5FF" : "#FFFFFF"} />
+                                {sleepTimerRemaining > 0 && (
+                                    <Text style={{ color: '#00E5FF', fontSize: 10, fontWeight: 'bold', marginTop: 2 }}>
+                                        {Math.floor(sleepTimerRemaining / 60)}:{(sleepTimerRemaining % 60).toString().padStart(2, '0')}
+                                    </Text>
+                                )}
+                            </TouchableOpacity>
                         </Animated.View>
 
                         <Animated.ScrollView
@@ -525,7 +569,6 @@ const HomeScreen = () => {
                                         <Ionicons name="play-skip-forward" size={32} color={currentMusicIndex < musicQueue.length - 1 || isShuffle || isLoopActive ? "#FFFFFF" : "#555"} />
                                     </TouchableOpacity>
 
-                                    {/* LOOP BUTTON */}
                                     <TouchableOpacity onPress={setLoopMode} style={{ padding: 10, position: 'relative' }}>
                                         <Ionicons name="repeat" size={24} color={isLoopActive ? "#00E5FF" : "#8F98A0"} />
                                         {isLoopOne && <Text style={{ position: 'absolute', fontSize: 10, color: '#00E5FF', top: 10, right: 6, fontWeight: 'bold' }}>1</Text>}
@@ -560,14 +603,114 @@ const HomeScreen = () => {
                         </Animated.ScrollView>
                     </View>
                     <View style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 9999, elevation: 9999 }} pointerEvents="box-none">
-                        <Toast
-                            config={toastConfig}
-                            position="top"
-                            topOffset={insets.top > 0 ? insets.top + 10 : 50}
-                        />
+                        <Toast config={toastConfig} position="top" topOffset={insets.top > 0 ? insets.top + 10 : 50} />
                     </View>
                 </LinearGradient>
             </Modal>
+
+            {/* DIGITAL SLEEP TIMER MODAL (WITH CUSTOM OPTION) */}
+            <Modal visible={isSleepTimerModalOpen} animationType="fade" transparent={true} onRequestClose={closeTimerModal}>
+                <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', alignItems: 'center' }}>
+                    <View style={{ backgroundColor: '#170D22', padding: 24, borderRadius: 20, width: '85%', borderWidth: 1, borderColor: 'rgba(0,229,255,0.3)', shadowColor: '#00E5FF', shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.2, shadowRadius: 10 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginBottom: 24 }}>
+                            <Ionicons name="timer" size={24} color="#00E5FF" style={{ marginRight: 8 }} />
+                            <Text style={{ color: '#FFF', fontSize: 20, fontWeight: 'bold', letterSpacing: 1 }}>SLEEP TIMER</Text>
+                        </View>
+
+                        {showCustomTimerInput ? (
+                            <View style={{ width: '100%', alignItems: 'center' }}>
+                                <Text style={{ color: '#8F98A0', marginBottom: 12, fontSize: 14 }}>Enter minutes (1 - 180)</Text>
+                                <TextInput
+                                    style={styles.customTimerInput}
+                                    keyboardType="numeric"
+                                    maxLength={3}
+                                    value={customTimerValue}
+                                    onChangeText={setCustomTimerValue}
+                                    placeholder="0"
+                                    placeholderTextColor="#555"
+                                    autoFocus={true}
+                                />
+                                <TouchableOpacity style={styles.startCustomBtn} onPress={handleStartCustomTimer}>
+                                    <Text style={styles.startCustomBtnText}>START TIMER</Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity style={{ marginTop: 24 }} onPress={() => setShowCustomTimerInput(false)}>
+                                    <Text style={{ color: '#8F98A0', fontWeight: 'bold', letterSpacing: 1, fontSize: 12 }}>BACK TO PRESETS</Text>
+                                </TouchableOpacity>
+                            </View>
+                        ) : (
+                            <View>
+                                <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', gap: 12 }}>
+                                    {[15, 30, 45, 60].map(mins => (
+                                        <TouchableOpacity
+                                            key={mins}
+                                            style={{ width: '47%', backgroundColor: 'rgba(255,255,255,0.05)', paddingVertical: 20, borderRadius: 12, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' }}
+                                            onPress={() => { startSleepTimer(mins); closeTimerModal(); }}
+                                        >
+                                            <Text style={{ color: '#00E5FF', fontSize: 28, fontWeight: '900', fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }}>{mins}</Text>
+                                            <Text style={{ color: '#8F98A0', fontSize: 12, marginTop: 4, fontWeight: 'bold', letterSpacing: 1 }}>MINUTES</Text>
+                                        </TouchableOpacity>
+                                    ))}
+                                </View>
+
+                                {/* CUSTOM TIMER TOGGLE BUTTON */}
+                                <TouchableOpacity
+                                    style={styles.customTimerBtn}
+                                    onPress={() => setShowCustomTimerInput(true)}
+                                >
+                                    <Ionicons name="create-outline" size={20} color="#00E5FF" style={{ marginRight: 8 }} />
+                                    <Text style={{ color: '#00E5FF', fontWeight: 'bold', letterSpacing: 1 }}>CUSTOM TIMER</Text>
+                                </TouchableOpacity>
+                            </View>
+                        )}
+
+                        <TouchableOpacity
+                            style={{ marginTop: 20, paddingVertical: 14 }}
+                            onPress={closeTimerModal}
+                        >
+                            <Text style={{ color: '#8F98A0', fontSize: 14, textAlign: 'center', fontWeight: 'bold' }}>CANCEL</Text>
+                        </TouchableOpacity>
+                    </View>
+                </View>
+            </Modal>
+
+            {/* ACTIVE SLEEP TIMER ALERT MODAL */}
+            <Modal visible={isActiveTimerAlertOpen} animationType="fade" transparent={true} onRequestClose={() => setIsActiveTimerAlertOpen(false)}>
+                <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', alignItems: 'center' }}>
+                    <View style={{ backgroundColor: '#170D22', padding: 24, borderRadius: 20, width: '85%', borderWidth: 1, borderColor: 'rgba(0,229,255,0.3)', shadowColor: '#00E5FF', shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.2, shadowRadius: 10 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>
+                            <Ionicons name="timer" size={28} color="#00E5FF" style={{ marginRight: 8 }} />
+                            <Text style={{ color: '#FFF', fontSize: 20, fontWeight: 'bold', letterSpacing: 1 }}>TIMER ACTIVE</Text>
+                        </View>
+
+                        <Text style={{ color: '#8F98A0', fontSize: 14, textAlign: 'center', marginBottom: 8 }}>Audio will stop in</Text>
+                        <Text style={{ color: '#00E5FF', fontSize: 42, fontWeight: '900', fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', textAlign: 'center', marginBottom: 24 }}>
+                            {Math.floor((sleepTimerRemaining || 0) / 60)}:{((sleepTimerRemaining || 0) % 60).toString().padStart(2, '0')}
+                        </Text>
+
+                        <TouchableOpacity
+                            style={{ paddingVertical: 14, backgroundColor: '#00E5FF', borderRadius: 12, marginBottom: 12 }}
+                            onPress={() => { setIsActiveTimerAlertOpen(false); setIsSleepTimerModalOpen(true); }}
+                        >
+                            <Text style={{ color: '#0A0A0C', fontSize: 14, textAlign: 'center', fontWeight: 'bold', letterSpacing: 1 }}>CHANGE TIME</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                            style={{ paddingVertical: 14, backgroundColor: 'rgba(255, 0, 122, 0.15)', borderRadius: 12, borderWidth: 1, borderColor: 'rgba(255, 0, 122, 0.3)', marginBottom: 12 }}
+                            onPress={() => { startSleepTimer(0); setIsActiveTimerAlertOpen(false); }}
+                        >
+                            <Text style={{ color: '#FF007A', fontSize: 14, textAlign: 'center', fontWeight: 'bold', letterSpacing: 1 }}>TURN OFF TIMER</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                            style={{ paddingVertical: 14 }}
+                            onPress={() => setIsActiveTimerAlertOpen(false)}
+                        >
+                            <Text style={{ color: '#8F98A0', fontSize: 14, textAlign: 'center', fontWeight: 'bold' }}>KEEP TIMER (CLOSE)</Text>
+                        </TouchableOpacity>
+                    </View>
+                </View>
+            </Modal>
+
         </LinearGradient>
     );
 };
@@ -609,10 +752,11 @@ const styles = StyleSheet.create({
     funnelBtnActive: { backgroundColor: 'rgba(0, 229, 255, 0.15)', borderColor: '#00E5FF' },
 
     // --- FULL-SCREEN MUSIC PLAYER MODAL ---
-    musicHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingTop: 10, paddingBottom: 20 },
-    stickyHeader: { position: 'absolute', left: 0, right: 0, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingBottom: 10, backgroundColor: 'rgba(10, 10, 12, 0.95)', zIndex: 20, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.1)' },
+    musicHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingTop: 10, paddingBottom: 20, elevation: 20, zIndex: 20 },
+    stickyHeader: { position: 'absolute', left: 0, right: 0, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingBottom: 10, backgroundColor: 'rgba(10, 10, 12, 0.95)', zIndex: 20, elevation: 20, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.1)' },
     musicHeaderSubtitle: { color: '#8F98A0', fontSize: 10, fontWeight: 'bold', letterSpacing: 1.5, marginBottom: 4 },
-    musicHeaderTitle: { color: '#FFFFFF', fontSize: 16, fontWeight: '600', maxWidth: 250, textAlign: 'center' },
+    // Removed maxWidth so flex:1 does its job flawlessly
+    musicHeaderTitle: { color: '#FFFFFF', fontSize: 16, fontWeight: '600', textAlign: 'center' },
     albumArtContainer: { alignItems: 'center', marginTop: 20, marginBottom: 40, shadowColor: '#00E5FF', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.3, shadowRadius: 20, elevation: 15 },
     albumArt: { borderRadius: 20, backgroundColor: '#1E1428' },
     musicTrackInfo: { marginBottom: 30 },
@@ -640,4 +784,10 @@ const styles = StyleSheet.create({
     progressKnob: { position: 'absolute', top: -5, width: 16, height: 16, borderRadius: 8, backgroundColor: '#FFFFFF', elevation: 4, transform: [{ translateX: -8 }] },
     timeRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 },
     timeText: { color: '#8F98A0', fontSize: 12, fontWeight: '600' },
+
+    // --- CUSTOM TIMER STYLES ---
+    customTimerBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,229,255,0.1)', paddingVertical: 14, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(0,229,255,0.3)', marginTop: 12 },
+    customTimerInput: { fontSize: 48, fontWeight: '900', color: '#00E5FF', textAlign: 'center', borderBottomWidth: 2, borderBottomColor: '#00E5FF', width: 120, marginBottom: 20, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', paddingBottom: 5 },
+    startCustomBtn: { backgroundColor: '#00E5FF', paddingVertical: 12, paddingHorizontal: 30, borderRadius: 25, elevation: 5, shadowColor: '#00E5FF', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.4, shadowRadius: 10 },
+    startCustomBtnText: { color: '#0A0A0C', fontWeight: 'bold', fontSize: 14, letterSpacing: 1 },
 });

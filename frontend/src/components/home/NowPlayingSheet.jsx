@@ -16,7 +16,7 @@ import Swipeable from 'react-native-gesture-handler/Swipeable';
 import Animated, { useSharedValue, useAnimatedStyle, withSpring, runOnJS } from 'react-native-reanimated';
 
 import { formatTime } from '../../utils/homehelpers';
-import { AddToPlaylistSheet } from './AddToPlaylistSheet';
+import { AddToPlaylistSheet } from './AddtoPlaylistSheet';
 
 const { width } = Dimensions.get('window');
 const ROW_HEIGHT = 68;

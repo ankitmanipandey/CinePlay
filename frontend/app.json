@@ -80,7 +80,8 @@
           "supportsPictureInPicture": false
         }
       ],
-      "./plugins/withNotifeeForegroundService"
+      "./plugins/withNotifeeForegroundService",
+      "@react-native-community/datetimepicker"
     ],
     "experiments": {
       "typedRoutes": false,
