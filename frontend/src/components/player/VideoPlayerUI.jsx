@@ -9,6 +9,59 @@ import { VideoView } from 'expo-video';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { getImageUrl } from '../../constants/config';
 
+const DESKTOP_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+
+const adBlockScript = `
+    (function() {
+        try {
+            var fakeUA = '${DESKTOP_USER_AGENT}';
+            Object.defineProperty(navigator, 'userAgent', { get: function() { return fakeUA; } });
+            Object.defineProperty(navigator, 'appVersion', { get: function() { return fakeUA; } });
+            Object.defineProperty(navigator, 'platform', { get: function() { return 'Win32'; } });
+            Object.defineProperty(navigator, 'webdriver', { get: function() { return false; } });
+            Object.defineProperty(navigator, 'plugins', { get: function() { return [1, 2, 3, 4, 5]; } });
+        } catch (e) {}
+
+        if (window.ReactNativeWebView) {
+            window.__rn_send = window.ReactNativeWebView.postMessage.bind(window.ReactNativeWebView);
+            try { delete window.ReactNativeWebView; } catch(e) {}
+        }
+
+        window.open = function() { return null; };
+        try { Object.defineProperty(window, 'open', { configurable: false, writable: false, value: function() { return null; } }); } catch(e) {}
+        
+        document.addEventListener('click', function(e) {
+            var t = e.target;
+            while (t && t !== document) {
+                if (t.tagName === 'A' && (t.getAttribute('target') === '_blank' || (!t.href.includes('vidlink.pro') && !t.href.startsWith('blob:')))) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
+                    return false;
+                }
+                t = t.parentNode;
+            }
+        }, true);
+
+        var killAdOverlays = function() {
+            var divs = document.querySelectorAll('div');
+            for (var i = 0; i < divs.length; i++) {
+                var el = divs[i];
+                var z = window.getComputedStyle(el).zIndex;
+                if (z && parseInt(z) > 9999) {
+                    var className = el.className || '';
+                    if (typeof className === 'string' && className.indexOf('jw-') === -1 && className.indexOf('vjs-') === -1) {
+                        el.style.display = 'none';
+                        el.style.pointerEvents = 'none';
+                    }
+                }
+            }
+        };
+        setInterval(killAdOverlays, 500);
+        true;
+    })();
+`;
+
 export const VideoPlayerUI = ({
     mediaDetails, streamUrl, ytId, trailerKey, isPlaying, setIsPlaying,
     activeMediaView, setActiveMediaView, isVidkingAvailable,
@@ -110,11 +163,46 @@ export const VideoPlayerUI = ({
                             </>
                         ) : activeMediaView === 'movie' ? (
                             <WebView
-                                key={`vidking-${selectedSeason}-${selectedEpisode}`}
-                                source={{ uri: type === 'tv' ? `https://www.vidking.net/embed/tv/${id}/${selectedSeason}/${selectedEpisode}?autoPlay=true` : `https://www.vidking.net/embed/movie/${id}?autoPlay=true` }}
+                                key={`vidlink-${selectedSeason}-${selectedEpisode}`}
+                                source={{
+                                    uri: type === 'tv'
+                                        ? `https://vidlink.pro/tv/${id}/${selectedSeason}/${selectedEpisode}?autoplay=1`
+                                        : `https://vidlink.pro/movie/${id}?autoplay=1`,
+                                    headers: {
+                                        'Referer': 'https://vidlink.pro/',
+                                        'User-Agent': DESKTOP_USER_AGENT,
+                                    }
+                                }}
+                                userAgent={DESKTOP_USER_AGENT}
                                 style={{ flex: 1, backgroundColor: '#000' }}
-                                javaScriptEnabled={true} allowsFullscreenVideo={false} mediaPlaybackRequiresUserAction={false} allowsInlineMediaPlayback={true}
-                                onShouldStartLoadWithRequest={(request) => !(!request.url.includes('vidking.net') && !request.url.includes('about:blank'))}
+                                javaScriptEnabled={true}
+                                domStorageEnabled={true}
+                                databaseEnabled={true}
+                                allowsFullscreenVideo={false}
+                                mediaPlaybackRequiresUserAction={false}
+                                allowsInlineMediaPlayback={true}
+                                setSupportMultipleWindows={false}
+                                sharedCookiesEnabled={true}
+                                thirdPartyCookiesEnabled={true}
+                                injectedJavaScriptBeforeContentLoaded={adBlockScript}
+                                injectedJavaScript={`
+                                    (function() {
+                                        var style = document.createElement('style');
+                                        style.innerHTML = 'iframe[src*="ads"], .ad-overlay, .jw-ad { display: none !important; }';
+                                        document.head.appendChild(style);
+                                        true;
+                                    })();
+                                `}
+                                onShouldStartLoadWithRequest={(request) => {
+                                    const isAllowedHost =
+                                        request.url.includes('vidlink.pro') ||
+                                        request.url.includes('about:blank');
+
+                                    if (!isAllowedHost) {
+                                        return false;
+                                    }
+                                    return true;
+                                }}
                             />
                         ) : trailerKey ? (
                             <YoutubePlayer height={innerVideoHeight} width={innerVideoWidth} play={isPlaying} videoId={trailerKey} onReady={() => setIsPlaying(true)} webViewProps={{ allowsFullscreenVideo: false, mediaPlaybackRequiresUserAction: false, allowsInlineMediaPlayback: true }} initialPlayerParams={{ controls: 1, modestbranding: 1, rel: 0, iv_load_policy: 3, fs: 0, autoplay: 1 }} onChangeState={(state) => { if (state === 'playing') setIsPlaying(true); if (state === 'paused' || state === 'ended') setIsPlaying(false); }} />
@@ -167,7 +255,7 @@ export const VideoPlayerUI = ({
                         <Text style={styles.mediaTitle}>{title}</Text>
                         {!streamUrl && (
                             ytId ? (
-                                <TouchableOpacity style={styles.watchToggleBtn} activeOpacity={0.8} onPress={handleCreateWatchParty}>
+                                <TouchableOpacity style={styles.watchToggleBtn} activeOpacity={0.8} onPress={() => handleCreateWatchParty(ytId, title)}>
                                     <LinearGradient colors={['#00E5FF', '#9B51E0', '#FF007A']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.watchToggleGradient}>
                                         <Ionicons name="people-circle" size={24} color="#FFF" style={{ marginRight: 8 }} />
                                         <Text style={styles.watchToggleText}>Start YouTube Watch Party</Text>
@@ -216,7 +304,16 @@ export const VideoPlayerUI = ({
                         )}
 
                         {activeMediaView === 'movie' && !streamUrl && !ytId && isVidkingAvailable && (
-                            <TouchableOpacity style={styles.watchToggleBtn} activeOpacity={0.8} onPress={handleCreateWatchParty}>
+                            <TouchableOpacity
+                                style={styles.watchToggleBtn}
+                                activeOpacity={0.8}
+                                onPress={() => {
+                                    const watchPartyYtId = type === 'tv'
+                                        ? `VIDLINK:tv:${id}:${selectedSeason}:${selectedEpisode}`
+                                        : `VIDLINK:movie:${id}`;
+                                    handleCreateWatchParty(watchPartyYtId, title);
+                                }}
+                            >
                                 <LinearGradient colors={['#00E5FF', '#9B51E0']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.watchToggleGradient}>
                                     <Ionicons name="people-circle" size={24} color="#FFF" style={{ marginRight: 8 }} />
                                     <Text style={styles.watchToggleText}>Start Watch Party</Text>
@@ -240,7 +337,6 @@ export const VideoPlayerUI = ({
     );
 };
 
-// ... Include all the Video/TV specific styles here (externalControlBar, tvControlsContainer, liveStreamOverlay, etc.)
 const styles = StyleSheet.create({
     safeArea: { flex: 1, backgroundColor: '#000' },
     container: { flex: 1, backgroundColor: '#0A0A0C' },

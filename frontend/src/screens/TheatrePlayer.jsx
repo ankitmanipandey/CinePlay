@@ -141,7 +141,7 @@ const TheatrePlayer = forwardRef(({
         player.loop = false;
         player.muted = isMuted;
         player.preservesPitch = true;
-        // FIXED: Removed player.play() here. Our safe useEffect handles it after mount!
+        player.play();
     });
 
     const nativePlayerRef = useRef(nativePlayer);
@@ -472,7 +472,9 @@ const TheatrePlayer = forwardRef(({
                         play={isPlaying} mute={isMuted} volume={isMuted ? 0 : 100}
                         videoId={youtubeId} onChangeState={onPlayerStateChange}
                         webViewProps={{ allowsFullscreenVideo: false }}
-                        initialPlayerParams={{ controls: isHostBool ? 1 : 0, modestbranding: 1, rel: 0 }}
+
+                        // 3. ADD autoplay: 1 TO THESE PARAMS 👇
+                        initialPlayerParams={{ controls: isHostBool ? 1 : 0, modestbranding: 1, rel: 0, autoplay: 1 }}
                     />
                 </View>
             ) : customUrl ? (

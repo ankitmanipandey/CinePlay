@@ -77,12 +77,29 @@ export default function PlayerScreen() {
         }
     };
 
-    const handleCreateWatchParty = () => {
+    const handleCreateWatchParty = (vidIdArg, titleArg) => {
         handleAuthAction(() => {
             const newRoomId = Math.floor(10000 + Math.random() * 90000).toString();
-            let vidId = (id && type && activeMediaView === 'movie') ? (type === 'tv' ? `VIDKING:tv:${id}:${selectedSeason}:${selectedEpisode}` : `VIDKING:movie:${id}`) : (trailerKey || ytId);
+
+            // Use what VideoPlayerUI sends; fall back only if it sent nothing
+            const vidId = vidIdArg || (
+                (id && type && activeMediaView === 'movie')
+                    ? (type === 'tv'
+                        ? `EMBEDMASTER:tv:${id}:${selectedSeason}:${selectedEpisode}`
+                        : `EMBEDMASTER:movie:${id}`)
+                    : (trailerKey || ytId)
+            );
+
             musicState.setIsPlaying(false);
-            router.push({ pathname: '/theatre', params: { roomId: newRoomId, isHost: 'true', initialYtId: vidId, initialTitle: mediaDetails?.title || mediaDetails?.name || 'Watch Party' } });
+            router.push({
+                pathname: '/theatre',
+                params: {
+                    roomId: newRoomId,
+                    isHost: 'true',
+                    initialYtId: vidId,
+                    initialTitle: titleArg || mediaDetails?.title || mediaDetails?.name || 'Watch Party',
+                },
+            });
         });
     };
 

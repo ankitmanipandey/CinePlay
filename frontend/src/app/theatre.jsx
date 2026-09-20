@@ -40,63 +40,59 @@ const SOCKET_URL = BACKEND_URL;
 const RAW_KEYS = process.env.EXPO_PUBLIC_YOUTUBE_API_KEYS || process.env.EXPO_PUBLIC_YOUTUBE_API_KEY || '';
 let ACTIVE_YT_KEYS = RAW_KEYS.split(',').map(k => k.trim()).filter(Boolean);
 
-const fetchYouTubeWithRetry = async (urlTemplate) => {
-    while (ACTIVE_YT_KEYS.length > 0) {
-        const currentKey = ACTIVE_YT_KEYS[0];
-        const url = urlTemplate.replace('__API_KEY__', currentKey);
+const DESKTOP_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+
+const adBlockScript = `
+    (function() {
         try {
-            const res = await fetch(url);
-            const data = await res.json();
-            if (data.error && (data.error.code === 403 || data.error.code === 429)) {
-                ACTIVE_YT_KEYS.shift();
-                continue;
-            }
-            return data;
-        } catch (err) {
-            return { error: { code: 500, message: "Network error occurred." } };
+            var fakeUA = '${DESKTOP_USER_AGENT}';
+            Object.defineProperty(navigator, 'userAgent', { get: function() { return fakeUA; } });
+            Object.defineProperty(navigator, 'appVersion', { get: function() { return fakeUA; } });
+            Object.defineProperty(navigator, 'platform', { get: function() { return 'Win32'; } });
+            Object.defineProperty(navigator, 'webdriver', { get: function() { return false; } });
+            Object.defineProperty(navigator, 'plugins', { get: function() { return [1, 2, 3, 4, 5]; } });
+        } catch (e) {}
+
+        if (window.ReactNativeWebView) {
+            window.__rn_send = window.ReactNativeWebView.postMessage.bind(window.ReactNativeWebView);
+            try { delete window.ReactNativeWebView; } catch(e) {}
         }
-    }
-    return { error: { code: 429, message: 'All YouTube API keys have exhausted their daily quota.' } };
-};
 
-const FloatingEmoji = ({ emoji, sender, onComplete }) => {
-    const translateY = useRef(new Animated.Value(0)).current;
-    const opacity = useRef(new Animated.Value(1)).current;
-    const translateX = useRef(new Animated.Value(Math.random() * 40 - 20)).current;
+        window.open = function() { return null; };
+        try { Object.defineProperty(window, 'open', { configurable: false, writable: false, value: function() { return null; } }); } catch(e) {}
+        
+        document.addEventListener('click', function(e) {
+            var t = e.target;
+            while (t && t !== document) {
+                if (t.tagName === 'A' && (t.getAttribute('target') === '_blank' || (!t.href.includes('vidlink.pro') && !t.href.startsWith('blob:')))) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
+                    return false;
+                }
+                t = t.parentNode;
+            }
+        }, true);
 
-    useEffect(() => {
-        Animated.parallel([
-            Animated.timing(translateY, { toValue: -150, duration: 2000, useNativeDriver: true }),
-            Animated.timing(opacity, { toValue: 0, duration: 2000, useNativeDriver: true }),
-        ]).start(() => onComplete());
-    }, []);
+        var killAdOverlays = function() {
+            var divs = document.querySelectorAll('div');
+            for (var i = 0; i < divs.length; i++) {
+                var el = divs[i];
+                var z = window.getComputedStyle(el).zIndex;
+                if (z && parseInt(z) > 9999) {
+                    var className = el.className || '';
+                    if (typeof className === 'string' && className.indexOf('jw-') === -1 && className.indexOf('vjs-') === -1) {
+                        el.style.display = 'none';
+                        el.style.pointerEvents = 'none';
+                    }
+                }
+            }
+        };
+        setInterval(killAdOverlays, 500);
+        true;
+    })();
+`;
 
-    return (
-        <Animated.View style={[styles.floatingEmojiContainer, { transform: [{ translateY }, { translateX }], opacity }]}>
-            <Text style={styles.floatingEmojiSender} numberOfLines={1}>{sender}</Text>
-            <Text style={styles.floatingEmoji}>{emoji}</Text>
-        </Animated.View>
-    );
-};
-
-const FloatingMessage = ({ msg, onComplete }) => {
-    const translateY = useRef(new Animated.Value(0)).current;
-    const opacity = useRef(new Animated.Value(1)).current;
-
-    useEffect(() => {
-        Animated.parallel([
-            Animated.timing(translateY, { toValue: -150, duration: 4000, useNativeDriver: true }),
-            Animated.timing(opacity, { toValue: 0, duration: 4000, useNativeDriver: true }),
-        ]).start(() => onComplete());
-    }, []);
-
-    return (
-        <Animated.View style={[styles.floatingMessageContainer, { transform: [{ translateY }], opacity }]}>
-            <Text style={styles.floatingMessageSender}>{msg.sender}:</Text>
-            <Text style={styles.floatingMessageText}>{msg.text}</Text>
-        </Animated.View>
-    );
-};
 
 const EMOJIS = ['😂', '🔥', '😱', '😍', '👏', '😢'];
 
@@ -216,6 +212,90 @@ const ReactionButtonUI = ({ isFullScreen, showFloatingEmojis, toggleDistractionF
     );
 };
 
+
+const FloatingEmoji = ({ emoji, sender, onComplete }) => {
+    const animValue = useRef(new Animated.Value(0)).current;
+
+    useEffect(() => {
+        Animated.timing(animValue, {
+            toValue: 1,
+            duration: 2500, // Floats for 2.5 seconds
+            useNativeDriver: true,
+        }).start(() => {
+            if (onComplete) onComplete();
+        });
+    }, [animValue, onComplete]);
+
+    const translateY = animValue.interpolate({
+        inputRange: [0, 1],
+        outputRange: [0, -150], // Moves up 150 pixels
+    });
+    const opacity = animValue.interpolate({
+        inputRange: [0, 0.7, 1],
+        outputRange: [1, 1, 0], // Fades out at the end
+    });
+
+    return (
+        <Animated.View style={[styles.floatingEmojiContainer, { opacity, transform: [{ translateY }] }]}>
+            <Text style={styles.floatingEmojiSender} numberOfLines={1}>{sender}</Text>
+            <Text style={styles.floatingEmoji}>{emoji}</Text>
+        </Animated.View>
+    );
+};
+
+
+const fetchYouTubeWithRetry = async (urlTemplate) => {
+    if (ACTIVE_YT_KEYS.length === 0) {
+        return { error: { message: 'No YouTube API key configured' } };
+    }
+
+    let lastError = null;
+    for (const key of ACTIVE_YT_KEYS) {
+        try {
+            const res = await fetch(urlTemplate.replace('__API_KEY__', key));
+            const data = await res.json();
+            if (!data.error) return data;
+
+            lastError = data;
+            // Only try the next key on quota/permission errors
+            if (res.status !== 403) break;
+        } catch (e) {
+            lastError = { error: { message: 'Network error' } };
+        }
+    }
+    return lastError || { error: { message: 'YouTube search failed' } };
+};
+
+const FloatingMessage = ({ msg, onComplete }) => {
+    const animValue = useRef(new Animated.Value(0)).current;
+
+    useEffect(() => {
+        Animated.timing(animValue, {
+            toValue: 1,
+            duration: 4000, // Chat floats for 4 seconds
+            useNativeDriver: true,
+        }).start(() => {
+            if (onComplete) onComplete();
+        });
+    }, [animValue, onComplete]);
+
+    const translateY = animValue.interpolate({
+        inputRange: [0, 1],
+        outputRange: [0, -100], // Moves up 100 pixels
+    });
+    const opacity = animValue.interpolate({
+        inputRange: [0, 0.8, 1],
+        outputRange: [1, 1, 0], // Fades out at the end
+    });
+
+    return (
+        <Animated.View style={[styles.floatingMessageContainer, { opacity, transform: [{ translateY }] }]}>
+            <Text style={styles.floatingMessageSender}>{msg.sender}:</Text>
+            <Text style={styles.floatingMessageText}>{msg.text}</Text>
+        </Animated.View>
+    );
+};
+
 export default function TheatreScreen() {
     const router = useRouter();
     const { width, height } = useWindowDimensions();
@@ -239,14 +319,12 @@ export default function TheatreScreen() {
     const playerRef = useRef(null);
     const isPlayingRef = useRef(false);
 
-    // --- Vidking (WebView) specific refs ---
     const webViewRef = useRef(null);
-    const vidkingTimeRef = useRef(0);
-    const lastVidkingEmitRef = useRef(0);
-    const isVidkingRef = useRef(false);
+    const vidLinkTimeRef = useRef(0);
+    const lastVidLinkEmitRef = useRef(0);
+    const isVidLinkRef = useRef(false);
 
     const [searchType, setSearchType] = useState('youtube');
-
     const [searchInput, setSearchInput] = useState('');
     const [searchResults, setSearchResults] = useState([]);
     const [isSearching, setIsSearching] = useState(false);
@@ -273,35 +351,32 @@ export default function TheatreScreen() {
     const [tvDetails, setTvDetails] = useState(null);
 
     const isCustomVideo = !!ytId && ytId.startsWith('CUSTOM:');
-    const isVidking = !!ytId && ytId.startsWith('VIDKING:');
+    const isVidLink = !!ytId && (ytId.startsWith('EMBEDMASTER:') || ytId.startsWith('VIDLINK:'));
 
-    useEffect(() => { isVidkingRef.current = isVidking; }, [isVidking]);
+    useEffect(() => { isVidLinkRef.current = isVidLink; }, [isVidLink]);
 
-    const vidkingParts = isVidking ? ytId.split(':') : [];
-    const vidkingType = vidkingParts[1] || 'movie';
-    const vidkingId = vidkingParts[2];
-    const vidkingSeason = vidkingParts[3] ? parseInt(vidkingParts[3], 10) : 1;
-    const vidkingEpisode = vidkingParts[4] ? parseInt(vidkingParts[4], 10) : 1;
+    const vidLinkParts = isVidLink ? ytId.split(':') : [];
+    const vidLinkType = vidLinkParts[1] || 'movie';
+    const vidLinkId = vidLinkParts[2];
+    const vidLinkSeason = vidLinkParts[3] ? parseInt(vidLinkParts[3], 10) : 1;
+    const vidLinkEpisode = vidLinkParts[4] ? parseInt(vidLinkParts[4], 10) : 1;
 
-    // --- Vidking Auto-Hide Timer Logic ---
-    const vidkingOverlayTimer = useRef(null);
+    const vidLinkOverlayTimer = useRef(null);
 
-    const wakeVidkingOverlay = useCallback(() => {
-        if (!isVidking) return;
+    const wakeVidLinkOverlay = useCallback(() => {
+        if (!isVidLink) return;
         setOverlayVisible(true);
-        if (vidkingOverlayTimer.current) clearTimeout(vidkingOverlayTimer.current);
-        vidkingOverlayTimer.current = setTimeout(() => {
+        if (vidLinkOverlayTimer.current) clearTimeout(vidLinkOverlayTimer.current);
+        vidLinkOverlayTimer.current = setTimeout(() => {
             setOverlayVisible(false);
-        }, 4000); // UI auto-hides after 4 seconds of inactivity
-    }, [isVidking]);
+        }, 4000);
+    }, [isVidLink]);
 
-    // --- Vidking real-time sync: host relays real player events, viewer enforces them ---
-    const handleVidkingPlayerEvent = useCallback((eventData) => {
+    const handleVidLinkPlayerEvent = useCallback((eventData) => {
         if (!eventData) return;
         const { event: evt, currentTime } = eventData;
-        if (typeof currentTime === 'number') vidkingTimeRef.current = currentTime;
+        if (typeof currentTime === 'number') vidLinkTimeRef.current = currentTime;
 
-        // Only the host broadcasts sync — viewers never emit from their own player events.
         if (!isHostBool || !socket) return;
 
         if (evt === 'play') {
@@ -313,31 +388,44 @@ export default function TheatreScreen() {
         } else if (evt === 'seeked') {
             socket.emit('sync_action', { roomId, action: isPlayingRef.current ? 'play' : 'pause', timestamp: currentTime });
         } else if (evt === 'timeupdate') {
-            // Throttle to ~1/sec so we don't flood the socket with every tick.
             const now = Date.now();
-            if (now - lastVidkingEmitRef.current > 1000) {
-                lastVidkingEmitRef.current = now;
+            if (now - lastVidLinkEmitRef.current > 1000) {
+                lastVidLinkEmitRef.current = now;
                 socket.emit('sync_action', { roomId, action: isPlayingRef.current ? 'play' : 'pause', timestamp: currentTime });
             }
         }
     }, [isHostBool, socket, roomId]);
 
-    // Viewer-side: drive the real <video> element inside the WebView directly,
-    // since Vidking has no documented inbound postMessage command API.
-    const applyVidkingRemoteSync = useCallback((data) => {
+    // Bulletproof HTML5 video tag syncing
+    const applyVidLinkRemoteSync = useCallback((data) => {
         if (!webViewRef.current) return;
         const t = typeof data.timestamp === 'number' ? data.timestamp : 0;
         const shouldPlay = data.action !== 'pause';
+
         const js = `
             (function() {
-                try {
-                    var v = document.querySelector('video');
-                    if (v) {
-                        if (Math.abs(v.currentTime - (${t})) > 1.5) { v.currentTime = ${t}; }
-                        if (${shouldPlay}) { v.play().catch(function(){}); }
-                        else { v.pause(); }
+                var v = document.querySelector('video');
+                if (!v) {
+                    var iframes = document.querySelectorAll('iframe');
+                    for (var i = 0; i < iframes.length; i++) {
+                        try { v = iframes[i].contentDocument.querySelector('video'); if (v) break; } catch(e) {}
                     }
-                } catch (e) {}
+                }
+                
+                if (v) {
+                    if (Math.abs(v.currentTime - ${t}) > 2) {
+                        v.currentTime = ${t};
+                    }
+                    
+                    if (${shouldPlay}) {
+                        var playPromise = v.play();
+                        if (playPromise !== undefined) {
+                            playPromise.catch(function(e) { console.log("Autoplay blocked, waiting for interaction"); });
+                        }
+                    } else {
+                        v.pause();
+                    }
+                }
             })();
             true;
         `;
@@ -346,22 +434,20 @@ export default function TheatreScreen() {
 
     useEffect(() => {
         if (ytId) {
-            if (isVidking) {
-                wakeVidkingOverlay();
+            if (isVidLink) {
+                wakeVidLinkOverlay();
             } else {
                 setOverlayVisible(true);
-                extendOverlayTimer();
             }
         }
         return () => {
-            if (vidkingOverlayTimer.current) clearTimeout(vidkingOverlayTimer.current);
+            if (vidLinkOverlayTimer.current) clearTimeout(vidLinkOverlayTimer.current);
         };
-    }, [ytId, isVidking, wakeVidkingOverlay]);
+    }, [ytId, isVidLink, wakeVidLinkOverlay]);
 
-    // Ensure TV Details fetch updates correctly
     useEffect(() => {
-        if (isVidking && vidkingType === 'tv' && vidkingId) {
-            tmdbService.getDetails(vidkingId, 'tv')
+        if (isVidLink && vidLinkType === 'tv' && vidLinkId) {
+            tmdbService.getDetails(vidLinkId, 'tv')
                 .then(details => {
                     if (details) setTvDetails(details);
                 })
@@ -369,12 +455,7 @@ export default function TheatreScreen() {
         } else {
             setTvDetails(null);
         }
-    }, [isVidking, vidkingType, vidkingId]);
-
-    const tvSeasons = tvDetails?.seasons?.filter(s => s.season_number > 0) || [];
-    const currentSeasonData = tvSeasons.find(s => s.season_number === vidkingSeason) || tvSeasons[0];
-    const episodeCount = currentSeasonData?.episode_count || 1;
-    const episodesArray = Array.from({ length: episodeCount }, (_, i) => i + 1);
+    }, [isVidLink, vidLinkType, vidLinkId]);
 
     useEffect(() => {
         isPlayingRef.current = isPlaying;
@@ -398,7 +479,6 @@ export default function TheatreScreen() {
         return () => backHandler.remove();
     }, [isFullScreen, isHostBool, socket, roomId]);
 
-    // --- SOCKET SETUP ---
     useEffect(() => {
         const assignedUsername = user?.name ? user.name : `Guest-${Math.floor(1000 + Math.random() * 9000)}`;
         setUsername(assignedUsername);
@@ -413,6 +493,7 @@ export default function TheatreScreen() {
             if (isHostBool && initialYtId && initialTitle) {
                 setYtId(initialYtId);
                 setVideoTitle(initialTitle);
+                setIsPlaying(true);
                 newSocket.emit('change_video', { roomId, ytId: initialYtId, title: initialTitle });
             }
         });
@@ -465,9 +546,9 @@ export default function TheatreScreen() {
         newSocket.on('remote_sync', (data) => {
             if (isHostBool) return;
 
-            if (isVidkingRef.current) {
+            if (isVidLinkRef.current) {
                 setIsPlaying(data.action !== 'pause');
-                applyVidkingRemoteSync(data);
+                applyVidLinkRemoteSync(data);
                 return;
             }
 
@@ -509,11 +590,10 @@ export default function TheatreScreen() {
             newSocket.disconnect();
             ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
         };
-    }, [roomId, isHostBool, user, initialYtId, initialTitle, applyVidkingRemoteSync]);
+    }, [roomId, isHostBool, user, initialYtId, initialTitle, applyVidLinkRemoteSync]);
 
-    // --- HOST SYNC ENGINE (YouTube / custom video only — Vidking is event-driven via handleVidkingPlayerEvent) ---
     useEffect(() => {
-        if (!isHostBool || !socket || !ytId || isVidking) return;
+        if (!isHostBool || !socket || !ytId || isVidLink) return;
         let lastTime = 0;
         const interval = setInterval(() => {
             playerRef.current?.getCurrentTime().then(currentTime => {
@@ -526,7 +606,7 @@ export default function TheatreScreen() {
             }).catch(() => { });
         }, 1000);
         return () => clearInterval(interval);
-    }, [isHostBool, socket, ytId, roomId, isVidking]);
+    }, [isHostBool, socket, ytId, roomId, isVidLink]);
 
     const onPlayerStateChange = (state) => {
         if (!isHostBool) return;
@@ -558,17 +638,8 @@ export default function TheatreScreen() {
     const removeFloatingMessage = (id) => setActiveFloatingMessages(prev => prev.filter(m => m.id !== id));
     const toggleDistractionFree = () => setShowFloatingEmojis(prev => !prev);
 
-    // Extends timer for UI buttons based on the active player type
-    const extendOverlayTimer = () => {
-        if (isVidking) {
-            wakeVidkingOverlay();
-        } else {
-            playerRef.current?.extendControls?.();
-        }
-    };
-
     const handleVideoTap = () => {
-        if (!isCustomVideo && !isVidking) {
+        if (!isCustomVideo && !isVidLink) {
             playerRef.current?.toggleControls?.();
         }
     };
@@ -614,10 +685,10 @@ export default function TheatreScreen() {
 
     const handleSeasonChange = (seasonNum) => {
         if (!isHostBool) {
-            Toast.show({ type: 'hotstarInfo', text1: 'Only the host can change episodes' });
+            Toast.show({ type: 'hotstarInfo', text1: 'Only the host can change seasons' });
             return;
         }
-        const newYtId = `VIDKING:tv:${vidkingId}:${seasonNum}:1`;
+        const newYtId = `VIDLINK:tv:${vidLinkId}:${seasonNum}:1`;
         setYtId(newYtId);
         socket?.emit('change_video', { roomId, ytId: newYtId, title: videoTitle });
     };
@@ -627,7 +698,7 @@ export default function TheatreScreen() {
             Toast.show({ type: 'hotstarInfo', text1: 'Only the host can change episodes' });
             return;
         }
-        const newYtId = `VIDKING:tv:${vidkingId}:${vidkingSeason}:${epNum}`;
+        const newYtId = `VIDLINK:tv:${vidLinkId}:${vidLinkSeason}:${epNum}`;
         setYtId(newYtId);
         socket?.emit('change_video', { roomId, ytId: newYtId, title: videoTitle });
     };
@@ -636,11 +707,9 @@ export default function TheatreScreen() {
         if (isFullScreen) {
             await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
             setIsFullScreen(false);
-            extendOverlayTimer();
         } else {
             await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
             setIsFullScreen(true);
-            extendOverlayTimer();
         }
     };
 
@@ -714,8 +783,8 @@ export default function TheatreScreen() {
             const title = item.title || item.name;
             const mediaType = item.media_type || (item.first_air_date ? 'tv' : 'movie');
             const vidId = mediaType === 'tv'
-                ? `VIDKING:tv:${item.id}:1:1`
-                : `VIDKING:movie:${item.id}`;
+                ? `VIDLINK:tv:${item.id}:1:1`
+                : `VIDLINK:movie:${item.id}`;
             return (
                 <TouchableOpacity style={styles.resultCard} activeOpacity={0.8} onPress={() => handleSelectVideo(vidId, title)}>
                     <Image source={{ uri: getImageUrl(item.backdrop_path || item.poster_path, 'w500') }} style={[styles.resultImage, { backgroundColor: '#25252A' }]} />
@@ -759,6 +828,15 @@ export default function TheatreScreen() {
     const innerVideoWidth = isFullScreen ? actualHeight * (16 / 9) : width;
     const innerVideoHeight = isFullScreen ? actualHeight : width * (9 / 16);
 
+    let episodesArray = [];
+    let tvSeasons = [];
+    if (tvDetails && tvDetails.seasons) {
+        tvSeasons = tvDetails.seasons.filter(s => s.season_number > 0);
+        const currentSeasonData = tvSeasons.find(s => s.season_number === vidLinkSeason) || tvSeasons[0];
+        const episodeCount = currentSeasonData?.episode_count || 1;
+        episodesArray = Array.from({ length: episodeCount }, (_, i) => i + 1);
+    }
+
     if (isJoining) {
         return (
             <SafeAreaView style={[styles.safeArea, { justifyContent: 'center', alignItems: 'center' }]}>
@@ -783,15 +861,14 @@ export default function TheatreScreen() {
         );
     }
 
-    // Controls visibility logic cleanly respects the timer states
     const showOverlayUI = ytId && overlayVisible;
+
 
     return (
         <SafeAreaView style={styles.safeArea} edges={isFullScreen ? [] : ['top', 'left', 'right']}>
             <KeyboardAvoidingView style={styles.container} behavior="padding" keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 24}>
                 <StatusBar hidden={isFullScreen} showHideTransition="slide" barStyle="light-content" backgroundColor="#000" translucent={false} />
 
-                {/* --- VIDEO CONTAINER --- */}
                 <View
                     style={[
                         styles.playerContainer,
@@ -799,111 +876,146 @@ export default function TheatreScreen() {
                         isFullScreen && { position: 'absolute', top: 0, left: 0, zIndex: 9999, elevation: 9999, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' }
                     ]}
                     onStartShouldSetResponderCapture={() => {
-                        if (ytId && !isVidking) {
+                        if (ytId && !isVidLink) {
                             handleVideoTap();
                         }
                         return false;
                     }}
                 >
-                    {isVidking ? (
+                    {isVidLink ? (
                         <View style={{ width: innerVideoWidth, height: innerVideoHeight, backgroundColor: '#000', position: 'relative' }}>
                             <WebView
                                 ref={webViewRef}
-                                key={`vidking-theatre-${vidkingId}-${vidkingSeason}-${vidkingEpisode}`}
+                                key={`vidlink-theatre-${vidLinkId}-${vidLinkSeason}-${vidLinkEpisode}`}
                                 source={{
-                                    uri: `https://www.vidking.net/embed/${vidkingType === 'tv'
-                                        ? `tv/${vidkingId}/${vidkingSeason}/${vidkingEpisode}`
-                                        : `movie/${vidkingId}`
-                                        }?autoPlay=true`
+                                    uri: vidLinkType === 'tv'
+                                        ? `https://vidlink.pro/tv/${vidLinkId}/${vidLinkSeason}/${vidLinkEpisode}?autoplay=1`
+                                        : `https://vidlink.pro/movie/${vidLinkId}?autoplay=1`,
+                                    headers: {
+                                        'Referer': 'https://vidlink.pro/',
+                                        'User-Agent': DESKTOP_USER_AGENT,
+                                    }
                                 }}
+                                userAgent={DESKTOP_USER_AGENT}
                                 style={{ width: '100%', height: '100%', backgroundColor: '#000' }}
                                 javaScriptEnabled={true}
+                                domStorageEnabled={true}
+                                databaseEnabled={true}
                                 allowsFullscreenVideo={false}
                                 mediaPlaybackRequiresUserAction={false}
                                 allowsInlineMediaPlayback={true}
                                 setSupportMultipleWindows={false}
+                                sharedCookiesEnabled={true}
+                                thirdPartyCookiesEnabled={true}
+                                injectedJavaScriptBeforeContentLoaded={adBlockScript}
                                 onMessage={(event) => {
                                     try {
                                         const data = JSON.parse(event.nativeEvent.data);
                                         if (data.type === 'USER_TOUCH') {
-                                            wakeVidkingOverlay();
+                                            wakeVidLinkOverlay();
                                         } else if (data.type === 'PLAYER_EVENT') {
-                                            handleVidkingPlayerEvent(data.data);
+                                            handleVidLinkPlayerEvent(data.data);
                                         }
                                     } catch (e) { }
                                 }}
                                 onShouldStartLoadWithRequest={(request) => {
-                                    if (!request.url.includes('vidking.net') && !request.url.includes('about:blank')) {
+                                    const isAllowedHost =
+                                        request.url.includes('vidlink.pro') ||
+                                        request.url.includes('about:blank');
+
+                                    if (!isAllowedHost) {
                                         return false;
                                     }
                                     return true;
                                 }}
                                 injectedJavaScript={`
                 (function() {
-                    window.open = function() { return null; };
-                    var restrictJoinee = ${!isHostBool};
-
-                    var rules = [
-                        'iframe[src*="ads"], .ad-overlay, .jw-ad, .jw-icon-fullscreen, .vjs-fullscreen-control, [aria-label="Fullscreen"], [title="Fullscreen"] { display: none !important; }'
-                    ];
-
-                    // Joinees keep full access to volume, captions, settings, quality/language,
-                    // and can still tap to reveal the controlbar/progress — only the actual
-                    // play/pause toggle and the seek/scrub bar are made inert.
-                    if (restrictJoinee) {
-                        rules.push(
-                            '.jw-display-icon-container, .jw-icon-playback, .jw-icon-display, ' +
-                            '.jw-progress, .jw-rail, .jw-buffer, .jw-knob, ' +
-                            '.jw-slider-time, .jw-slider-horizontal, .jw-rail-group ' +
-                            '{ pointer-events: none !important; }'
-                        );
-                    }
-
+                    // 1. ALL USERS: Block ads, overlays, and FULLSCREEN buttons completely
                     var style = document.createElement('style');
-                    style.innerHTML = rules.join(' ');
+                    var css = 'iframe[src*="ads"], .ad-overlay { display: none !important; }';
+                    css += '.pjs-fullscreen, .pjs-icon-fullscreen, [aria-label="Fullscreen"], [title="Fullscreen"], .fullscreen-btn { display: none !important; }';
+
+                    // 2. JOINEE ONLY: The Iron Dome for Permissions
+                    var isJoinee = ${!isHostBool};
+                    if (isJoinee) {
+                        css += '.pjs-play, .pjs-pause, .pjs-icon-play, .pjs-icon-pause, ' +
+                               '.pjs-slider, .pjs-progress, .pjs-time, ' +
+                               '.pjs-rewind, .pjs-forward, .pjs-skip, .pjs-next, .pjs-previous, ' +
+                               '.pjs-servers, .pjs-playlist, .server-wrapper, .server-list, .servers, .list-server ' +
+                               '{ pointer-events: none !important; opacity: 0.5 !important; }';
+                               
+                        // Prevent users from tapping the center of the video to play/pause
+                        css += '.pjs-video-wrapper, video { pointer-events: none !important; }';
+                    }
+                    
+                    style.innerHTML = css;
                     document.head.appendChild(style);
 
-                    var triggerPlay = function() {
-                        var v = document.querySelector('video');
-                        if (v) v.play().catch(function(){});
-                        var playBtn = document.querySelector('.play-btn, .jw-display-icon-container, [aria-label="Play"]');
-                        if (playBtn) playBtn.click();
-                    };
-                    setTimeout(triggerPlay, 400);
-                    setTimeout(triggerPlay, 1200);
-                    setTimeout(triggerPlay, 2500);
+                    // Ensure safe access to the React Native bridge
+                    var sendMsg = window.__rn_send || (window.ReactNativeWebView ? window.ReactNativeWebView.postMessage.bind(window.ReactNativeWebView) : null);
 
+                    // 3. HOST SYNC: Actively poll the video element to broadcast play/pause/seek to React Native
+                    if (!isJoinee) {
+                        var lastState = { playing: false, time: 0 };
+                        
+                        setInterval(function() {
+                            var v = document.querySelector('video');
+                            if (!v) {
+                                var iframes = document.querySelectorAll('iframe');
+                                for (var i=0; i<iframes.length; i++) {
+                                    try { v = iframes[i].contentDocument.querySelector('video'); if (v) break; } catch(e) {}
+                                }
+                            }
+                            
+                            if (v && sendMsg) {
+                                var isPlaying = !v.paused && !v.ended && v.readyState > 2;
+                                var time = v.currentTime;
+                                
+                                // Play / Pause changed
+                                if (isPlaying !== lastState.playing) {
+                                    lastState.playing = isPlaying;
+                                    sendMsg(JSON.stringify({
+                                        type: 'PLAYER_EVENT',
+                                        data: { event: isPlaying ? 'play' : 'pause', currentTime: time }
+                                    }));
+                                }
+                                
+                                // Seeked (jump > 1.5s)
+                                if (Math.abs(time - lastState.time) > 1.5 && lastState.playing === isPlaying) {
+                                    sendMsg(JSON.stringify({
+                                        type: 'PLAYER_EVENT',
+                                        data: { event: 'seeked', currentTime: time }
+                                    }));
+                                }
+                                
+                                // Standard Time Update Heartbeat
+                                lastState.time = time;
+                                sendMsg(JSON.stringify({
+                                    type: 'PLAYER_EVENT',
+                                    data: { event: 'timeupdate', currentTime: time }
+                                }));
+                            }
+                        }, 1000);
+                    }
+
+                    // Click passthrough for RN Overlay waking
                     ['click', 'touchstart'].forEach(function(evt) {
                         document.addEventListener(evt, function(e) {
-                            if (!e.isTrusted) return;
-                            if (window.ReactNativeWebView) {
-                                window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'USER_TOUCH' }));
+                            if (e.isTrusted && sendMsg) {
+                                sendMsg(JSON.stringify({ type: 'USER_TOUCH' }));
                             }
                         }, { passive: true });
                     });
-
-                    window.addEventListener('message', function(event) {
-                        try {
-                            var msg = event.data;
-                            if (typeof msg === 'string') {
-                                try { msg = JSON.parse(msg); } catch (e2) {}
-                            }
-                            if (msg && msg.type === 'PLAYER_EVENT' && msg.data && window.ReactNativeWebView) {
-                                window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'PLAYER_EVENT', data: msg.data }));
-                            }
-                        } catch (e) {}
-                    });
-
+                    
                     true;
                 })();
             `}
                             />
 
-                            {/* Fallback wake hotspot when overlays are hidden */}
                             {!overlayVisible && (
                                 <TouchableOpacity
                                     style={styles.fsWakeHotspot}
-                                    onPress={wakeVidkingOverlay}
+                                    onPress={wakeVidLinkOverlay}
                                     activeOpacity={1}
                                 />
                             )}
@@ -934,7 +1046,6 @@ export default function TheatreScreen() {
                         />
                     )}
 
-                    {/* Uniform fullscreen exit button for both modes */}
                     {isFullScreen && showOverlayUI && (
                         <TouchableOpacity style={[styles.fullscreenExitBtn, { zIndex: 100000, elevation: 10 }]} onPress={toggleFullScreen} activeOpacity={0.7}>
                             <Ionicons name="close" size={26} color="#FFFFFF" />
@@ -956,7 +1067,7 @@ export default function TheatreScreen() {
                                     activeOpacity={0.7}
                                     onPress={() => {
                                         setShowFloatingMessages(prev => !prev);
-                                        extendOverlayTimer();
+                                        wakeVidLinkOverlay();
                                     }}
                                 >
                                     <Ionicons
@@ -966,12 +1077,13 @@ export default function TheatreScreen() {
                                     />
                                 </TouchableOpacity>
 
+                                {/* RESTORED EMOJI SLIDER BUTTON */}
                                 <ReactionButtonUI
                                     isFullScreen={isFullScreen}
                                     showFloatingEmojis={showFloatingEmojis}
                                     toggleDistractionFree={toggleDistractionFree}
                                     sendReaction={sendReaction}
-                                    extendOverlayTimer={extendOverlayTimer}
+                                    extendOverlayTimer={wakeVidLinkOverlay}
                                 />
                             </View>
                         </View>
@@ -992,16 +1104,15 @@ export default function TheatreScreen() {
                     )}
                 </View>
 
-                {/* --- LOWER HALF UI --- */}
                 <View style={{ display: isFullScreen ? 'none' : 'flex', flex: 1 }}>
                     <>
                         {videoTitle !== '' && (
                             <View style={styles.nowPlayingBar}>
-                                <Ionicons name={isVidking ? "film" : "play"} size={14} color={isVidking ? "#FF007A" : "#00E5FF"} />
+                                <Ionicons name={isVidLink ? "film" : "play"} size={14} color={isVidLink ? "#FF007A" : "#00E5FF"} />
                                 <Text style={styles.nowPlayingText} numberOfLines={1}>
                                     <Text style={{ color: '#8F98A0', fontWeight: 'bold' }}>Now Playing: </Text>
                                     {videoTitle}
-                                    {isVidking && vidkingType === 'tv' ? ` (S${vidkingSeason} E${vidkingEpisode})` : ''}
+                                    {isVidLink && vidLinkType === 'tv' ? ` (S${vidLinkSeason} E${vidLinkEpisode})` : ''}
                                 </Text>
                             </View>
                         )}
@@ -1030,12 +1141,11 @@ export default function TheatreScreen() {
                             </ScrollView>
                         </View>
 
-                        {/* --- TV SHOW SEASONS & EPISODES SELECTOR BAR --- */}
-                        {isVidking && vidkingType === 'tv' && tvSeasons.length > 0 && (
+                        {isVidLink && vidLinkType === 'tv' && tvSeasons.length > 0 && (
                             <View style={styles.theatreTvBar}>
                                 <View style={styles.theatreTvHeader}>
                                     <Text style={styles.theatreTvTitle}>
-                                        Season {vidkingSeason} • Episode {vidkingEpisode}
+                                        Season {vidLinkSeason} • Episode {vidLinkEpisode}
                                     </Text>
                                     {!isHostBool && (
                                         <Text style={styles.theatreTvHostOnly}>(Controlled by Host)</Text>
@@ -1046,10 +1156,10 @@ export default function TheatreScreen() {
                                     {tvSeasons.map((season) => (
                                         <TouchableOpacity
                                             key={`theatre-s-${season.season_number}`}
-                                            style={[styles.tvChip, vidkingSeason === season.season_number && styles.tvChipActive]}
+                                            style={[styles.tvChip, vidLinkSeason === season.season_number && styles.tvChipActive]}
                                             onPress={() => handleSeasonChange(season.season_number)}
                                         >
-                                            <Text style={[styles.tvChipText, vidkingSeason === season.season_number && styles.tvChipTextActive]}>
+                                            <Text style={[styles.tvChipText, vidLinkSeason === season.season_number && styles.tvChipTextActive]}>
                                                 S{season.season_number}
                                             </Text>
                                         </TouchableOpacity>
@@ -1060,10 +1170,10 @@ export default function TheatreScreen() {
                                     {episodesArray.map((ep) => (
                                         <TouchableOpacity
                                             key={`theatre-ep-${ep}`}
-                                            style={[styles.tvChip, vidkingEpisode === ep && styles.tvChipActive]}
+                                            style={[styles.tvChip, vidLinkEpisode === ep && styles.tvChipActive]}
                                             onPress={() => handleEpisodeChange(ep)}
                                         >
-                                            <Text style={[styles.tvChipText, vidkingEpisode === ep && styles.tvChipTextActive]}>
+                                            <Text style={[styles.tvChipText, vidLinkEpisode === ep && styles.tvChipTextActive]}>
                                                 Ep {ep}
                                             </Text>
                                         </TouchableOpacity>
@@ -1115,8 +1225,6 @@ export default function TheatreScreen() {
 
                         {isHostBool && activeTab === 'search' ? (
                             <View style={styles.hostPanel}>
-
-                                {/* Search Toggle */}
                                 <View style={styles.searchToggleRow}>
                                     <TouchableOpacity
                                         style={[styles.searchToggleBtn, searchType === 'youtube' && styles.searchToggleBtnActiveYt]}
@@ -1205,7 +1313,6 @@ export default function TheatreScreen() {
                 </View>
             </KeyboardAvoidingView>
 
-            {/* --- SHARE MODAL --- */}
             <Modal visible={isShareModalVisible} transparent={true} animationType="slide" onRequestClose={() => setIsShareModalVisible(false)}>
                 <View style={styles.modalOverlay}>
                     <View style={styles.bottomSheet}>
@@ -1246,7 +1353,6 @@ export default function TheatreScreen() {
                 </View>
             </Modal>
 
-            {/* HOST GATEKEEPER MODAL */}
             <Modal visible={!!pendingJoinRequest} transparent={true} animationType="fade">
                 <View style={styles.modalOverlayCenter}>
                     <View style={styles.permissionModal}>
@@ -1264,7 +1370,6 @@ export default function TheatreScreen() {
                 </View>
             </Modal>
 
-            {/* HOST MODERATION MODAL */}
             <Modal visible={!!selectedUserToMod} transparent={true} animationType="fade" onRequestClose={() => setSelectedUserToMod(null)}>
                 <View style={styles.modalOverlayCenter}>
                     <View style={styles.permissionModal}>
