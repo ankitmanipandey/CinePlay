@@ -1224,7 +1224,12 @@ export default function TheatreScreen() {
                         )}
 
                         {isHostBool && activeTab === 'search' ? (
-                            <View style={styles.hostPanel}>
+                            <ScrollView
+                                style={styles.hostPanel}
+                                showsVerticalScrollIndicator={false}
+                                keyboardShouldPersistTaps="handled"
+                                contentContainerStyle={{ flexGrow: 1, paddingBottom: 20 }}
+                            >
                                 <View style={styles.searchToggleRow}>
                                     <TouchableOpacity
                                         style={[styles.searchToggleBtn, searchType === 'youtube' && styles.searchToggleBtnActiveYt]}
@@ -1279,7 +1284,7 @@ export default function TheatreScreen() {
                                         <Text style={styles.emptyStateText}>Search for a title to sync with the room.</Text>
                                     </View>
                                 )}
-                            </View>
+                            </ScrollView>
                         ) : (
                             <View style={styles.chatPanel}>
                                 {!isHostBool && !isKeyboardVisible && (
