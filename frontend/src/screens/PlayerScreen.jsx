@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, TouchableOpacity, ActivityIndicator, StyleSheet } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -32,14 +32,17 @@ export default function PlayerScreen() {
     // NEW: Separate local state specifically for the Video/Trailer player
     const [isVideoPlaying, setIsVideoPlaying] = useState(true);
 
+    // Guards against double taps on "Start Watch Party" while the room is being created
+    const creatingRoomRef = useRef(false);
+
     const livePlayer = useVideoPlayer(null, (player) => {
         player.loop = false;
         player.staysActiveInBackground = true;
         player.showNowPlayingNotification = true;
     });
 
-    // 1. Music Logic Hook
-    const musicState = useMusicEngine(type, livePlayer, token, insets);
+    // 1. Music Logic Hook (signature is useMusicEngine(type, token, insets))
+    const musicState = useMusicEngine(type, token, insets);
 
     // NEW: Automatically pause background music when opening a movie/show screen
     useEffect(() => {
@@ -78,28 +81,43 @@ export default function PlayerScreen() {
     };
 
     const handleCreateWatchParty = (vidIdArg, titleArg) => {
-        handleAuthAction(() => {
-            const newRoomId = Math.floor(10000 + Math.random() * 90000).toString();
+        handleAuthAction(async () => {
+            if (creatingRoomRef.current) return;
+            creatingRoomRef.current = true;
 
-            // Use what VideoPlayerUI sends; fall back only if it sent nothing
-            const vidId = vidIdArg || (
-                (id && type && activeMediaView === 'movie')
-                    ? (type === 'tv'
-                        ? `EMBEDMASTER:tv:${id}:${selectedSeason}:${selectedEpisode}`
-                        : `EMBEDMASTER:movie:${id}`)
-                    : (trailerKey || ytId)
-            );
+            try {
+                // The room code is issued (and reserved) by the server
+                const res = await fetch(`${BACKEND_URL}/rooms`, {
+                    method: 'POST',
+                    headers: { Authorization: `Bearer ${token}` },
+                });
+                const data = await res.json();
+                if (!res.ok || !data.roomId) throw new Error(data.message || 'Could not create room');
 
-            musicState.setIsPlaying(false);
-            router.push({
-                pathname: '/theatre',
-                params: {
-                    roomId: newRoomId,
-                    isHost: 'true',
-                    initialYtId: vidId,
-                    initialTitle: titleArg || mediaDetails?.title || mediaDetails?.name || 'Watch Party',
-                },
-            });
+                // Use what VideoPlayerUI sends; fall back only if it sent nothing
+                const vidId = vidIdArg || (
+                    (id && type && activeMediaView === 'movie')
+                        ? (type === 'tv'
+                            ? `VIDLINK:tv:${id}:${selectedSeason}:${selectedEpisode}`
+                            : `VIDLINK:movie:${id}`)
+                        : (trailerKey || ytId)
+                );
+
+                musicState.setIsPlaying(false);
+                router.push({
+                    pathname: '/theatre',
+                    params: {
+                        roomId: data.roomId,
+                        isHost: 'true',
+                        initialYtId: vidId,
+                        initialTitle: titleArg || mediaDetails?.title || mediaDetails?.name || 'Watch Party',
+                    },
+                });
+            } catch (error) {
+                Toast.show({ type: 'hotstarError', text1: 'Could not start watch party', text2: error.message, position: 'top' });
+            } finally {
+                creatingRoomRef.current = false;
+            }
         });
     };
 

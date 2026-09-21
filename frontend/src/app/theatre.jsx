@@ -300,24 +300,44 @@ export default function TheatreScreen() {
     const router = useRouter();
     const { width, height } = useWindowDimensions();
 
-    const { roomId, isHost, initialYtId, initialTitle } = useLocalSearchParams();
-    const isHostBool = isHost === 'true';
+    // expo-router can hand params back as string | string[]
+    const params = useLocalSearchParams();
+    const firstParam = (v) => (Array.isArray(v) ? v[0] : v);
+    const roomId = firstParam(params.roomId);
+    const isHost = firstParam(params.isHost);
+    const initialYtId = firstParam(params.initialYtId);
+    const initialTitle = firstParam(params.initialTitle);
+    const startWithInitial = isHost === 'true' && !!initialYtId;
 
-    const [isJoining, setIsJoining] = useState(!isHostBool);
+    // Host status lives in state (drives the UI) AND in a ref (read by socket handlers),
+    // so becoming host never tears the socket down.
+    const [isHostLocal, setIsHostLocal] = useState(isHost === 'true');
+    const isHostRef = useRef(isHost === 'true');
+    useEffect(() => { isHostRef.current = isHostLocal; }, [isHostLocal]);
+
+    const [isJoining, setIsJoining] = useState(!isHostLocal);
     const { user, token } = useAuthStore();
     const [username, setUsername] = useState('');
     const [roomUsers, setRoomUsers] = useState([]);
     const [selectedUserToMod, setSelectedUserToMod] = useState(null);
 
     const [socket, setSocket] = useState(null);
-    const [ytId, setYtId] = useState('');
-    const [videoTitle, setVideoTitle] = useState('');
-    const [isPlaying, setIsPlaying] = useState(false);
+
+    // The host starts with the video from the route params, no waiting for the socket
+    const [ytId, setYtId] = useState(startWithInitial ? initialYtId : '');
+    const [videoTitle, setVideoTitle] = useState(startWithInitial ? (initialTitle || '') : '');
+    const [isPlaying, setIsPlaying] = useState(startWithInitial);
     const [isMuted, setIsMuted] = useState(false);
     const [isFullScreen, setIsFullScreen] = useState(false);
 
+    // Latest video info for the socket 'connect' handler (so a reconnect re-announces the CURRENT video)
+    const ytIdRef = useRef(startWithInitial ? initialYtId : '');
+    const videoTitleRef = useRef(startWithInitial ? (initialTitle || '') : '');
+    useEffect(() => { ytIdRef.current = ytId; }, [ytId]);
+    useEffect(() => { videoTitleRef.current = videoTitle; }, [videoTitle]);
+
     const playerRef = useRef(null);
-    const isPlayingRef = useRef(false);
+    const isPlayingRef = useRef(startWithInitial);
 
     const webViewRef = useRef(null);
     const vidLinkTimeRef = useRef(0);
@@ -351,7 +371,7 @@ export default function TheatreScreen() {
     const [tvDetails, setTvDetails] = useState(null);
 
     const isCustomVideo = !!ytId && ytId.startsWith('CUSTOM:');
-    const isVidLink = !!ytId && (ytId.startsWith('EMBEDMASTER:') || ytId.startsWith('VIDLINK:'));
+    const isVidLink = !!ytId && ytId.startsWith('VIDLINK:');
 
     useEffect(() => { isVidLinkRef.current = isVidLink; }, [isVidLink]);
 
@@ -377,7 +397,7 @@ export default function TheatreScreen() {
         const { event: evt, currentTime } = eventData;
         if (typeof currentTime === 'number') vidLinkTimeRef.current = currentTime;
 
-        if (!isHostBool || !socket) return;
+        if (!isHostRef.current || !socket) return;
 
         if (evt === 'play') {
             setIsPlaying(true);
@@ -394,7 +414,7 @@ export default function TheatreScreen() {
                 socket.emit('sync_action', { roomId, action: isPlayingRef.current ? 'play' : 'pause', timestamp: currentTime });
             }
         }
-    }, [isHostBool, socket, roomId]);
+    }, [socket, roomId]);
 
     // Bulletproof HTML5 video tag syncing
     const applyVidLinkRemoteSync = useCallback((data) => {
@@ -477,30 +497,61 @@ export default function TheatreScreen() {
         };
         const backHandler = BackHandler.addEventListener('hardwareBackPress', onHardwareBackPress);
         return () => backHandler.remove();
-    }, [isFullScreen, isHostBool, socket, roomId]);
+    }, [isFullScreen, roomId]);
 
+    // Socket connection: created ONCE per room/login. Host status is read through isHostRef,
+    // so promotion / demotion never recreates the socket.
     useEffect(() => {
         const assignedUsername = user?.name ? user.name : `Guest-${Math.floor(1000 + Math.random() * 9000)}`;
         setUsername(assignedUsername);
 
         ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
-        const newSocket = io(SOCKET_URL);
+
+        // The server identifies you from this token, not from anything in the payload
+        const newSocket = io(SOCKET_URL, { auth: { token } });
         setSocket(newSocket);
 
         newSocket.on('connect', () => {
-            newSocket.emit('join_room', { roomId, username: assignedUsername, isHost: isHostBool, userId: user?._id });
+            newSocket.emit('join_room', { roomId, username: assignedUsername, isHost: isHostRef.current });
 
-            if (isHostBool && initialYtId && initialTitle) {
-                setYtId(initialYtId);
-                setVideoTitle(initialTitle);
-                setIsPlaying(true);
-                newSocket.emit('change_video', { roomId, ytId: initialYtId, title: initialTitle });
+            // The video is already in state (from the route params), so just (re)announce whatever
+            // is loaded right now. Using refs means a reconnect never rewinds the room to the first video.
+            if (isHostRef.current && ytIdRef.current) {
+                newSocket.emit('change_video', {
+                    roomId,
+                    ytId: ytIdRef.current,
+                    title: videoTitleRef.current || initialTitle || ''
+                });
             }
         });
 
         newSocket.on('room_users', (userList) => {
             setIsJoining(false);
             setRoomUsers(userList);
+        });
+
+        // The server tells us our role after every join, so the UI can never drift from it
+        newSocket.on('role_assigned', ({ isHost: assignedHost }) => {
+            const nowHost = !!assignedHost;
+            if (isHostRef.current === nowHost) return;
+            isHostRef.current = nowHost;
+            setIsHostLocal(nowHost);
+            if (!nowHost) {
+                webViewRef.current?.injectJavaScript('window.__demoteToJoinee && window.__demoteToJoinee(); true;');
+            }
+        });
+
+        newSocket.on('host_migrated', () => {
+            isHostRef.current = true;
+            setIsHostLocal(true);
+            setIsMuted(false);
+            // Promote the WebView in place: no reload, so the movie keeps playing from the same second
+            webViewRef.current?.injectJavaScript('window.__promoteToHost && window.__promoteToHost(); true;');
+            Toast.show({
+                type: 'hotstarSuccess',
+                text1: 'You are the new Host!',
+                text2: 'The previous host left. You now control the theatre.'
+            });
         });
 
         newSocket.on('kicked_from_room', (data) => {
@@ -510,7 +561,7 @@ export default function TheatreScreen() {
         });
 
         newSocket.on('new_video', (data) => {
-            if (isHostBool) return;
+            if (isHostRef.current) return;
             setYtId(data.ytId);
             setVideoTitle(data.title);
             setIsPlaying(true);
@@ -540,11 +591,11 @@ export default function TheatreScreen() {
         });
 
         newSocket.on('request_host_permission', (data) => {
-            if (isHostBool) setPendingJoinRequest(data);
+            if (isHostRef.current) setPendingJoinRequest(data);
         });
 
         newSocket.on('remote_sync', (data) => {
-            if (isHostBool) return;
+            if (isHostRef.current) return;
 
             if (isVidLinkRef.current) {
                 setIsPlaying(data.action !== 'pause');
@@ -579,7 +630,7 @@ export default function TheatreScreen() {
         });
 
         newSocket.on('room_closed', () => {
-            if (!isHostBool) {
+            if (!isHostRef.current) {
                 Toast.show({ type: 'hotstarError', text1: 'Room Closed', text2: 'The host has ended the watch party.', position: 'top' });
                 if (router.canGoBack()) router.back();
                 else router.replace('/');
@@ -590,10 +641,10 @@ export default function TheatreScreen() {
             newSocket.disconnect();
             ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
         };
-    }, [roomId, isHostBool, user, initialYtId, initialTitle, applyVidLinkRemoteSync]);
+    }, [roomId, user?._id, token, initialYtId, initialTitle, applyVidLinkRemoteSync]);
 
     useEffect(() => {
-        if (!isHostBool || !socket || !ytId || isVidLink) return;
+        if (!isHostLocal || !socket || !ytId || isVidLink) return;
         let lastTime = 0;
         const interval = setInterval(() => {
             playerRef.current?.getCurrentTime().then(currentTime => {
@@ -606,10 +657,10 @@ export default function TheatreScreen() {
             }).catch(() => { });
         }, 1000);
         return () => clearInterval(interval);
-    }, [isHostBool, socket, ytId, roomId, isVidLink]);
+    }, [isHostLocal, socket, ytId, roomId, isVidLink]);
 
     const onPlayerStateChange = (state) => {
-        if (!isHostBool) return;
+        if (!isHostLocal) return;
         playerRef.current?.getCurrentTime().then(currentTime => {
             if (state === 'playing') {
                 setIsPlaying(true);
@@ -684,7 +735,7 @@ export default function TheatreScreen() {
     };
 
     const handleSeasonChange = (seasonNum) => {
-        if (!isHostBool) {
+        if (!isHostLocal) {
             Toast.show({ type: 'hotstarInfo', text1: 'Only the host can change seasons' });
             return;
         }
@@ -694,7 +745,7 @@ export default function TheatreScreen() {
     };
 
     const handleEpisodeChange = (epNum) => {
-        if (!isHostBool) {
+        if (!isHostLocal) {
             Toast.show({ type: 'hotstarInfo', text1: 'Only the host can change episodes' });
             return;
         }
@@ -716,14 +767,15 @@ export default function TheatreScreen() {
     const handleBackPress = async () => {
         if (isFullScreen) await toggleFullScreen();
         else {
-            if (isHostBool && socket) socket.emit('close_room', roomId);
+            // No manual close_room here: leaving unmounts the screen, the socket disconnects, and the
+            // server hands the host seat to the next person (or closes the room if nobody is left).
             router.back();
         }
     };
 
     const handleHostDecision = (decision) => {
         if (!pendingJoinRequest) return;
-        socket.emit('host_decision', { ...pendingJoinRequest, decision, roomId, hostUserId: user._id });
+        socket.emit('host_decision', { ...pendingJoinRequest, decision, roomId, hostUserId: user?._id });
         setPendingJoinRequest(null);
     };
 
@@ -736,7 +788,7 @@ export default function TheatreScreen() {
 
     const handleKickAndBlock = () => {
         if (!selectedUserToMod) return;
-        socket.emit('kick_and_block_user', { roomId, targetUsername: selectedUserToMod, hostUserId: user._id });
+        socket.emit('kick_and_block_user', { roomId, targetUsername: selectedUserToMod, hostUserId: user?._id });
         setSelectedUserToMod(null);
         Toast.show({ type: 'hotstarSuccess', text1: `${selectedUserToMod} was blocked.` });
     };
@@ -934,31 +986,51 @@ export default function TheatreScreen() {
                     var style = document.createElement('style');
                     var css = 'iframe[src*="ads"], .ad-overlay { display: none !important; }';
                     css += '.pjs-fullscreen, .pjs-icon-fullscreen, [aria-label="Fullscreen"], [title="Fullscreen"], .fullscreen-btn { display: none !important; }';
-
-                    // 2. JOINEE ONLY: The Iron Dome for Permissions
-                    var isJoinee = ${!isHostBool};
-                    if (isJoinee) {
-                        css += '.pjs-play, .pjs-pause, .pjs-icon-play, .pjs-icon-pause, ' +
-                               '.pjs-slider, .pjs-progress, .pjs-time, ' +
-                               '.pjs-rewind, .pjs-forward, .pjs-skip, .pjs-next, .pjs-previous, ' +
-                               '.pjs-servers, .pjs-playlist, .server-wrapper, .server-list, .servers, .list-server ' +
-                               '{ pointer-events: none !important; opacity: 0.5 !important; }';
-                               
-                        // Prevent users from tapping the center of the video to play/pause
-                        css += '.pjs-video-wrapper, video { pointer-events: none !important; }';
-                    }
-                    
                     style.innerHTML = css;
                     document.head.appendChild(style);
+
+                    // 2. JOINEE LOCK ("Iron Dome" for permissions). It can be switched on/off without
+                    //    reloading the page, so a viewer promoted to host keeps watching from the same second.
+                    window.__isJoinee = ${!isHostLocal};
+
+                    var lockCss =
+                        '.pjs-play, .pjs-pause, .pjs-icon-play, .pjs-icon-pause, ' +
+                        '.pjs-slider, .pjs-progress, .pjs-time, ' +
+                        '.pjs-rewind, .pjs-forward, .pjs-skip, .pjs-next, .pjs-previous, ' +
+                        '.pjs-servers, .pjs-playlist, .server-wrapper, .server-list, .servers, .list-server ' +
+                        '{ pointer-events: none !important; opacity: 0.5 !important; }' +
+                        // Prevent users from tapping the center of the video to play/pause
+                        '.pjs-video-wrapper, video { pointer-events: none !important; }';
+
+                    function applyLock() {
+                        if (document.getElementById('joinee-lock')) return;
+                        var lock = document.createElement('style');
+                        lock.id = 'joinee-lock';
+                        lock.innerHTML = lockCss;
+                        document.head.appendChild(lock);
+                    }
+                    function removeLock() {
+                        var lock = document.getElementById('joinee-lock');
+                        if (lock) lock.remove();
+                    }
+
+                    window.__promoteToHost = function() { window.__isJoinee = false; removeLock(); };
+                    window.__demoteToJoinee = function() { window.__isJoinee = true; applyLock(); };
+
+                    if (window.__isJoinee) applyLock();
 
                     // Ensure safe access to the React Native bridge
                     var sendMsg = window.__rn_send || (window.ReactNativeWebView ? window.ReactNativeWebView.postMessage.bind(window.ReactNativeWebView) : null);
 
-                    // 3. HOST SYNC: Actively poll the video element to broadcast play/pause/seek to React Native
-                    if (!isJoinee) {
+                    // 3. HOST SYNC: Actively poll the video element to broadcast play/pause/seek to React Native.
+                    //    Always running, but silent while this user is a joinee (so promotion needs no reload).
+                    if (!window.__syncStarted) {
+                        window.__syncStarted = true;
                         var lastState = { playing: false, time: 0 };
-                        
+
                         setInterval(function() {
+                            if (window.__isJoinee) return;
+
                             var v = document.querySelector('video');
                             if (!v) {
                                 var iframes = document.querySelectorAll('iframe');
@@ -1026,7 +1098,7 @@ export default function TheatreScreen() {
                             ytId={ytId}
                             isPlaying={isPlaying}
                             isMuted={isMuted}
-                            isHostBool={isHostBool}
+                            isHostBool={isHostLocal}
                             onPlayerStateChange={onPlayerStateChange}
                             width={innerVideoWidth}
                             height={innerVideoHeight}
@@ -1147,7 +1219,7 @@ export default function TheatreScreen() {
                                     <Text style={styles.theatreTvTitle}>
                                         Season {vidLinkSeason} • Episode {vidLinkEpisode}
                                     </Text>
-                                    {!isHostBool && (
+                                    {!isHostLocal && (
                                         <Text style={styles.theatreTvHostOnly}>(Controlled by Host)</Text>
                                     )}
                                 </View>
@@ -1182,7 +1254,7 @@ export default function TheatreScreen() {
                             </View>
                         )}
 
-                        {isHostBool && roomUsers.filter(u => u !== username).length > 0 && (
+                        {isHostLocal && roomUsers.filter(u => u !== username).length > 0 && (
                             <View style={styles.viewersBar}>
                                 <ScrollView
                                     horizontal
@@ -1210,7 +1282,7 @@ export default function TheatreScreen() {
                     </>
 
                     <View style={styles.controlsContainer}>
-                        {isHostBool && !isKeyboardVisible && (
+                        {isHostLocal && !isKeyboardVisible && (
                             <View style={styles.tabContainer}>
                                 <TouchableOpacity style={[styles.tabBtn, activeTab === 'search' && styles.tabBtnActive]} onPress={() => setActiveTab('search')}>
                                     <Ionicons name="search" size={18} color={activeTab === 'search' ? '#FFF' : '#8F98A0'} />
@@ -1223,7 +1295,7 @@ export default function TheatreScreen() {
                             </View>
                         )}
 
-                        {isHostBool && activeTab === 'search' ? (
+                        {isHostLocal && activeTab === 'search' ? (
                             <ScrollView
                                 style={styles.hostPanel}
                                 showsVerticalScrollIndicator={false}
@@ -1287,7 +1359,7 @@ export default function TheatreScreen() {
                             </ScrollView>
                         ) : (
                             <View style={styles.chatPanel}>
-                                {!isHostBool && !isKeyboardVisible && (
+                                {!isHostLocal && !isKeyboardVisible && (
                                     <View style={styles.viewerHeader}>
                                         <Ionicons name="lock-closed" size={16} color="#FF007A" />
                                         <Text style={styles.viewerHeaderText}>Viewer Mode: Sit back & enjoy</Text>
