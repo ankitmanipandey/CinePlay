@@ -44,15 +44,6 @@ process.on('unhandledRejection', (err) => {
 // =========================================================
 // 1. THEATRE MODE SOCKET NAMESPACE (/api)
 // =========================================================
-// Room shape (kept compatible with the buddy routes that use app.locals.rooms):
-// {
-//   users:            { [socketId]: username }   // admitted users in join order -> first key is next host
-//   pending:          { [socketId]: { joinerSocketId, joinerId, joinerName } }  // knocking, not admitted yet
-//   blockedUsers:     [userId],
-//   preApprovedUsers: [userId],
-//   hostSocketId, hostUserId,
-//   ytId, title, isPlaying, timestamp
-// }
 const rooms = {};
 const apiNamespace = io.of('/api');
 
@@ -74,7 +65,7 @@ const safe = (fn) => async (...args) => {
 
 function emitRoomUsers(roomId) {
     const state = rooms[roomId];
-    const userList = state?.users ? Object.values(state.users) : [];
+    const userList = state?.users ? Object.entries(state.users).map(([sId, uname]) => ({ socketId: sId, username: uname })) : [];
     apiNamespace.to(roomId).emit('room_users', userList);
 }
 
@@ -99,13 +90,6 @@ function destroyRoom(roomId) {
         }
     }
     delete rooms[roomId];
-}
-
-function findSocketIdByUsername(room, username, excludeSocketId) {
-    for (const [sId, uname] of Object.entries(room.users || {})) {
-        if (sId !== excludeSocketId && uname === username) return sId;
-    }
-    return null;
 }
 
 // Removes a user from the room and tells them why. Returns their DB user id (if any).
@@ -153,7 +137,6 @@ function migrateHost(roomId, room) {
 
 // ---------------------------------------------------------
 // SOCKET AUTH: identity comes from the JWT, never from the payload.
-// Same token the REST routes use (payload shape: { id }). No/invalid token = guest.
 // ---------------------------------------------------------
 apiNamespace.use((socket, next) => {
     socket.data.authUserId = null;
@@ -170,8 +153,7 @@ apiNamespace.use((socket, next) => {
 });
 
 // ---------------------------------------------------------
-// ROOM CODES ARE ISSUED BY THE SERVER (POST /api/rooms, logged-in users only).
-// The room is reserved for its creator; if the host never shows up it expires.
+// ROOM CREATION & LOBBY FETCHING (REST ROUTES)
 // ---------------------------------------------------------
 const ROOM_CLAIM_TIMEOUT_MS = 2 * 60 * 1000;
 
@@ -179,12 +161,16 @@ app.post('/api/rooms', protect, (req, res) => {
     try {
         if (!req.user) return res.status(401).json({ message: 'Not authorized' });
 
+        const { isPublic = false, pin = null, roomName } = req.body || {};
+
         let roomId = null;
         for (let i = 0; i < 25 && !roomId; i++) {
-            const candidate = String(crypto.randomInt(10000, 100000)); // 5 digits, same as before
+            const candidate = String(crypto.randomInt(10000, 100000)); // 5 digits
             if (!rooms[candidate]) roomId = candidate;
         }
         if (!roomId) return res.status(503).json({ message: 'Could not allocate a room, try again' });
+
+        const defaultRoomName = req.user.name ? `${req.user.name.split(' ')[0]}'s Theatre` : 'CineTheatre Room';
 
         rooms[roomId] = {
             users: {},
@@ -193,7 +179,15 @@ app.post('/api/rooms', protect, (req, res) => {
             preApprovedUsers: [],
             hostSocketId: null,
             hostUserId: asId(req.user._id),
+            hostName: req.user.name || 'Host',
+            roomName: roomName || defaultRoomName,
+            isPublic: Boolean(isPublic),
+            pin: pin ? String(pin) : null,
             reserved: true,
+            ytId: null,
+            title: null,
+            isPlaying: false,
+            timestamp: 0
         };
 
         const expiry = setTimeout(() => {
@@ -212,23 +206,43 @@ app.post('/api/rooms', protect, (req, res) => {
     }
 });
 
+app.get('/api/rooms/public', protect, (req, res) => {
+    try {
+        const publicRooms = Object.entries(rooms)
+            .filter(([id, room]) => room.isPublic && room.hostSocketId && !room.reserved)
+            .map(([id, room]) => ({
+                roomId: id,
+                roomName: room.roomName,
+                hostName: room.hostName,
+                videoTitle: room.title || 'Choosing a video...',
+                userCount: Object.keys(room.users || {}).length,
+            }));
+
+        return res.status(200).json(publicRooms);
+    } catch (err) {
+        console.error('[rooms] fetch public error:', err);
+        return res.status(500).json({ message: 'Server error' });
+    }
+});
+
 apiNamespace.on('connection', (socket) => {
 
     // ---------------------------------------------------------
-    // JOIN
+    // JOIN ROOM LOGIC
     // ---------------------------------------------------------
     socket.on('join_room', safe(async (payload = {}) => {
         const roomId = asId(payload.roomId);
         if (!roomId) return;
 
         const username = payload.username || 'Guest';
-        const uid = socket.data.authUserId || null; // from the verified token, payload.userId is ignored
+        const uid = socket.data.authUserId || null;
         let room = rooms[roomId];
 
-        // The server decides who is host, not the client.
-        //  - no room yet: a logged-in user may create it (guests cannot host)
-        //  - room exists: only the same DB user as the room's host may take the seat
-        //    (creator claiming a reserved room, or the host reconnecting from a stale socket)
+        if (room && room.cleanupTimer) {
+            clearTimeout(room.cleanupTimer);
+            room.cleanupTimer = null;
+        }
+
         let becomesHost = false;
         if (payload.isHost) {
             if (!room) {
@@ -241,7 +255,7 @@ apiNamespace.on('connection', (socket) => {
         // ----- HOST -----
         if (becomesHost) {
             if (!room) {
-                room = rooms[roomId] = { users: {}, pending: {}, blockedUsers: [], preApprovedUsers: [] };
+                room = rooms[roomId] = { users: {}, pending: {}, blockedUsers: [], preApprovedUsers: [], isPublic: false, pin: null };
             } else if (room.hostSocketId && room.hostSocketId !== socket.id) {
                 delete room.users[room.hostSocketId]; // drop the stale socket of the same host
             }
@@ -272,7 +286,7 @@ apiNamespace.on('connection', (socket) => {
             socket.join(roomId);
             socket.data.roomId = roomId;
             socket.data.username = username;
-            socket.data.userId = uid; // saved so the host can block them later
+            socket.data.userId = uid;
             socket.data.pendingRoomId = null;
 
             r.users[socket.id] = username;
@@ -295,18 +309,44 @@ apiNamespace.on('connection', (socket) => {
             if (hostSocket) hostSocket.emit('request_host_permission', r.pending[socket.id]);
         }
 
-        // Guests (no account) or a host without an account: they must knock
-        if (!uid || !asId(room.hostUserId)) return askPermission(room);
-
-        // 1. Blocked from this specific room
+        // 1. Blocked from this specific room (Takes highest priority)
         if ((room.blockedUsers || []).includes(uid)) {
             return socket.emit('entry_denied', { reason: 'You have been blocked from this specific room.' });
         }
 
-        // 2. Pre-approved (host invited them)
-        if ((room.preApprovedUsers || []).includes(uid)) return completeJoin(room);
+        // 2. Pre-approved (Host invited them OR they already entered the PIN previously)
+        if (uid && (room.preApprovedUsers || []).includes(uid)) return completeJoin(room);
 
-        // 3. Direct friend of the current host
+        // 3. Public Room Auto-Join
+        if (room.isPublic) return completeJoin(room);
+
+        // 4. Private Room with PIN Check
+        if (room.pin) {
+            const enteredPin = payload.pin; // Supplied from frontend PIN prompt
+
+            if (enteredPin === room.pin) {
+                // SUCCESS! Remember this user so they never have to type the PIN again
+                if (uid) {
+                    room.preApprovedUsers = room.preApprovedUsers || [];
+                    if (!room.preApprovedUsers.includes(uid)) {
+                        room.preApprovedUsers.push(uid);
+                    }
+                }
+                return completeJoin(room);
+
+            } else if (enteredPin) {
+                // They tried a PIN, but it was wrong
+                return socket.emit('entry_denied', { reason: 'Incorrect PIN.' });
+
+            } else {
+                // They haven't entered a PIN yet
+                return socket.emit('require_pin');
+            }
+        }
+
+        // 5. Private Room without PIN: Friends auto-join, strangers knock
+        if (!uid || !asId(room.hostUserId)) return askPermission(room);
+
         const hostUser = await User.findById(room.hostUserId);
         room = rooms[roomId]; // the room may have closed while we waited on the DB
         if (!room) return socket.emit('room_not_found');
@@ -315,7 +355,7 @@ apiNamespace.on('connection', (socket) => {
         const isFriend = (hostUser.friends || []).some((id) => String(id) === uid);
         if (isFriend) return completeJoin(room);
 
-        // 4. Friend of friend / stranger: must ask permission
+        // Friend of friend / stranger: must ask permission
         return askPermission(room);
     }));
 
@@ -327,7 +367,6 @@ apiNamespace.on('connection', (socket) => {
         const room = rooms[roomId];
         if (!room || room.hostSocketId !== socket.id) return;
 
-        // Use the server's own record of who is knocking, never the client's copy
         const pending = room.pending && room.pending[payload.joinerSocketId];
         if (!pending) return;
         delete room.pending[payload.joinerSocketId];
@@ -337,6 +376,12 @@ apiNamespace.on('connection', (socket) => {
         joinerSocket.data.pendingRoomId = null;
 
         if (payload.decision === 'ALLOW') {
+            if (pending.joinerId) {
+                room.preApprovedUsers = room.preApprovedUsers || [];
+                if (!room.preApprovedUsers.includes(pending.joinerId)) {
+                    room.preApprovedUsers.push(pending.joinerId);
+                }
+            }
             joinerSocket.join(roomId);
             joinerSocket.data.roomId = roomId;
             joinerSocket.data.username = pending.joinerName;
@@ -350,7 +395,6 @@ apiNamespace.on('connection', (socket) => {
             joinerSocket.emit('entry_denied', { reason: 'The host declined your request to join.' });
         } else if (payload.decision === 'BLOCK') {
             joinerSocket.emit('entry_denied', { reason: 'You have been blocked from this specific room.' });
-
             if (pending.joinerId) {
                 room.blockedUsers = room.blockedUsers || [];
                 if (!room.blockedUsers.includes(pending.joinerId)) room.blockedUsers.push(pending.joinerId);
@@ -366,7 +410,6 @@ apiNamespace.on('connection', (socket) => {
         const room = rooms[roomId];
         if (!room || room.hostSocketId !== socket.id || !data.ytId) return;
 
-        // Same video re-announced (e.g. host socket reconnected): keep the current time, do nothing
         if (room.ytId === data.ytId) return;
 
         room.ytId = data.ytId;
@@ -389,7 +432,7 @@ apiNamespace.on('connection', (socket) => {
     }));
 
     // ---------------------------------------------------------
-    // CHAT - only into the room this socket actually belongs to
+    // CHAT
     // ---------------------------------------------------------
     socket.on('send_chat', safe(async (data = {}) => {
         const roomId = socket.data.roomId;
@@ -398,8 +441,7 @@ apiNamespace.on('connection', (socket) => {
     }));
 
     // ---------------------------------------------------------
-    // CLOSE ROOM FOR EVERYONE - current host only
-    // (the normal "leave" path is just disconnecting, which migrates the host)
+    // CLOSE ROOM
     // ---------------------------------------------------------
     socket.on('close_room', safe(async (rawRoomId) => {
         const roomId = asId(rawRoomId) || socket.data.roomId;
@@ -411,40 +453,34 @@ apiNamespace.on('connection', (socket) => {
     }));
 
     // ---------------------------------------------------------
-    // MODERATION - current host only
+    // MODERATION
     // ---------------------------------------------------------
     socket.on('kick_user', safe(async (payload = {}) => {
         const roomId = asId(payload.roomId) || socket.data.roomId;
         const room = rooms[roomId];
         if (!room || room.hostSocketId !== socket.id) return;
+        if (!payload.targetSocketId) return;
 
-        const targetSocketId = findSocketIdByUsername(room, payload.targetUsername, socket.id);
-        if (!targetSocketId) return;
-
-        kickFromRoom(roomId, room, targetSocketId, 'You were kicked from the room by the host.');
+        kickFromRoom(roomId, room, payload.targetSocketId, 'You were kicked from the room by the host.');
     }));
 
     socket.on('kick_and_block_user', safe(async (payload = {}) => {
         const roomId = asId(payload.roomId) || socket.data.roomId;
         const room = rooms[roomId];
         if (!room || room.hostSocketId !== socket.id) return;
+        if (!payload.targetSocketId) return;
 
-        const targetSocketId = findSocketIdByUsername(room, payload.targetUsername, socket.id);
-        if (!targetSocketId) return;
-
-        const targetUserId = kickFromRoom(roomId, room, targetSocketId, 'You were blocked by the host for this room.');
+        const targetUserId = kickFromRoom(roomId, room, payload.targetSocketId, 'You were blocked by the host for this room.');
 
         if (targetUserId) {
             room.blockedUsers = room.blockedUsers || [];
             if (!room.blockedUsers.includes(targetUserId)) room.blockedUsers.push(targetUserId);
         }
     }));
-
     // ---------------------------------------------------------
     // DISCONNECT
     // ---------------------------------------------------------
     socket.on('disconnect', safe(async () => {
-        // A joiner who was still knocking gave up
         const pendingRoomId = socket.data.pendingRoomId;
         if (pendingRoomId && rooms[pendingRoomId]?.pending) {
             delete rooms[pendingRoomId].pending[socket.id];
@@ -456,14 +492,14 @@ apiNamespace.on('connection', (socket) => {
 
         delete room.users[socket.id];
 
-        if (room.hostSocketId === socket.id) {
-            // The host left: promote the next person in line, or close the room if nobody is left
-            migrateHost(roomId, room);
-        } else if (Object.keys(room.users).length === 0) {
-            destroyRoom(roomId);
-        } else {
-            emitRoomUsers(roomId);
-        }
+        room.cleanupTimer = setTimeout(() => {
+            if (!rooms[roomId]) return;
+            if (Object.keys(room.users).length === 0) {
+                destroyRoom(roomId);
+            } else if (room.hostSocketId === socket.id) {
+                migrateHost(roomId, room);
+            }
+        }, 20000);
     }));
 });
 
@@ -476,7 +512,6 @@ app.locals.globalNamespace = globalNamespace;
 app.locals.onlineUsers = onlineUsers;
 app.locals.rooms = rooms;
 
-// Export them for use in future Notification/Buddy API Routes
 module.exports.onlineUsers = onlineUsers;
 module.exports.globalNamespace = globalNamespace;
 
@@ -486,24 +521,18 @@ globalNamespace.on('connection', (socket) => {
             const uid = userId.toString();
             onlineUsers.set(uid, socket.id);
             socket.data.userId = uid;
-
-            // Broadcast to everyone that this user is online
             globalNamespace.emit('user_status', { userId: uid, isOnline: true });
         }
     });
 
     socket.on('disconnect', () => {
         const userId = socket.data.userId;
-
         if (userId && onlineUsers.get(userId) === socket.id) {
             onlineUsers.delete(userId);
-
-            // Broadcast to everyone that this user is offline
             globalNamespace.emit('user_status', { userId: userId, isOnline: false });
         }
     });
 });
-
 
 // =========================================================
 // START SERVER

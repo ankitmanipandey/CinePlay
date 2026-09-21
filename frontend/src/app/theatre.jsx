@@ -295,7 +295,6 @@ const FloatingMessage = ({ msg, onComplete }) => {
     return (
         <Animated.View style={[styles.floatingMessageContainer, { opacity, transform: [{ translateY }] }]}>
             <Text style={styles.floatingMessageSender}>{msg.sender}:</Text>
-            {/* FIX: Render image if it's a GIF, otherwise render text */}
             {msg.gifUrl ? (
                 <Image source={{ uri: msg.gifUrl }} style={{ width: 60, height: 60, borderRadius: 8, backgroundColor: '#2A2A30' }} />
             ) : (
@@ -335,6 +334,11 @@ export default function TheatreScreen() {
     const [isMuted, setIsMuted] = useState(false);
     const [isFullScreen, setIsFullScreen] = useState(false);
 
+    // ======== NEW PIN MODAL STATE ========
+    const [isPinModalVisible, setIsPinModalVisible] = useState(false);
+    const [roomPinInput, setRoomPinInput] = useState('');
+    // =====================================
+
     const ytIdRef = useRef(startWithInitial ? initialYtId : '');
     const videoTitleRef = useRef(startWithInitial ? (initialTitle || '') : '');
     useEffect(() => { ytIdRef.current = ytId; }, [ytId]);
@@ -363,7 +367,7 @@ export default function TheatreScreen() {
     const [isFetchingFriends, setIsFetchingFriends] = useState(false);
     const [selectedFriends, setSelectedFriends] = useState([]);
     const [isWaitingForHost, setIsWaitingForHost] = useState(false);
-    const [pendingJoinRequest, setPendingJoinRequest] = useState(null);
+    const [pendingRequests, setPendingRequests] = useState([]);
 
     const [showFloatingEmojis, setShowFloatingEmojis] = useState(true);
     const [activeReactions, setActiveReactions] = useState([]);
@@ -412,7 +416,6 @@ export default function TheatreScreen() {
         }
     };
 
-    // Fetch trending GIFs when the picker opens
     useEffect(() => {
         if (isGifPickerVisible) {
             fetchGiphy();
@@ -565,6 +568,13 @@ export default function TheatreScreen() {
             }
         });
 
+        // ======== NEW: LISTEN FOR PIN REQUIREMENT ========
+        newSocket.on('require_pin', () => {
+            setIsJoining(false);
+            setIsPinModalVisible(true);
+        });
+        // =================================================
+
         newSocket.on('room_users', (userList) => {
             setIsJoining(false);
             setRoomUsers(userList);
@@ -629,7 +639,9 @@ export default function TheatreScreen() {
         });
 
         newSocket.on('request_host_permission', (data) => {
-            if (isHostRef.current) setPendingJoinRequest(data);
+            if (isHostRef.current) {
+                setPendingRequests(prev => [...prev, data]);
+            }
         });
 
         newSocket.on('remote_sync', (data) => {
@@ -660,7 +672,6 @@ export default function TheatreScreen() {
                 const newReaction = { id: Date.now().toString() + Math.random(), emoji: data.text, sender: data.sender };
                 setActiveReactions(prev => [...prev, newReaction]);
             } else {
-                // FIX: Add gifUrl to the floating message payload
                 const newFloatMsg = { id: data.id, sender: data.sender, text: data.text, gifUrl: data.gifUrl };
                 setActiveFloatingMessages(prev => [...prev, newFloatMsg]);
             }
@@ -750,13 +761,13 @@ export default function TheatreScreen() {
             roomId,
             sender: username,
             text: '',
-            gifUrl: gifUrl, // Add gifUrl to payload
+            gifUrl: gifUrl,
             isReaction: false
         };
 
         setMessages(prev => [...prev, msgData]);
         socket.emit('send_chat', msgData);
-        setIsGifPickerVisible(false); // Close modal after sending
+        setIsGifPickerVisible(false);
         setGifSearchQuery('');
     };
 
@@ -821,8 +832,7 @@ export default function TheatreScreen() {
         setVideoTitle(selectedTitle);
         setIsPlaying(true);
         socket.emit('change_video', { roomId, ytId: selectedYtId, title: selectedTitle });
-        setSearchResults([]);
-        setSearchInput('');
+        Keyboard.dismiss();
     };
 
     const handleSeasonChange = (seasonNum) => {
@@ -863,24 +873,41 @@ export default function TheatreScreen() {
         else router.back();
     };
 
-    const handleHostDecision = (decision) => {
-        if (!pendingJoinRequest) return;
-        socket.emit('host_decision', { ...pendingJoinRequest, decision, roomId, hostUserId: user?._id });
-        setPendingJoinRequest(null);
+    // ======== NEW PIN SUBMIT HANDLER ========
+    const handlePinSubmit = () => {
+        if (!roomPinInput) {
+            Toast.show({ type: 'hotstarError', text1: 'PIN is required' });
+            return;
+        }
+        setIsPinModalVisible(false);
+        setIsJoining(true);
+
+        socket.emit('join_room', {
+            roomId,
+            username,
+            isHost: isHostRef.current,
+            pin: roomPinInput
+        });
+    };
+    // ========================================
+
+    const handleHostDecision = (decision, request) => {
+        socket.emit('host_decision', { ...request, decision, roomId, hostUserId: user?._id });
+        setPendingRequests(prev => prev.filter(req => req.joinerSocketId !== request.joinerSocketId));
     };
 
     const handleKick = () => {
         if (!selectedUserToMod) return;
-        socket.emit('kick_user', { roomId, targetUsername: selectedUserToMod });
+        socket.emit('kick_user', { roomId, targetSocketId: selectedUserToMod.socketId });
+        Toast.show({ type: 'hotstarSuccess', text1: `${selectedUserToMod.username} was kicked.` });
         setSelectedUserToMod(null);
-        Toast.show({ type: 'hotstarSuccess', text1: `${selectedUserToMod} was kicked.` });
     };
 
     const handleKickAndBlock = () => {
         if (!selectedUserToMod) return;
-        socket.emit('kick_and_block_user', { roomId, targetUsername: selectedUserToMod, hostUserId: user?._id });
+        socket.emit('kick_and_block_user', { roomId, targetSocketId: selectedUserToMod.socketId, hostUserId: user?._id });
+        Toast.show({ type: 'hotstarSuccess', text1: `${selectedUserToMod.username} was blocked.` });
         setSelectedUserToMod(null);
-        Toast.show({ type: 'hotstarSuccess', text1: `${selectedUserToMod} was blocked.` });
     };
 
     const openShareModal = async () => {
@@ -949,24 +976,21 @@ export default function TheatreScreen() {
         }
 
         const isMe = item.sender === username;
-        const hasGif = !!item.gifUrl; // Check if message is a GIF
+        const hasGif = !!item.gifUrl;
 
         return (
             <View style={[styles.chatMsgWrapper, isMe ? styles.chatMsgRight : styles.chatMsgLeft]}>
                 {!isMe && <Text style={styles.chatSenderName}>{item.sender}</Text>}
 
                 {hasGif ? (
-                    // GIF RENDERER
                     <View style={[styles.chatBubble, isMe ? styles.chatBubbleMe : styles.chatBubbleThem, { paddingHorizontal: 4, paddingVertical: 4, backgroundColor: 'transparent' }]}>
                         <Image source={{ uri: item.gifUrl }} style={{ width: 160, height: 160, borderRadius: 12, backgroundColor: '#2A2A30' }} resizeMode="cover" />
                     </View>
                 ) : isMe ? (
-                    // TEXT RENDERER (ME)
                     <LinearGradient colors={['#00E5FF', '#9B51E0', '#FF007A']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={[styles.chatBubble, styles.chatBubbleMe]}>
                         <Text style={styles.chatText}>{item.text}</Text>
                     </LinearGradient>
                 ) : (
-                    // TEXT RENDERER (THEM)
                     <View style={[styles.chatBubble, styles.chatBubbleThem]}><Text style={styles.chatText}>{item.text}</Text></View>
                 )}
             </View>
@@ -1267,7 +1291,7 @@ export default function TheatreScreen() {
                                 onSend={sendChatText}
                                 onClose={closeChatPanel}
                                 width={panelWidth}
-                                onSendGif={sendGif}  
+                                onSendGif={sendGif}
                                 height={containerHeight}
                                 isKeyboardVisible={isKeyboardVisible}
                             />
@@ -1375,17 +1399,17 @@ export default function TheatreScreen() {
                                     contentContainerStyle={styles.viewersScroll}
                                     bounces={true}
                                 >
-                                    {roomUsers.map((uname, idx) => {
-                                        if (uname === username) return null;
+                                    {roomUsers.map((u, idx) => {
+                                        if (u.username === username) return null;
                                         return (
                                             <TouchableOpacity
                                                 key={idx}
                                                 style={styles.viewerChip}
                                                 activeOpacity={0.7}
-                                                onPress={() => setSelectedUserToMod(uname)}
+                                                onPress={() => setSelectedUserToMod(u)}
                                             >
                                                 <Ionicons name="person" size={12} color="#00E5FF" />
-                                                <Text style={styles.viewerChipText}>{uname}</Text>
+                                                <Text style={styles.viewerChipText}>{u.username}</Text>
                                             </TouchableOpacity>
                                         );
                                     })}
@@ -1490,7 +1514,6 @@ export default function TheatreScreen() {
                                     ListEmptyComponent={<Text style={styles.emptyChatText}>No messages yet. Say hello!</Text>}
                                 />
                                 <View style={styles.chatInputRow}>
-                                    {/* NEW GIF BUTTON */}
                                     <TouchableOpacity onPress={() => setIsGifPickerVisible(true)} style={styles.gifToggleBtn}>
                                         <View style={styles.gifIconWrapper}>
                                             <Text style={styles.gifIconText}>GIF</Text>
@@ -1559,18 +1582,18 @@ export default function TheatreScreen() {
                 </View>
             </Modal>
 
-            <Modal visible={!!pendingJoinRequest} transparent={true} animationType="fade">
+            <Modal visible={pendingRequests.length > 0} transparent={true} animationType="fade">
                 <View style={styles.modalOverlayCenter}>
                     <View style={styles.permissionModal}>
                         <Ionicons name="shield-checkmark" size={40} color="#00E5FF" style={{ alignSelf: 'center', marginBottom: 12 }} />
                         <Text style={styles.permissionTitle}>Someone wants to join</Text>
                         <Text style={styles.permissionDesc}>
-                            <Text style={{ fontWeight: 'bold', color: '#FFF' }}>{pendingJoinRequest?.joinerName}</Text> is asking to enter your room.
+                            <Text style={{ fontWeight: 'bold', color: '#FFF' }}>{pendingRequests[0]?.joinerName}</Text> is asking to enter your room.
                         </Text>
                         <View style={styles.permissionActions}>
-                            <TouchableOpacity style={[styles.permBtn, { backgroundColor: '#00E5FF' }]} onPress={() => handleHostDecision('ALLOW')}><Text style={[styles.permBtnText, { color: '#000' }]}>Allow</Text></TouchableOpacity>
-                            <TouchableOpacity style={[styles.permBtn, { backgroundColor: 'rgba(255,255,255,0.1)' }]} onPress={() => handleHostDecision('REJECT')}><Text style={styles.permBtnText}>Decline</Text></TouchableOpacity>
-                            <TouchableOpacity style={[styles.permBtn, { backgroundColor: 'rgba(229, 57, 53, 0.15)' }]} onPress={() => handleHostDecision('BLOCK')}><Text style={[styles.permBtnText, { color: '#E53935' }]}>Block</Text></TouchableOpacity>
+                            <TouchableOpacity style={[styles.permBtn, { backgroundColor: '#00E5FF' }]} onPress={() => handleHostDecision('ALLOW', pendingRequests[0])}><Text style={[styles.permBtnText, { color: '#000' }]}>Allow</Text></TouchableOpacity>
+                            <TouchableOpacity style={[styles.permBtn, { backgroundColor: 'rgba(255,255,255,0.1)' }]} onPress={() => handleHostDecision('REJECT', pendingRequests[0])}><Text style={styles.permBtnText}>Decline</Text></TouchableOpacity>
+                            <TouchableOpacity style={[styles.permBtn, { backgroundColor: 'rgba(229, 57, 53, 0.15)' }]} onPress={() => handleHostDecision('BLOCK', pendingRequests[0])}><Text style={[styles.permBtnText, { color: '#E53935' }]}>Block</Text></TouchableOpacity>
                         </View>
                     </View>
                 </View>
@@ -1590,6 +1613,7 @@ export default function TheatreScreen() {
                     </View>
                 </View>
             </Modal>
+
             {/* GIPHY PICKER MODAL */}
             <Modal visible={isGifPickerVisible} transparent={true} animationType="slide" onRequestClose={() => setIsGifPickerVisible(false)}>
                 <View style={styles.modalOverlay}>
@@ -1601,7 +1625,6 @@ export default function TheatreScreen() {
                             </TouchableOpacity>
                         </View>
 
-                        {/* Giphy Search Bar */}
                         <View style={styles.gifSearchRow}>
                             <Ionicons name="search" size={20} color="#8F98A0" style={{ marginLeft: 12 }} />
                             <TextInput
@@ -1611,7 +1634,6 @@ export default function TheatreScreen() {
                                 value={gifSearchQuery}
                                 onChangeText={(text) => {
                                     setGifSearchQuery(text);
-                                    // Debounce logic could be added here, but for now we search on submit or empty
                                     if (text === '') fetchGiphy('');
                                 }}
                                 onSubmitEditing={() => fetchGiphy(gifSearchQuery)}
@@ -1619,7 +1641,6 @@ export default function TheatreScreen() {
                             />
                         </View>
 
-                        {/* Giphy Results Grid */}
                         {isFetchingGifs ? (
                             <ActivityIndicator size="large" color="#00E5FF" style={{ marginTop: 40 }} />
                         ) : (
@@ -1644,6 +1665,38 @@ export default function TheatreScreen() {
                     </View>
                 </View>
             </Modal>
+
+            {/* NEW PIN REQUIRED MODAL */}
+            <Modal visible={isPinModalVisible} transparent={true} animationType="fade">
+                <KeyboardAvoidingView style={styles.modalOverlayCenter} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+                    <View style={styles.permissionModal}>
+                        <Ionicons name="lock-closed" size={40} color="#00E5FF" style={{ alignSelf: 'center', marginBottom: 12 }} />
+                        <Text style={styles.permissionTitle}>Private Room</Text>
+                        <Text style={styles.permissionDesc}>This theatre is protected. Please enter the PIN.</Text>
+
+                        <TextInput
+                            style={{ backgroundColor: '#0A0A0C', color: '#FFF', borderRadius: 10, height: 50, fontSize: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)', marginBottom: 20, textAlign: 'center', letterSpacing: 4 }}
+                            placeholder="****"
+                            placeholderTextColor="#8F98A0"
+                            keyboardType="numeric"
+                            maxLength={4}
+                            secureTextEntry
+                            value={roomPinInput}
+                            onChangeText={setRoomPinInput}
+                        />
+
+                        <View style={styles.permissionActions}>
+                            <TouchableOpacity style={[styles.permBtn, { backgroundColor: '#00E5FF' }]} onPress={handlePinSubmit}>
+                                <Text style={[styles.permBtnText, { color: '#000' }]}>Submit PIN</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity style={[styles.permBtn, { backgroundColor: 'rgba(255,255,255,0.1)', marginTop: 8 }]} onPress={handleBackPress}>
+                                <Text style={styles.permBtnText}>Cancel</Text>
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+                </KeyboardAvoidingView>
+            </Modal>
+
         </SafeAreaView>
     );
 }
@@ -1902,6 +1955,6 @@ const styles = StyleSheet.create({
         height: 44,
         color: '#FFF',
         paddingHorizontal: 10,
-        fontSize: 15, 
+        fontSize: 15,
     },
 });
