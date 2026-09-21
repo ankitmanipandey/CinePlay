@@ -63,6 +63,26 @@ Notifications.setNotificationHandler({
   }),
 });
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Fetching the Expo push token needs a connection to exp.host. If the network blocks it,
+// retry a few times and then give up quietly (null) instead of throwing an uncaught error.
+async function getExpoPushTokenWithRetry(projectId, retries = 3) {
+  if (!projectId) {
+    console.warn('Push token skipped: no EAS projectId found');
+    return null;
+  }
+  for (let i = 0; i < retries; i++) {
+    try {
+      return (await Notifications.getExpoPushTokenAsync({ projectId })).data;
+    } catch (e) {
+      console.warn(`Push token attempt ${i + 1}/${retries} failed:`, e?.message);
+      if (i < retries - 1) await sleep(2000 * (i + 1));
+    }
+  }
+  return null;
+}
+
 async function registerForPushNotificationsAsync() {
   let token;
 
@@ -111,7 +131,7 @@ async function registerForPushNotificationsAsync() {
     }
 
     const projectId = Constants.expoConfig?.extra?.eas?.projectId ?? Constants.easConfig?.projectId;
-    token = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
+    token = await getExpoPushTokenWithRetry(projectId);
   }
 
   return token;
@@ -243,16 +263,18 @@ export default function RootLayout() {
         .catch(err => { });
 
       const timer = setTimeout(() => {
-        registerForPushNotificationsAsync().then(async (pushToken) => {
-          if (pushToken) {
-            try {
-              await axios.put(`${process.env.EXPO_PUBLIC_API_URL}/user/push-token`,
-                { token: pushToken },
-                { headers: { Authorization: `Bearer ${token}` } }
-              );
-            } catch (err) { }
-          }
-        });
+        registerForPushNotificationsAsync()
+          .then(async (pushToken) => {
+            if (pushToken) {
+              try {
+                await axios.put(`${process.env.EXPO_PUBLIC_API_URL}/user/push-token`,
+                  { token: pushToken },
+                  { headers: { Authorization: `Bearer ${token}` } }
+                );
+              } catch (err) { }
+            }
+          })
+          .catch((e) => console.warn('Push registration failed:', e?.message));
       }, 1500);
 
       return () => clearTimeout(timer);

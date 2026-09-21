@@ -17,7 +17,8 @@ import {
     Modal,
     BackHandler,
     Animated,
-    PanResponder
+    PanResponder,
+    Easing
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -30,12 +31,18 @@ import axios from 'axios';
 import { WebView } from 'react-native-webview';
 
 import TheatrePlayer from '../screens/TheatrePlayer';
+import { QuickChatButton, TheatreChatPanel } from '../components/home/TheatreChatUI';
 import { useAuthStore } from '../store/useAuthStore';
 import { tmdbService } from '../services/tmdbService';
 import { getImageUrl } from '../constants/config';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL;
 const SOCKET_URL = BACKEND_URL;
+
+const CHAT_PANEL_RATIO = 0.5;
+const OVERLAY_FADE_IN_MS = 200;
+const OVERLAY_FADE_OUT_MS = 300;
+const VIDLINK_OVERLAY_HIDE_MS = 4000;
 
 const RAW_KEYS = process.env.EXPO_PUBLIC_YOUTUBE_API_KEYS || process.env.EXPO_PUBLIC_YOUTUBE_API_KEY || '';
 let ACTIVE_YT_KEYS = RAW_KEYS.split(',').map(k => k.trim()).filter(Boolean);
@@ -93,7 +100,6 @@ const adBlockScript = `
     })();
 `;
 
-
 const EMOJIS = ['😂', '🔥', '😱', '😍', '👏', '😢'];
 
 const ReactionButtonUI = ({ isFullScreen, showFloatingEmojis, toggleDistractionFree, sendReaction, extendOverlayTimer }) => {
@@ -116,6 +122,7 @@ const ReactionButtonUI = ({ isFullScreen, showFloatingEmojis, toggleDistractionF
             onStartShouldSetPanResponder: () => true,
             onMoveShouldSetPanResponder: () => true,
             onPanResponderGrant: () => {
+                if (extendOverlayTimer) extendOverlayTimer();
                 isDraggingRef.current = false;
                 setHover(-1);
                 timerRef.current = setTimeout(() => {
@@ -212,132 +219,13 @@ const ReactionButtonUI = ({ isFullScreen, showFloatingEmojis, toggleDistractionF
     );
 };
 
-const QUICK_CHATS = [
-    "I am Iron Man 🤖",
-    "Why so serious? 🤡",
-    "I'll be back 🕶️",
-    "May the Force be with you ⚔️",
-    "Avengers, assemble! 🛡️"
-];
-
-const QuickChatButtonUI = ({ showFloatingMessages, toggleFloatingMessages, sendQuickMessage, extendOverlayTimer }) => {
-    const [pickerVisible, setPickerVisible] = useState(false);
-    const [uiHoveredIndex, setUIHoveredIndex] = useState(-1);
-
-    const timerRef = useRef(null);
-    const isDraggingRef = useRef(false);
-    const hoveredIndexRef = useRef(-1);
-
-    const setHover = (idx) => {
-        if (hoveredIndexRef.current !== idx) {
-            hoveredIndexRef.current = idx;
-            setUIHoveredIndex(idx);
-        }
-    };
-
-    const panResponder = useRef(
-        PanResponder.create({
-            onStartShouldSetPanResponder: () => true,
-            onMoveShouldSetPanResponder: () => true,
-            onPanResponderGrant: () => {
-                isDraggingRef.current = false;
-                setHover(-1);
-                timerRef.current = setTimeout(() => {
-                    if (showFloatingMessages) {
-                        isDraggingRef.current = true;
-                        setPickerVisible(true);
-                        if (extendOverlayTimer) extendOverlayTimer();
-                    }
-                }, 250);
-            },
-            onPanResponderMove: (evt, gestureState) => {
-                if (!isDraggingRef.current) {
-                    if (Math.abs(gestureState.dx) > 10 || Math.abs(gestureState.dy) > 10) {
-                        clearTimeout(timerRef.current);
-                    }
-                    return;
-                }
-
-                const { dx, dy } = gestureState;
-                let index = -1;
-                const ITEM_HEIGHT = 44;
-
-                // Cancel if the user swipes too far left or right off the menu
-                if (Math.abs(dx) > 150) { setHover(-1); return; }
-
-                let absDy = Math.abs(dy);
-                // Swipe UP calculation (stacking vertically)
-                if (dy < 0 && absDy > 45 && absDy < 45 + QUICK_CHATS.length * ITEM_HEIGHT) {
-                    index = Math.floor((absDy - 45) / ITEM_HEIGHT);
-                }
-
-                setHover(index);
-            },
-            onPanResponderRelease: () => {
-                clearTimeout(timerRef.current);
-                if (!isDraggingRef.current) {
-                    toggleFloatingMessages();
-                } else {
-                    if (hoveredIndexRef.current !== -1) {
-                        sendQuickMessage(QUICK_CHATS[hoveredIndexRef.current]);
-                    }
-                    setPickerVisible(false);
-                    setHover(-1);
-                    isDraggingRef.current = false;
-                }
-
-                if (extendOverlayTimer) extendOverlayTimer();
-            },
-            onPanResponderTerminate: () => {
-                clearTimeout(timerRef.current);
-                setPickerVisible(false);
-                setHover(-1);
-                isDraggingRef.current = false;
-            }
-        })
-    ).current;
-
-    const MainBtn = (
-        <View {...panResponder.panHandlers} style={[styles.reactionMainBtn, { marginBottom: 12 }]}>
-            <Ionicons
-                name={showFloatingMessages ? "chatbubble" : "chatbubble-outline"}
-                size={22}
-                color={showFloatingMessages ? "#FFFFFF" : "#E53935"}
-            />
-        </View>
-    );
-
-    const PickerMenu = (
-        <View style={styles.quickChatPickerMenu}>
-            {QUICK_CHATS.map((msg, idx) => {
-                const isHovered = uiHoveredIndex === idx;
-                return (
-                    <View key={msg} style={[styles.quickChatOption, isHovered && styles.quickChatOptionHovered]}>
-                        <Text style={[styles.quickChatOptionText, isHovered && styles.quickChatOptionTextHovered]}>
-                            {msg}
-                        </Text>
-                    </View>
-                );
-            })}
-        </View>
-    );
-
-    return (
-        <View style={{ pointerEvents: 'box-none', flexDirection: 'column-reverse', alignItems: 'flex-end' }}>
-            {MainBtn}
-            {pickerVisible && PickerMenu}
-        </View>
-    );
-};
-
-
 const FloatingEmoji = ({ emoji, sender, onComplete }) => {
     const animValue = useRef(new Animated.Value(0)).current;
 
     useEffect(() => {
         Animated.timing(animValue, {
             toValue: 1,
-            duration: 2500, // Floats for 2.5 seconds
+            duration: 2500,
             useNativeDriver: true,
         }).start(() => {
             if (onComplete) onComplete();
@@ -346,11 +234,11 @@ const FloatingEmoji = ({ emoji, sender, onComplete }) => {
 
     const translateY = animValue.interpolate({
         inputRange: [0, 1],
-        outputRange: [0, -150], // Moves up 150 pixels
+        outputRange: [0, -150],
     });
     const opacity = animValue.interpolate({
         inputRange: [0, 0.7, 1],
-        outputRange: [1, 1, 0], // Fades out at the end
+        outputRange: [1, 1, 0],
     });
 
     return (
@@ -360,7 +248,6 @@ const FloatingEmoji = ({ emoji, sender, onComplete }) => {
         </Animated.View>
     );
 };
-
 
 const fetchYouTubeWithRetry = async (urlTemplate) => {
     if (ACTIVE_YT_KEYS.length === 0) {
@@ -375,7 +262,6 @@ const fetchYouTubeWithRetry = async (urlTemplate) => {
             if (!data.error) return data;
 
             lastError = data;
-            // Only try the next key on quota/permission errors
             if (res.status !== 403) break;
         } catch (e) {
             lastError = { error: { message: 'Network error' } };
@@ -390,7 +276,7 @@ const FloatingMessage = ({ msg, onComplete }) => {
     useEffect(() => {
         Animated.timing(animValue, {
             toValue: 1,
-            duration: 4000, // Chat floats for 4 seconds
+            duration: 4000,
             useNativeDriver: true,
         }).start(() => {
             if (onComplete) onComplete();
@@ -399,17 +285,22 @@ const FloatingMessage = ({ msg, onComplete }) => {
 
     const translateY = animValue.interpolate({
         inputRange: [0, 1],
-        outputRange: [0, -100], // Moves up 100 pixels
+        outputRange: [0, -100],
     });
     const opacity = animValue.interpolate({
         inputRange: [0, 0.8, 1],
-        outputRange: [1, 1, 0], // Fades out at the end
+        outputRange: [1, 1, 0],
     });
 
     return (
         <Animated.View style={[styles.floatingMessageContainer, { opacity, transform: [{ translateY }] }]}>
             <Text style={styles.floatingMessageSender}>{msg.sender}:</Text>
-            <Text style={styles.floatingMessageText}>{msg.text}</Text>
+            {/* FIX: Render image if it's a GIF, otherwise render text */}
+            {msg.gifUrl ? (
+                <Image source={{ uri: msg.gifUrl }} style={{ width: 60, height: 60, borderRadius: 8, backgroundColor: '#2A2A30' }} />
+            ) : (
+                <Text style={styles.floatingMessageText}>{msg.text}</Text>
+            )}
         </Animated.View>
     );
 };
@@ -418,7 +309,6 @@ export default function TheatreScreen() {
     const router = useRouter();
     const { width, height } = useWindowDimensions();
 
-    // expo-router can hand params back as string | string[]
     const params = useLocalSearchParams();
     const firstParam = (v) => (Array.isArray(v) ? v[0] : v);
     const roomId = firstParam(params.roomId);
@@ -427,8 +317,6 @@ export default function TheatreScreen() {
     const initialTitle = firstParam(params.initialTitle);
     const startWithInitial = isHost === 'true' && !!initialYtId;
 
-    // Host status lives in state (drives the UI) AND in a ref (read by socket handlers),
-    // so becoming host never tears the socket down.
     const [isHostLocal, setIsHostLocal] = useState(isHost === 'true');
     const isHostRef = useRef(isHost === 'true');
     useEffect(() => { isHostRef.current = isHostLocal; }, [isHostLocal]);
@@ -441,14 +329,12 @@ export default function TheatreScreen() {
 
     const [socket, setSocket] = useState(null);
 
-    // The host starts with the video from the route params, no waiting for the socket
     const [ytId, setYtId] = useState(startWithInitial ? initialYtId : '');
     const [videoTitle, setVideoTitle] = useState(startWithInitial ? (initialTitle || '') : '');
     const [isPlaying, setIsPlaying] = useState(startWithInitial);
     const [isMuted, setIsMuted] = useState(false);
     const [isFullScreen, setIsFullScreen] = useState(false);
 
-    // Latest video info for the socket 'connect' handler (so a reconnect re-announces the CURRENT video)
     const ytIdRef = useRef(startWithInitial ? initialYtId : '');
     const videoTitleRef = useRef(startWithInitial ? (initialTitle || '') : '');
     useEffect(() => { ytIdRef.current = ytId; }, [ytId]);
@@ -499,16 +385,57 @@ export default function TheatreScreen() {
     const vidLinkSeason = vidLinkParts[3] ? parseInt(vidLinkParts[3], 10) : 1;
     const vidLinkEpisode = vidLinkParts[4] ? parseInt(vidLinkParts[4], 10) : 1;
 
+    const overlayTouchRef = useRef(false);
+    const overlayAnim = useRef(new Animated.Value(1)).current;
     const vidLinkOverlayTimer = useRef(null);
 
+    // --- NEW GIPHY STATES ---
+    const [isGifPickerVisible, setIsGifPickerVisible] = useState(false);
+    const [gifSearchQuery, setGifSearchQuery] = useState('');
+    const [gifs, setGifs] = useState([]);
+    const [isFetchingGifs, setIsFetchingGifs] = useState(false);
+
+    const fetchGiphy = async (query = '') => {
+        setIsFetchingGifs(true);
+        const GIPHY_KEY = process.env.EXPO_PUBLIC_GIPHY_API_KEY;
+        const url = query.trim()
+            ? `https://api.giphy.com/v1/gifs/search?api_key=${GIPHY_KEY}&q=${encodeURIComponent(query)}&limit=20&rating=pg-13`
+            : `https://api.giphy.com/v1/gifs/trending?api_key=${GIPHY_KEY}&limit=20&rating=pg-13`;
+
+        try {
+            const response = await axios.get(url);
+            setGifs(response.data.data);
+        } catch (error) {
+            Toast.show({ type: 'hotstarError', text1: 'Failed to load GIFs' });
+        } finally {
+            setIsFetchingGifs(false);
+        }
+    };
+
+    // Fetch trending GIFs when the picker opens
+    useEffect(() => {
+        if (isGifPickerVisible) {
+            fetchGiphy();
+        }
+    }, [isGifPickerVisible]);
+
     const wakeVidLinkOverlay = useCallback(() => {
-        if (!isVidLink) return;
+        if (!isVidLinkRef.current) return;
         setOverlayVisible(true);
+        Animated.timing(overlayAnim, { toValue: 1, duration: OVERLAY_FADE_IN_MS, useNativeDriver: true }).start();
         if (vidLinkOverlayTimer.current) clearTimeout(vidLinkOverlayTimer.current);
         vidLinkOverlayTimer.current = setTimeout(() => {
-            setOverlayVisible(false);
-        }, 4000);
-    }, [isVidLink]);
+            Animated.timing(overlayAnim, { toValue: 0, duration: OVERLAY_FADE_OUT_MS, useNativeDriver: true }).start(({ finished }) => {
+                if (finished) setOverlayVisible(false);
+            });
+        }, VIDLINK_OVERLAY_HIDE_MS);
+    }, [overlayAnim]);
+
+    const extendOverlay = useCallback(() => {
+        overlayTouchRef.current = true;
+        if (isVidLinkRef.current) wakeVidLinkOverlay();
+        else playerRef.current?.extendControls?.();
+    }, [wakeVidLinkOverlay]);
 
     const handleVidLinkPlayerEvent = useCallback((eventData) => {
         if (!eventData) return;
@@ -534,7 +461,6 @@ export default function TheatreScreen() {
         }
     }, [socket, roomId]);
 
-    // Bulletproof HTML5 video tag syncing
     const applyVidLinkRemoteSync = useCallback((data) => {
         if (!webViewRef.current) return;
         const t = typeof data.timestamp === 'number' ? data.timestamp : 0;
@@ -575,6 +501,7 @@ export default function TheatreScreen() {
             if (isVidLink) {
                 wakeVidLinkOverlay();
             } else {
+                overlayAnim.setValue(1);
                 setOverlayVisible(true);
             }
         }
@@ -617,23 +544,18 @@ export default function TheatreScreen() {
         return () => backHandler.remove();
     }, [isFullScreen, roomId]);
 
-    // Socket connection: created ONCE per room/login. Host status is read through isHostRef,
-    // so promotion / demotion never recreates the socket.
     useEffect(() => {
         const assignedUsername = user?.name ? user.name : `Guest-${Math.floor(1000 + Math.random() * 9000)}`;
         setUsername(assignedUsername);
 
         ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
 
-        // The server identifies you from this token, not from anything in the payload
         const newSocket = io(SOCKET_URL, { auth: { token } });
         setSocket(newSocket);
 
         newSocket.on('connect', () => {
             newSocket.emit('join_room', { roomId, username: assignedUsername, isHost: isHostRef.current });
 
-            // The video is already in state (from the route params), so just (re)announce whatever
-            // is loaded right now. Using refs means a reconnect never rewinds the room to the first video.
             if (isHostRef.current && ytIdRef.current) {
                 newSocket.emit('change_video', {
                     roomId,
@@ -648,7 +570,6 @@ export default function TheatreScreen() {
             setRoomUsers(userList);
         });
 
-        // The server tells us our role after every join, so the UI can never drift from it
         newSocket.on('role_assigned', ({ isHost: assignedHost }) => {
             const nowHost = !!assignedHost;
             if (isHostRef.current === nowHost) return;
@@ -663,7 +584,6 @@ export default function TheatreScreen() {
             isHostRef.current = true;
             setIsHostLocal(true);
             setIsMuted(false);
-            // Promote the WebView in place: no reload, so the movie keeps playing from the same second
             webViewRef.current?.injectJavaScript('window.__promoteToHost && window.__promoteToHost(); true;');
             Toast.show({
                 type: 'hotstarSuccess',
@@ -740,7 +660,8 @@ export default function TheatreScreen() {
                 const newReaction = { id: Date.now().toString() + Math.random(), emoji: data.text, sender: data.sender };
                 setActiveReactions(prev => [...prev, newReaction]);
             } else {
-                const newFloatMsg = { id: data.id, sender: data.sender, text: data.text };
+                // FIX: Add gifUrl to the floating message payload
+                const newFloatMsg = { id: data.id, sender: data.sender, text: data.text, gifUrl: data.gifUrl };
                 setActiveFloatingMessages(prev => [...prev, newFloatMsg]);
             }
             setMessages(prev => [...prev, data]);
@@ -813,21 +734,66 @@ export default function TheatreScreen() {
         }
     };
 
+    const sendChatText = (raw) => {
+        const text = (raw || '').trim();
+        if (!text || !socket) return;
+        const msgData = { id: Date.now().toString(), roomId, sender: username, text, isReaction: false };
+        setMessages(prev => [...prev, msgData]);
+        setActiveFloatingMessages(prev => [...prev, { id: msgData.id, sender: username, text }]);
+        socket.emit('send_chat', msgData);
+    };
+
+    const sendGif = (gifUrl) => {
+        if (!socket) return;
+        const msgData = {
+            id: Date.now().toString(),
+            roomId,
+            sender: username,
+            text: '',
+            gifUrl: gifUrl, // Add gifUrl to payload
+            isReaction: false
+        };
+
+        setMessages(prev => [...prev, msgData]);
+        socket.emit('send_chat', msgData);
+        setIsGifPickerVisible(false); // Close modal after sending
+        setGifSearchQuery('');
+    };
+
     const handleSendMessage = () => {
         if (!chatInput.trim()) return;
-        const msgData = { id: Date.now().toString(), roomId, sender: username, text: chatInput.trim(), isReaction: false };
-        setMessages(prev => [...prev, msgData]);
-        setActiveFloatingMessages(prev => [...prev, { id: msgData.id, sender: username, text: msgData.text }]);
-        socket.emit('send_chat', msgData);
+        sendChatText(chatInput);
         setChatInput('');
     };
 
-    const sendQuickMessage = (text) => {
-        const msgData = { id: Date.now().toString(), roomId, sender: username, text: text, isReaction: false };
-        setMessages(prev => [...prev, msgData]);
-        setActiveFloatingMessages(prev => [...prev, { id: msgData.id, sender: username, text: msgData.text }]);
-        socket.emit('send_chat', msgData);
+    const [chatPanelRendered, setChatPanelRendered] = useState(false);
+    const chatAnim = useRef(new Animated.Value(0)).current;
+
+    const openChatPanel = () => {
+        setActiveFloatingMessages([]);
+        setChatPanelRendered(true);
+        Animated.timing(chatAnim, {
+            toValue: 1,
+            duration: 350,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: true
+        }).start();
     };
+
+    const closeChatPanel = () => {
+        Keyboard.dismiss();
+        setActiveFloatingMessages([]);
+        Animated.timing(chatAnim, {
+            toValue: 0,
+            duration: 300,
+            easing: Easing.in(Easing.cubic),
+            useNativeDriver: true
+        }).start(() => {
+            setChatPanelRendered(false);
+        });
+    };
+
+    const handleChatButtonTap = () => setShowFloatingMessages(prev => !prev);
 
     const handleSearch = async () => {
         if (!searchInput.trim()) return;
@@ -881,6 +847,9 @@ export default function TheatreScreen() {
 
     const toggleFullScreen = async () => {
         if (isFullScreen) {
+            Keyboard.dismiss();
+            setChatPanelRendered(false);
+            chatAnim.setValue(0);
             await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
             setIsFullScreen(false);
         } else {
@@ -891,11 +860,7 @@ export default function TheatreScreen() {
 
     const handleBackPress = async () => {
         if (isFullScreen) await toggleFullScreen();
-        else {
-            // No manual close_room here: leaving unmounts the screen, the socket disconnects, and the
-            // server hands the host seat to the next person (or closes the room if nobody is left).
-            router.back();
-        }
+        else router.back();
     };
 
     const handleHostDecision = (decision) => {
@@ -984,14 +949,24 @@ export default function TheatreScreen() {
         }
 
         const isMe = item.sender === username;
+        const hasGif = !!item.gifUrl; // Check if message is a GIF
+
         return (
             <View style={[styles.chatMsgWrapper, isMe ? styles.chatMsgRight : styles.chatMsgLeft]}>
                 {!isMe && <Text style={styles.chatSenderName}>{item.sender}</Text>}
-                {isMe ? (
+
+                {hasGif ? (
+                    // GIF RENDERER
+                    <View style={[styles.chatBubble, isMe ? styles.chatBubbleMe : styles.chatBubbleThem, { paddingHorizontal: 4, paddingVertical: 4, backgroundColor: 'transparent' }]}>
+                        <Image source={{ uri: item.gifUrl }} style={{ width: 160, height: 160, borderRadius: 12, backgroundColor: '#2A2A30' }} resizeMode="cover" />
+                    </View>
+                ) : isMe ? (
+                    // TEXT RENDERER (ME)
                     <LinearGradient colors={['#00E5FF', '#9B51E0', '#FF007A']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={[styles.chatBubble, styles.chatBubbleMe]}>
                         <Text style={styles.chatText}>{item.text}</Text>
                     </LinearGradient>
                 ) : (
+                    // TEXT RENDERER (THEM)
                     <View style={[styles.chatBubble, styles.chatBubbleThem]}><Text style={styles.chatText}>{item.text}</Text></View>
                 )}
             </View>
@@ -1000,10 +975,24 @@ export default function TheatreScreen() {
 
     const actualWidth = Math.max(width, height);
     const actualHeight = Math.min(width, height);
+
     const containerWidth = isFullScreen ? actualWidth : width;
     const containerHeight = isFullScreen ? actualHeight : width * (9 / 16);
-    const innerVideoWidth = isFullScreen ? actualHeight * (16 / 9) : width;
-    const innerVideoHeight = isFullScreen ? actualHeight : width * (9 / 16);
+
+    const panelWidth = Math.round(actualWidth * CHAT_PANEL_RATIO);
+
+    const chatTranslateX = chatAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: [panelWidth, 0]
+    });
+
+    const videoTranslateX = chatAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: [0, -panelWidth / 2]
+    });
+
+    const innerVideoWidth = Math.min(containerWidth, containerHeight * (16 / 9));
+    const innerVideoHeight = innerVideoWidth * (9 / 16);
 
     let episodesArray = [];
     let tvSeasons = [];
@@ -1040,7 +1029,6 @@ export default function TheatreScreen() {
 
     const showOverlayUI = ytId && overlayVisible;
 
-
     return (
         <SafeAreaView style={styles.safeArea} edges={isFullScreen ? [] : ['top', 'left', 'right']}>
             <KeyboardAvoidingView style={styles.container} behavior="padding" keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 24}>
@@ -1050,245 +1038,249 @@ export default function TheatreScreen() {
                     style={[
                         styles.playerContainer,
                         { width: containerWidth, height: containerHeight },
-                        isFullScreen && { position: 'absolute', top: 0, left: 0, zIndex: 9999, elevation: 9999, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' }
+                        isFullScreen && { position: 'absolute', top: 0, left: 0, zIndex: 9999, elevation: 9999, backgroundColor: '#000', overflow: 'hidden' }
                     ]}
-                    onStartShouldSetResponderCapture={() => {
-                        if (ytId && !isVidLink) {
-                            handleVideoTap();
-                        }
-                        return false;
-                    }}
                 >
-                    {isVidLink ? (
-                        <View style={{ width: innerVideoWidth, height: innerVideoHeight, backgroundColor: '#000', position: 'relative' }}>
-                            <WebView
-                                ref={webViewRef}
-                                key={`vidlink-theatre-${vidLinkId}-${vidLinkSeason}-${vidLinkEpisode}`}
-                                source={{
-                                    uri: vidLinkType === 'tv'
-                                        ? `https://vidlink.pro/tv/${vidLinkId}/${vidLinkSeason}/${vidLinkEpisode}?autoplay=1`
-                                        : `https://vidlink.pro/movie/${vidLinkId}?autoplay=1`,
-                                    headers: {
-                                        'Referer': 'https://vidlink.pro/',
-                                        'User-Agent': DESKTOP_USER_AGENT,
-                                    }
-                                }}
-                                userAgent={DESKTOP_USER_AGENT}
-                                style={{ width: '100%', height: '100%', backgroundColor: '#000' }}
-                                javaScriptEnabled={true}
-                                domStorageEnabled={true}
-                                databaseEnabled={true}
-                                allowsFullscreenVideo={false}
-                                mediaPlaybackRequiresUserAction={false}
-                                allowsInlineMediaPlayback={true}
-                                setSupportMultipleWindows={false}
-                                sharedCookiesEnabled={true}
-                                thirdPartyCookiesEnabled={true}
-                                injectedJavaScriptBeforeContentLoaded={adBlockScript}
-                                onMessage={(event) => {
-                                    try {
-                                        const data = JSON.parse(event.nativeEvent.data);
-                                        if (data.type === 'USER_TOUCH') {
-                                            wakeVidLinkOverlay();
-                                        } else if (data.type === 'PLAYER_EVENT') {
-                                            handleVidLinkPlayerEvent(data.data);
+                    <Animated.View
+                        style={{
+                            position: 'absolute', left: 0, top: 0, bottom: 0, right: 0,
+                            justifyContent: 'center', alignItems: 'center',
+                            transform: isFullScreen ? [{ translateX: videoTranslateX }] : []
+                        }}
+                        onStartShouldSetResponderCapture={() => {
+                            overlayTouchRef.current = false;
+                            if (ytId && !isVidLink) {
+                                setTimeout(() => {
+                                    if (!overlayTouchRef.current) handleVideoTap();
+                                }, 0);
+                            }
+                            return false;
+                        }}
+                    >
+                        {isVidLink ? (
+                            <View style={{ width: innerVideoWidth, height: innerVideoHeight, backgroundColor: '#000', position: 'relative' }}>
+                                <WebView
+                                    ref={webViewRef}
+                                    key={`vidlink-theatre-${vidLinkId}-${vidLinkSeason}-${vidLinkEpisode}`}
+                                    source={{
+                                        uri: vidLinkType === 'tv'
+                                            ? `https://vidlink.pro/tv/${vidLinkId}/${vidLinkSeason}/${vidLinkEpisode}?autoplay=1`
+                                            : `https://vidlink.pro/movie/${vidLinkId}?autoplay=1`,
+                                        headers: {
+                                            'Referer': 'https://vidlink.pro/',
+                                            'User-Agent': DESKTOP_USER_AGENT,
                                         }
-                                    } catch (e) { }
-                                }}
-                                onShouldStartLoadWithRequest={(request) => {
-                                    const isAllowedHost =
-                                        request.url.includes('vidlink.pro') ||
-                                        request.url.includes('about:blank');
+                                    }}
+                                    userAgent={DESKTOP_USER_AGENT}
+                                    style={{ width: '100%', height: '100%', backgroundColor: '#000' }}
+                                    javaScriptEnabled={true}
+                                    domStorageEnabled={true}
+                                    databaseEnabled={true}
+                                    allowsFullscreenVideo={false}
+                                    mediaPlaybackRequiresUserAction={false}
+                                    allowsInlineMediaPlayback={true}
+                                    setSupportMultipleWindows={false}
+                                    sharedCookiesEnabled={true}
+                                    thirdPartyCookiesEnabled={true}
+                                    androidLayerType="hardware"
+                                    injectedJavaScriptBeforeContentLoaded={adBlockScript}
+                                    onMessage={(event) => {
+                                        try {
+                                            const data = JSON.parse(event.nativeEvent.data);
+                                            if (data.type === 'USER_TOUCH') {
+                                                wakeVidLinkOverlay();
+                                            } else if (data.type === 'PLAYER_EVENT') {
+                                                handleVidLinkPlayerEvent(data.data);
+                                            }
+                                        } catch (e) { }
+                                    }}
+                                    onShouldStartLoadWithRequest={(request) => {
+                                        return request.url.includes('vidlink.pro') || request.url.includes('about:blank');
+                                    }}
+                                    injectedJavaScript={`
+                                        (function() {
+                                            var style = document.createElement('style');
+                                            var css = 'iframe[src*="ads"], .ad-overlay { display: none !important; }';
+                                            css += '.pjs-fullscreen, .pjs-icon-fullscreen, [aria-label="Fullscreen"], [title="Fullscreen"], .fullscreen-btn { display: none !important; }';
+                                            style.innerHTML = css;
+                                            document.head.appendChild(style);
 
-                                    if (!isAllowedHost) {
-                                        return false;
-                                    }
-                                    return true;
-                                }}
-                                injectedJavaScript={`
-                (function() {
-                    // 1. ALL USERS: Block ads, overlays, and FULLSCREEN buttons completely
-                    var style = document.createElement('style');
-                    var css = 'iframe[src*="ads"], .ad-overlay { display: none !important; }';
-                    css += '.pjs-fullscreen, .pjs-icon-fullscreen, [aria-label="Fullscreen"], [title="Fullscreen"], .fullscreen-btn { display: none !important; }';
-                    style.innerHTML = css;
-                    document.head.appendChild(style);
+                                            window.__isJoinee = ${!isHostLocal};
 
-                    // 2. JOINEE LOCK ("Iron Dome" for permissions). It can be switched on/off without
-                    //    reloading the page, so a viewer promoted to host keeps watching from the same second.
-                    window.__isJoinee = ${!isHostLocal};
+                                            var lockCss = '.pjs-play, .pjs-pause, .pjs-icon-play, .pjs-icon-pause, .pjs-slider, .pjs-progress, .pjs-time, .pjs-rewind, .pjs-forward, .pjs-skip, .pjs-next, .pjs-previous, .pjs-servers, .pjs-playlist, .server-wrapper, .server-list, .servers, .list-server { pointer-events: none !important; opacity: 0.5 !important; } .pjs-video-wrapper, video { pointer-events: none !important; }';
 
-                    var lockCss =
-                        '.pjs-play, .pjs-pause, .pjs-icon-play, .pjs-icon-pause, ' +
-                        '.pjs-slider, .pjs-progress, .pjs-time, ' +
-                        '.pjs-rewind, .pjs-forward, .pjs-skip, .pjs-next, .pjs-previous, ' +
-                        '.pjs-servers, .pjs-playlist, .server-wrapper, .server-list, .servers, .list-server ' +
-                        '{ pointer-events: none !important; opacity: 0.5 !important; }' +
-                        // Prevent users from tapping the center of the video to play/pause
-                        '.pjs-video-wrapper, video { pointer-events: none !important; }';
+                                            function applyLock() {
+                                                if (document.getElementById('joinee-lock')) return;
+                                                var lock = document.createElement('style');
+                                                lock.id = 'joinee-lock';
+                                                lock.innerHTML = lockCss;
+                                                document.head.appendChild(lock);
+                                            }
+                                            function removeLock() {
+                                                var lock = document.getElementById('joinee-lock');
+                                                if (lock) lock.remove();
+                                            }
 
-                    function applyLock() {
-                        if (document.getElementById('joinee-lock')) return;
-                        var lock = document.createElement('style');
-                        lock.id = 'joinee-lock';
-                        lock.innerHTML = lockCss;
-                        document.head.appendChild(lock);
-                    }
-                    function removeLock() {
-                        var lock = document.getElementById('joinee-lock');
-                        if (lock) lock.remove();
-                    }
+                                            window.__promoteToHost = function() { window.__isJoinee = false; removeLock(); };
+                                            window.__demoteToJoinee = function() { window.__isJoinee = true; applyLock(); };
+                                            if (window.__isJoinee) applyLock();
 
-                    window.__promoteToHost = function() { window.__isJoinee = false; removeLock(); };
-                    window.__demoteToJoinee = function() { window.__isJoinee = true; applyLock(); };
+                                            var sendMsg = window.__rn_send || (window.ReactNativeWebView ? window.ReactNativeWebView.postMessage.bind(window.ReactNativeWebView) : null);
 
-                    if (window.__isJoinee) applyLock();
+                                            if (!window.__syncStarted) {
+                                                window.__syncStarted = true;
+                                                var lastState = { playing: false, time: 0 };
+                                                setInterval(function() {
+                                                    var v = document.querySelector('video');
+                                                    if (!v) {
+                                                        var iframes = document.querySelectorAll('iframe');
+                                                        for (var i=0; i<iframes.length; i++) {
+                                                            try { v = iframes[i].contentDocument.querySelector('video'); if (v) break; } catch(e) {}
+                                                        }
+                                                    }
 
-                    // Ensure safe access to the React Native bridge
-                    var sendMsg = window.__rn_send || (window.ReactNativeWebView ? window.ReactNativeWebView.postMessage.bind(window.ReactNativeWebView) : null);
+                                                    if (window.__isJoinee) return;
 
-                    // 3. HOST SYNC: Actively poll the video element to broadcast play/pause/seek to React Native.
-                    //    Always running, but silent while this user is a joinee (so promotion needs no reload).
-                    if (!window.__syncStarted) {
-                        window.__syncStarted = true;
-                        var lastState = { playing: false, time: 0 };
+                                                    if (v && sendMsg) {
+                                                        var isPlaying = !v.paused && !v.ended && v.readyState > 2;
+                                                        var time = v.currentTime;
+                                                        if (isPlaying !== lastState.playing) {
+                                                            lastState.playing = isPlaying;
+                                                            sendMsg(JSON.stringify({ type: 'PLAYER_EVENT', data: { event: isPlaying ? 'play' : 'pause', currentTime: time } }));
+                                                        }
+                                                        if (Math.abs(time - lastState.time) > 1.5 && lastState.playing === isPlaying) {
+                                                            sendMsg(JSON.stringify({ type: 'PLAYER_EVENT', data: { event: 'seeked', currentTime: time } }));
+                                                        }
+                                                        lastState.time = time;
+                                                        sendMsg(JSON.stringify({ type: 'PLAYER_EVENT', data: { event: 'timeupdate', currentTime: time } }));
+                                                    }
+                                                }, 1000);
+                                            }
 
-                        setInterval(function() {
-                            if (window.__isJoinee) return;
-
-                            var v = document.querySelector('video');
-                            if (!v) {
-                                var iframes = document.querySelectorAll('iframe');
-                                for (var i=0; i<iframes.length; i++) {
-                                    try { v = iframes[i].contentDocument.querySelector('video'); if (v) break; } catch(e) {}
-                                }
-                            }
-                            
-                            if (v && sendMsg) {
-                                var isPlaying = !v.paused && !v.ended && v.readyState > 2;
-                                var time = v.currentTime;
-                                
-                                // Play / Pause changed
-                                if (isPlaying !== lastState.playing) {
-                                    lastState.playing = isPlaying;
-                                    sendMsg(JSON.stringify({
-                                        type: 'PLAYER_EVENT',
-                                        data: { event: isPlaying ? 'play' : 'pause', currentTime: time }
-                                    }));
-                                }
-                                
-                                // Seeked (jump > 1.5s)
-                                if (Math.abs(time - lastState.time) > 1.5 && lastState.playing === isPlaying) {
-                                    sendMsg(JSON.stringify({
-                                        type: 'PLAYER_EVENT',
-                                        data: { event: 'seeked', currentTime: time }
-                                    }));
-                                }
-                                
-                                // Standard Time Update Heartbeat
-                                lastState.time = time;
-                                sendMsg(JSON.stringify({
-                                    type: 'PLAYER_EVENT',
-                                    data: { event: 'timeupdate', currentTime: time }
-                                }));
-                            }
-                        }, 1000);
-                    }
-
-                    // Click passthrough for RN Overlay waking
-                    ['click', 'touchstart'].forEach(function(evt) {
-                        document.addEventListener(evt, function(e) {
-                            if (e.isTrusted && sendMsg) {
-                                sendMsg(JSON.stringify({ type: 'USER_TOUCH' }));
-                            }
-                        }, { passive: true });
-                    });
-                    
-                    true;
-                })();
-            `}
-                            />
-
-                            {!overlayVisible && (
-                                <TouchableOpacity
-                                    style={styles.fsWakeHotspot}
-                                    onPress={wakeVidLinkOverlay}
-                                    activeOpacity={1}
+                                            ['click', 'touchstart'].forEach(function(evt) {
+                                                document.addEventListener(evt, function(e) {
+                                                    if (e.isTrusted && sendMsg) {
+                                                        sendMsg(JSON.stringify({ type: 'USER_TOUCH' }));
+                                                    }
+                                                }, { passive: true });
+                                            });
+                                            true;
+                                        })();
+                                    `}
                                 />
-                            )}
-                        </View>
-                    ) : (
-                        <TheatrePlayer
-                            ref={playerRef}
-                            ytId={ytId}
-                            isPlaying={isPlaying}
-                            isMuted={isMuted}
-                            isHostBool={isHostLocal}
-                            onPlayerStateChange={onPlayerStateChange}
-                            width={innerVideoWidth}
-                            height={innerVideoHeight}
-                            isFullScreen={isFullScreen}
-                            onExit={handleBackPress}
-                            onToggleOrientation={async () => {
-                                const current = await ScreenOrientation.getOrientationAsync();
-                                if (current === ScreenOrientation.Orientation.PORTRAIT_UP) {
-                                    await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
-                                } else {
-                                    await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
-                                }
-                            }}
-                            onControlsToggle={(visible) => {
-                                setOverlayVisible(visible);
-                            }}
-                        />
-                    )}
 
-                    {isFullScreen && showOverlayUI && (
-                        <TouchableOpacity style={[styles.fullscreenExitBtn, { zIndex: 100000, elevation: 10 }]} onPress={toggleFullScreen} activeOpacity={0.7}>
-                            <Ionicons name="close" size={26} color="#FFFFFF" />
-                        </TouchableOpacity>
-                    )}
-
-                    {ytId && roomUsers.length > 0 && showOverlayUI && (
-                        <View style={styles.liveViewerBadge} pointerEvents="none">
-                            <Ionicons name="eye" size={14} color="#FFF" />
-                            <Text style={styles.liveViewerText}>{roomUsers.length}</Text>
-                        </View>
-                    )}
+                                {!overlayVisible && (
+                                    <TouchableOpacity style={styles.fsWakeHotspot} onPress={wakeVidLinkOverlay} activeOpacity={1} />
+                                )}
+                            </View>
+                        ) : (
+                            <TheatrePlayer
+                                ref={playerRef}
+                                ytId={ytId}
+                                isPlaying={isPlaying}
+                                isMuted={isMuted}
+                                isHostBool={isHostLocal}
+                                onPlayerStateChange={onPlayerStateChange}
+                                width={innerVideoWidth}
+                                height={innerVideoHeight}
+                                isFullScreen={isFullScreen}
+                                onExit={handleBackPress}
+                                fadeAnim={overlayAnim}
+                                onToggleOrientation={async () => {
+                                    const current = await ScreenOrientation.getOrientationAsync();
+                                    if (current === ScreenOrientation.Orientation.PORTRAIT_UP) {
+                                        await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+                                    } else {
+                                        await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+                                    }
+                                }}
+                                onControlsToggle={(visible) => {
+                                    setOverlayVisible(visible);
+                                }}
+                            />
+                        )}
+                    </Animated.View>
 
                     {showOverlayUI && (
-                        <View style={styles.rightOverlayWrapper} pointerEvents="box-none">
-                            <View style={styles.rightActionButtons} pointerEvents="box-none">
+                        <Animated.View
+                            style={[StyleSheet.absoluteFill, { zIndex: 100000, elevation: 100, opacity: overlayAnim }]}
+                            pointerEvents="box-none"
+                            renderToHardwareTextureAndroid={true}
+                        >
+                            {isFullScreen && (
+                                <>
+                                    <TouchableOpacity style={[styles.fullscreenExitBtn, { zIndex: 100001, elevation: 101 }]} onPress={toggleFullScreen} activeOpacity={0.7}>
+                                        <Ionicons name="close" size={26} color="#FFFFFF" />
+                                    </TouchableOpacity>
+                                </>
+                            )}
 
-                                <QuickChatButtonUI
-                                    showFloatingMessages={showFloatingMessages}
-                                    toggleFloatingMessages={() => {
-                                        setShowFloatingMessages(prev => !prev);
-                                        wakeVidLinkOverlay();
-                                    }}
-                                    sendQuickMessage={sendQuickMessage}
-                                    extendOverlayTimer={wakeVidLinkOverlay}
-                                />
+                            {roomUsers.length > 0 && (
+                                <View style={[styles.liveViewerBadge, { zIndex: 100001, elevation: 101 }]} pointerEvents="none">
+                                    <Ionicons name="eye" size={14} color="#FFF" />
+                                    <Text style={styles.liveViewerText}>{roomUsers.length}</Text>
+                                </View>
+                            )}
 
-                                {/* RESTORED EMOJI SLIDER BUTTON */}
-                                <ReactionButtonUI
-                                    isFullScreen={isFullScreen}
-                                    showFloatingEmojis={showFloatingEmojis} 
-                                    toggleDistractionFree={toggleDistractionFree}
-                                    sendReaction={sendReaction}
-                                    extendOverlayTimer={wakeVidLinkOverlay}
-                                />
+                            <View style={[styles.rightOverlayWrapper, { zIndex: 100001, elevation: 101 }]} pointerEvents="box-none">
+                                <View style={styles.rightActionButtons} pointerEvents="box-none">
+                                    {!chatPanelRendered && (
+                                        <QuickChatButton
+                                            showFloatingMessages={showFloatingMessages}
+                                            onTap={handleChatButtonTap}
+                                            onDoubleTap={isFullScreen ? openChatPanel : undefined}
+                                            onSend={sendChatText}
+                                            onInteract={extendOverlay}
+                                            isFullScreen={isFullScreen}
+                                        />
+                                    )}
+
+                                    {!chatPanelRendered && (
+                                        <ReactionButtonUI
+                                            isFullScreen={isFullScreen}
+                                            showFloatingEmojis={showFloatingEmojis}
+                                            toggleDistractionFree={toggleDistractionFree}
+                                            sendReaction={sendReaction}
+                                            extendOverlayTimer={extendOverlay}
+                                        />
+                                    )}
+                                </View>
                             </View>
-                        </View>
+                        </Animated.View>
+                    )}
+
+                    {chatPanelRendered && isFullScreen && (
+                        <Animated.View
+                            style={{
+                                position: 'absolute',
+                                right: 0, top: 0, bottom: 0,
+                                width: panelWidth,
+                                zIndex: 100002,
+                                elevation: 102,
+                                transform: [{ translateX: chatTranslateX }]
+                            }}
+                            renderToHardwareTextureAndroid={true}
+                        >
+                            <TheatreChatPanel
+                                messages={messages}
+                                username={username}
+                                onSend={sendChatText}
+                                onClose={closeChatPanel}
+                                width={panelWidth}
+                                onSendGif={sendGif}  
+                                height={containerHeight}
+                                isKeyboardVisible={isKeyboardVisible}
+                            />
+                        </Animated.View>
                     )}
 
                     <View style={styles.floatingMessagesZone} pointerEvents="none">
-                        {showFloatingMessages && activeFloatingMessages.map(msg => (
+                        {showFloatingMessages && !chatPanelRendered && activeFloatingMessages.map(msg => (
                             <FloatingMessage key={msg.id} msg={msg} onComplete={() => removeFloatingMessage(msg.id)} />
                         ))}
                     </View>
 
-                    {showFloatingEmojis && (
+                    {showFloatingEmojis && !chatPanelRendered && (
                         <View style={styles.floatingAnimationZone} pointerEvents="none">
                             {activeReactions.map((reaction) => (
                                 <FloatingEmoji key={reaction.id} emoji={reaction.emoji} sender={reaction.sender} onComplete={() => removeReaction(reaction.id)} />
@@ -1498,7 +1490,23 @@ export default function TheatreScreen() {
                                     ListEmptyComponent={<Text style={styles.emptyChatText}>No messages yet. Say hello!</Text>}
                                 />
                                 <View style={styles.chatInputRow}>
-                                    <TextInput style={styles.chatInput} placeholder="Type a message..." placeholderTextColor="#8F98A0" value={chatInput} onChangeText={setChatInput} onSubmitEditing={handleSendMessage} returnKeyType="send" selectionColor="#9B51E0" />
+                                    {/* NEW GIF BUTTON */}
+                                    <TouchableOpacity onPress={() => setIsGifPickerVisible(true)} style={styles.gifToggleBtn}>
+                                        <View style={styles.gifIconWrapper}>
+                                            <Text style={styles.gifIconText}>GIF</Text>
+                                        </View>
+                                    </TouchableOpacity>
+
+                                    <TextInput
+                                        style={styles.chatInput}
+                                        placeholder="Type a message..."
+                                        placeholderTextColor="#8F98A0"
+                                        value={chatInput}
+                                        onChangeText={setChatInput}
+                                        onSubmitEditing={handleSendMessage}
+                                        returnKeyType="send"
+                                        selectionColor="#9B51E0"
+                                    />
                                     <TouchableOpacity style={[styles.sendBtnContainer, !chatInput.trim() && { opacity: 0.5 }]} onPress={handleSendMessage} disabled={!chatInput.trim()}>
                                         <LinearGradient colors={['#00E5FF', '#9B51E0', '#FF007A']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.sendBtnGradient}>
                                             <Ionicons name="send" size={20} color="#FFF" style={{ marginLeft: 2 }} />
@@ -1579,6 +1587,60 @@ export default function TheatreScreen() {
                             <TouchableOpacity style={[styles.permBtn, { backgroundColor: 'rgba(229, 57, 53, 0.15)' }]} onPress={handleKick}><Text style={[styles.permBtnText, { color: '#E53935' }]}>Kick from Room</Text></TouchableOpacity>
                             <TouchableOpacity style={[styles.permBtn, { backgroundColor: '#E53935' }]} onPress={handleKickAndBlock}><Text style={[styles.permBtnText, { color: '#FFF' }]}>Kick & Block Permanently</Text></TouchableOpacity>
                         </View>
+                    </View>
+                </View>
+            </Modal>
+            {/* GIPHY PICKER MODAL */}
+            <Modal visible={isGifPickerVisible} transparent={true} animationType="slide" onRequestClose={() => setIsGifPickerVisible(false)}>
+                <View style={styles.modalOverlay}>
+                    <View style={[styles.bottomSheet, { height: '70%' }]}>
+                        <View style={styles.sheetHeader}>
+                            <Text style={styles.sheetTitle}>Send a GIF</Text>
+                            <TouchableOpacity onPress={() => setIsGifPickerVisible(false)}>
+                                <Ionicons name="close-circle" size={28} color="#8F98A0" />
+                            </TouchableOpacity>
+                        </View>
+
+                        {/* Giphy Search Bar */}
+                        <View style={styles.gifSearchRow}>
+                            <Ionicons name="search" size={20} color="#8F98A0" style={{ marginLeft: 12 }} />
+                            <TextInput
+                                style={styles.gifSearchInput}
+                                placeholder="Search Giphy..."
+                                placeholderTextColor="#8F98A0"
+                                value={gifSearchQuery}
+                                onChangeText={(text) => {
+                                    setGifSearchQuery(text);
+                                    // Debounce logic could be added here, but for now we search on submit or empty
+                                    if (text === '') fetchGiphy('');
+                                }}
+                                onSubmitEditing={() => fetchGiphy(gifSearchQuery)}
+                                returnKeyType="search"
+                            />
+                        </View>
+
+                        {/* Giphy Results Grid */}
+                        {isFetchingGifs ? (
+                            <ActivityIndicator size="large" color="#00E5FF" style={{ marginTop: 40 }} />
+                        ) : (
+                            <FlatList
+                                data={gifs}
+                                keyExtractor={(item) => item.id}
+                                numColumns={2}
+                                columnWrapperStyle={{ gap: 10, marginBottom: 10 }}
+                                contentContainerStyle={{ paddingBottom: 20 }}
+                                keyboardShouldPersistTaps="handled"
+                                ListEmptyComponent={<Text style={{ color: '#8F98A0', textAlign: 'center', marginTop: 20 }}>No GIFs found.</Text>}
+                                renderItem={({ item }) => (
+                                    <TouchableOpacity style={{ flex: 1 }} onPress={() => sendGif(item.images.fixed_height.url)}>
+                                        <Image
+                                            source={{ uri: item.images.fixed_height.url }}
+                                            style={{ width: '100%', height: 120, borderRadius: 8, backgroundColor: '#2A2A30' }}
+                                        />
+                                    </TouchableOpacity>
+                                )}
+                            />
+                        )}
                     </View>
                 </View>
             </Modal>
@@ -1808,5 +1870,38 @@ const styles = StyleSheet.create({
         color: '#FFF',
         fontSize: 13,
         fontWeight: '600'
+    },
+    gifToggleBtn: {
+        marginRight: 6,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    gifIconWrapper: {
+        borderWidth: 1.5,
+        borderColor: '#8F98A0',
+        borderRadius: 6,
+        paddingHorizontal: 4,
+        paddingVertical: 2,
+    },
+    gifIconText: {
+        color: '#8F98A0',
+        fontSize: 10,
+        fontWeight: 'bold',
+    },
+    gifSearchRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: '#0A0A0C',
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.1)',
+        marginBottom: 16,
+    },
+    gifSearchInput: {
+        flex: 1,
+        height: 44,
+        color: '#FFF',
+        paddingHorizontal: 10,
+        fontSize: 15, 
     },
 });

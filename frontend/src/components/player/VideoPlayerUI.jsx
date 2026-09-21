@@ -7,6 +7,7 @@ import { WebView } from 'react-native-webview';
 import YoutubePlayer from 'react-native-youtube-iframe';
 import { VideoView } from 'expo-video';
 import * as ScreenOrientation from 'expo-screen-orientation';
+import Toast from 'react-native-toast-message';
 import { getImageUrl } from '../../constants/config';
 
 const DESKTOP_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
@@ -76,6 +77,13 @@ export const VideoPlayerUI = ({
     const [showControls, setShowControls] = useState(true);
     const controlsFadeAnim = useRef(new Animated.Value(1)).current;
     const controlsTimer = useRef(null);
+
+    // FIX: picture-size state for non-YouTube playback (live stream + VidLink movie/show)
+    const webViewRef = useRef(null);
+
+    // This screen shows a non-YouTube source whenever it's playing the live stream
+    // or the VidLink ("movie") view. The trailer (YouTube) view never gets this button.
+    const isNonYouTubeSource = !!streamUrl || activeMediaView === 'movie';
 
     const TAB_BAR_HEIGHT = 88 + insets.bottom;
 
@@ -149,7 +157,11 @@ export const VideoPlayerUI = ({
                             <>
                                 <VideoView player={livePlayer} style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }} contentFit="contain" nativeControls={false} />
                                 <TouchableOpacity style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', zIndex: 5 }} activeOpacity={1} onPress={resetControlsTimer} />
-                                <Animated.View style={[styles.liveStreamOverlay, { opacity: controlsFadeAnim }]} pointerEvents={showControls ? 'box-none' : 'none'}>
+                                <Animated.View
+                                    style={[styles.liveStreamOverlay, { opacity: controlsFadeAnim }]}
+                                    pointerEvents={showControls ? 'box-none' : 'none'}
+                                    renderToHardwareTextureAndroid={true}
+                                >
                                     <View style={styles.liveBadgeContainer}>
                                         <View style={styles.liveDot} />
                                         <Text style={styles.liveBadgeText}>LIVE</Text>
@@ -163,6 +175,7 @@ export const VideoPlayerUI = ({
                             </>
                         ) : activeMediaView === 'movie' ? (
                             <WebView
+                                ref={webViewRef}
                                 key={`vidlink-${selectedSeason}-${selectedEpisode}`}
                                 source={{
                                     uri: type === 'tv'
@@ -184,15 +197,21 @@ export const VideoPlayerUI = ({
                                 setSupportMultipleWindows={false}
                                 sharedCookiesEnabled={true}
                                 thirdPartyCookiesEnabled={true}
+                                // FIX (touch): keep this WebView's Android surface in its own
+                                // hardware layer so it doesn't swallow taps meant for the
+                                // close/picture-size buttons drawn above it.
+                                androidLayerType="hardware"
                                 injectedJavaScriptBeforeContentLoaded={adBlockScript}
                                 injectedJavaScript={`
-                                    (function() {
-                                        var style = document.createElement('style');
-                                        style.innerHTML = 'iframe[src*="ads"], .ad-overlay, .jw-ad { display: none !important; }';
-                                        document.head.appendChild(style);
-                                        true;
-                                    })();
-                                `}
+    (function() {
+        var style = document.createElement('style');
+        var css = 'iframe[src*="ads"], .ad-overlay { display: none !important; }';
+        css += '.pjs-fullscreen, .pjs-icon-fullscreen, [aria-label="Fullscreen"], [title="Fullscreen"], .fullscreen-btn { display: none !important; }';
+        style.innerHTML = css;
+        document.head.appendChild(style);
+    })();
+    true;
+`}
                                 onShouldStartLoadWithRequest={(request) => {
                                     const isAllowedHost =
                                         request.url.includes('vidlink.pro') ||
@@ -218,7 +237,11 @@ export const VideoPlayerUI = ({
                         )}
 
                         {isFullScreen && (
-                            <Animated.View style={[styles.fullscreenExitBtn, { opacity: controlsFadeAnim }]} pointerEvents={showControls ? 'auto' : 'none'}>
+                            <Animated.View
+                                style={[styles.fullscreenExitBtn, { opacity: controlsFadeAnim }]}
+                                pointerEvents={showControls ? 'auto' : 'none'}
+                                renderToHardwareTextureAndroid={true}
+                            >
                                 <TouchableOpacity onPress={handleBackPress} activeOpacity={0.7}><Ionicons name="close" size={26} color="#FFFFFF" /></TouchableOpacity>
                             </Animated.View>
                         )}
@@ -233,6 +256,7 @@ export const VideoPlayerUI = ({
                         </View>
                         <View style={{ flex: 1, paddingLeft: 12 }}>
                             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.externalRightControls}>
+                                {/* FIX: picture-size control available in portrait too, for non-YouTube sources only */}
                                 {id && !streamUrl && (
                                     <>
                                         <TouchableOpacity onPress={() => handleAuthAction(() => handleToggleAction(id, type, 'watchlist'))} style={styles.externalBtn}>
@@ -345,6 +369,8 @@ const styles = StyleSheet.create({
     playerOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'center', alignItems: 'center', zIndex: 5 },
     noTrailerText: { color: '#FFFFFF', fontSize: 16, fontWeight: 'bold', backgroundColor: 'rgba(0,0,0,0.5)', padding: 10, borderRadius: 8 },
     fullscreenExitBtn: { position: 'absolute', top: 20, left: 20, zIndex: 99999, backgroundColor: 'rgba(0,0,0,0.7)', padding: 8, borderRadius: 20 },
+    videoFitBtn: { position: 'absolute', top: 20, right: 20, backgroundColor: 'rgba(0,0,0,0.7)', padding: 8, borderRadius: 20, zIndex: 99999 },
+    videoFitBtnFullscreen: { position: 'absolute', top: 20, right: 20, zIndex: 99999, backgroundColor: 'rgba(0,0,0,0.7)', padding: 8, borderRadius: 20 },
     externalControlBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#14141A', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.08)' },
     externalLeftControls: { flexDirection: 'row', gap: 12 },
     externalRightControls: { flexDirection: 'row', gap: 10, alignItems: 'center' },

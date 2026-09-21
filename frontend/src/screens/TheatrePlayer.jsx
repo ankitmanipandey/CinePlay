@@ -17,6 +17,9 @@ import Svg, { Circle, Defs, Stop, LinearGradient as SvgLinearGradient } from 're
 import YoutubePlayer from 'react-native-youtube-iframe';
 import { VolumeManager } from 'react-native-volume-manager';
 
+const FADE_IN_MS = 200;
+const FADE_OUT_MS = 300;
+
 const GradientLoader = () => {
     const spinValue = useRef(new Animated.Value(0)).current;
     useEffect(() => {
@@ -51,7 +54,8 @@ const formatTime = (seconds) => {
 
 const TheatrePlayer = forwardRef(({
     ytId, isPlaying, isHostBool, onPlayerStateChange, width, height, isMuted,
-    isFullScreen, onExit, onToggleOrientation, onControlsToggle
+    isFullScreen, onExit, onToggleOrientation, onControlsToggle,
+    fadeAnim: fadeAnimProp
 }, ref) => {
 
     const isCustom = ytId && ytId.startsWith('CUSTOM:');
@@ -59,26 +63,15 @@ const TheatrePlayer = forwardRef(({
     const youtubeId = isCustom ? null : ytId;
 
     const ytRef = useRef(null);
+    const widthRef = useRef(width);
+    widthRef.current = width;
 
-    // --- controlsVisible is the SINGLE SOURCE OF TRUTH for whether any
-    // on-screen controls (this component's own bars, AND the parent
-    // TheatreScreen's reaction/chat/fullscreen buttons via onControlsToggle)
-    // should be visible. There is exactly one 6-second timer that governs
-    // this, defined below. Nothing else should independently hide/show
-    // these elements — everything routes through showControlsTemporarily /
-    // toggleControlsRef so that every visible element appears and
-    // disappears together. ---
     const [controlsVisible, setControlsVisible] = useState(true);
-    const fadeAnim = useRef(new Animated.Value(1)).current;
+    const internalFade = useRef(new Animated.Value(1)).current;
+    const fadeAnim = fadeAnimProp || internalFade;
     const controlsTimer = useRef(null);
     const [showSettings, setShowSettings] = useState(false);
 
-    // --- Brightness is a purely local, in-app simulation. It does NOT
-    // touch the real device brightness (no `expo-brightness` call), which
-    // means it never needs the OS "Allow modify system settings" permission
-    // and can never trigger that screen — not intermittently, not ever.
-    // The visible dimming effect comes entirely from the black overlay
-    // `View` below (opacity: 1 - brightness), driven by this state. ---
     const [brightness, setBrightness] = useState(1);
     const [volume, setVolume] = useState(1);
     const brightnessRef = useRef(1);
@@ -89,11 +82,8 @@ const TheatrePlayer = forwardRef(({
     const lastTap = useRef({ time: 0, timeout: null });
     const swipeState = useRef({ isSwiping: false, startY: 0, startVal: 0, side: '' });
 
-    // --- Only volume is read on mount. Reading volume does not require any
-    // special Android permission, so it's safe to do eagerly. ---
     useEffect(() => {
         let isMounted = true;
-
         (async () => {
             try {
                 const currentV = await VolumeManager.getVolume();
@@ -102,9 +92,7 @@ const TheatrePlayer = forwardRef(({
                     volumeRef.current = v;
                     setVolume(v);
                 }
-            } catch (e) {
-                console.log('Volume init failed:', e.message);
-            }
+            } catch (e) { }
         })();
 
         const volumeListener = VolumeManager.addVolumeListener((result) => {
@@ -216,12 +204,13 @@ const TheatrePlayer = forwardRef(({
         setControlsVisible(true);
         if (onControlsToggle) onControlsToggle(true);
 
-        Animated.timing(fadeAnim, { toValue: 1, duration: 200, useNativeDriver: true }).start();
+        Animated.timing(fadeAnim, { toValue: 1, duration: FADE_IN_MS, useNativeDriver: true }).start();
 
         if (controlsTimer.current) clearTimeout(controlsTimer.current);
         controlsTimer.current = setTimeout(() => {
             if (!showSettings && isPlaying && !isScrubbingRef.current) {
-                Animated.timing(fadeAnim, { toValue: 0, duration: 400, useNativeDriver: true }).start(() => {
+                Animated.timing(fadeAnim, { toValue: 0, duration: FADE_OUT_MS, useNativeDriver: true }).start(({ finished }) => {
+                    if (!finished) return;
                     setControlsVisible(false);
                     if (onControlsToggle) onControlsToggle(false);
                 });
@@ -229,15 +218,12 @@ const TheatrePlayer = forwardRef(({
         }, 6000);
     };
 
-    // Reassigned fresh on every render so it always closes over the LATEST
-    // isPlaying / showSettings / controlsVisible — this is what prevents the
-    // "auto-hide silently stops working once the video actually starts
-    // playing" bug that a stale closure would otherwise cause.
     showControlsRef.current = showControlsTemporarily;
 
     toggleControlsRef.current = () => {
         if (controlsVisible) {
-            Animated.timing(fadeAnim, { toValue: 0, duration: 250, useNativeDriver: true }).start(() => {
+            Animated.timing(fadeAnim, { toValue: 0, duration: FADE_OUT_MS, useNativeDriver: true }).start(({ finished }) => {
+                if (!finished) return;
                 setControlsVisible(false);
                 if (onControlsToggle) onControlsToggle(false);
             });
@@ -247,14 +233,6 @@ const TheatrePlayer = forwardRef(({
         }
     };
 
-    // --- Everything exposed to the parent is routed through the *Ref
-    // indirections above, never through a function closured directly at the
-    // time the imperative handle factory ran. useImperativeHandle only
-    // re-runs its factory when [isCustom, youtubeId] change — capturing
-    // showControlsTemporarily directly here would freeze it to whatever
-    // isPlaying/showSettings were on the render the video type was first
-    // determined (usually before playback even started). Routing through
-    // the refs guarantees we always call the current-render version. ---
     useImperativeHandle(ref, () => ({
         getCurrentTime: async () => {
             try {
@@ -273,22 +251,18 @@ const TheatrePlayer = forwardRef(({
                 }
             } catch (e) { }
         },
-        // Show controls & reset the 6s auto-hide clock (used by external
-        // buttons like the chat/reaction toggles in TheatreScreen).
-        extendControls: () => {
-            showControlsRef.current?.();
-        },
-        // Toggle controls on/off (used for taps on the video area where
-        // there's no internal gesture layer, e.g. plain YouTube playback).
-        toggleControls: () => {
-            toggleControlsRef.current?.();
-        }
+        extendControls: () => showControlsRef.current?.(),
+        toggleControls: () => toggleControlsRef.current?.()
     }), [isCustom, youtubeId]);
 
     useEffect(() => {
         showControlsTemporarily();
         return () => clearTimeout(controlsTimer.current);
     }, [isPlaying, showSettings]);
+
+    useEffect(() => {
+        showControlsTemporarily();
+    }, [ytId]);
 
     handleSkipRef.current = (seconds) => {
         if (!isHostBool) return;
@@ -315,7 +289,7 @@ const TheatrePlayer = forwardRef(({
             onStartShouldSetPanResponder: () => true,
             onMoveShouldSetPanResponder: (evt, gestureState) => Math.abs(gestureState.dy) > 10,
             onPanResponderGrant: (evt) => {
-                const { width: currentWidth } = Dimensions.get('window');
+                const currentWidth = widthRef.current;
                 const x = evt.nativeEvent.locationX;
                 const side = x < currentWidth / 2 ? 'left' : 'right';
 
@@ -335,9 +309,6 @@ const TheatrePlayer = forwardRef(({
                     const newVal = Math.max(0, Math.min(1, swipeState.current.startVal + delta));
 
                     if (swipeState.current.side === 'left') {
-                        // In-app-only brightness simulation — no real device
-                        // API call here, so this can never trigger the OS
-                        // "Allow modify system settings" permission screen.
                         brightnessRef.current = newVal;
                         setBrightness(newVal);
                         setSwipeIndicator({ visible: true, type: 'brightness', value: Math.round(newVal * 100) });
@@ -354,7 +325,7 @@ const TheatrePlayer = forwardRef(({
                     setSwipeIndicator({ visible: false, type: '', value: 0 });
                 } else {
                     const now = Date.now();
-                    const { width: currentWidth } = Dimensions.get('window');
+                    const currentWidth = widthRef.current;
                     const x = evt.nativeEvent.locationX;
                     const DOUBLE_TAP_DELAY = 300;
 
@@ -368,11 +339,6 @@ const TheatrePlayer = forwardRef(({
                         lastTap.current.time = now;
                         lastTap.current.timeout = setTimeout(() => {
                             if (lastTap.current.time === now) {
-                                // A single tap on empty video space TOGGLES
-                                // controls — shows them if hidden, hides them
-                                // if visible. This (plus the shared state
-                                // above) is what makes every overlay element
-                                // appear and disappear together.
                                 toggleControlsRef.current();
                             }
                         }, DOUBLE_TAP_DELAY);
@@ -394,7 +360,7 @@ const TheatrePlayer = forwardRef(({
             onPanResponderGrant: (evt) => {
                 isScrubbingRef.current = true;
                 setIsScrubbing(true);
-                showControlsTemporarily();
+                showControlsRef.current?.();
 
                 const x = evt.nativeEvent.locationX;
                 scrubStartX.current = x;
@@ -410,7 +376,7 @@ const TheatrePlayer = forwardRef(({
                     const percentage = Math.max(0, Math.min(1, newX / progressWidthRef.current));
                     setScrubTime(percentage * durationRef.current);
                 }
-                showControlsTemporarily();
+                showControlsRef.current?.();
             },
             onPanResponderRelease: (evt, gestureState) => {
                 const newX = scrubStartX.current + gestureState.dx;
@@ -472,14 +438,11 @@ const TheatrePlayer = forwardRef(({
                         play={isPlaying} mute={isMuted} volume={isMuted ? 0 : 100}
                         videoId={youtubeId} onChangeState={onPlayerStateChange}
                         webViewProps={{ allowsFullscreenVideo: false }}
-
-                        // 3. ADD autoplay: 1 TO THESE PARAMS 👇
                         initialPlayerParams={{ controls: isHostBool ? 1 : 0, modestbranding: 1, rel: 0, autoplay: 1 }}
                     />
                 </View>
             ) : customUrl ? (
                 <View style={{ width: '100%', height: '100%' }}>
-
                     <VideoView
                         player={nativePlayer}
                         style={{ position: 'absolute', width: '100%', height: '100%', zIndex: 0 }}
@@ -587,34 +550,22 @@ const styles = StyleSheet.create({
     emptyPlayer: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#000' },
     emptyText: { color: '#8F98A0', marginTop: 12, fontSize: 14 },
 
-    overlayWrapper: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, width: '100%', height: '100%', zIndex: 10 },
+    overlayWrapper: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, width: '100%', height: '100%', zIndex: 9999, elevation: 100 },
     topShadow: { position: 'absolute', top: 0, left: 0, right: 0, height: 80 },
     bottomShadow: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 90, justifyContent: 'flex-end', paddingHorizontal: 16, paddingBottom: 12 },
 
-    middleControls: {
-        position: 'absolute',
-        top: 0,
-        bottom: 0,
-        left: 0,
-        right: 0,
-        flexDirection: 'row',
-        justifyContent: 'center',
-        alignItems: 'center',
-        gap: 40,
-        zIndex: 10
-    },
-
-    topBar: { flexDirection: 'row', paddingHorizontal: 16, paddingTop: 16, zIndex: 20 },
-    topBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
+    middleControls: { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 40, zIndex: 100, elevation: 100 },
+    topBar: { flexDirection: 'row', paddingHorizontal: 16, paddingTop: 16, zIndex: 100, elevation: 100 },
+    topBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', elevation: 10 },
 
     middleBtn: { alignItems: 'center', justifyContent: 'center', width: 60, height: 60 },
     skipText: { color: '#FFF', fontSize: 13, fontWeight: 'bold', marginTop: -4 },
     playPauseBtn: { width: 76, height: 76, justifyContent: 'center', alignItems: 'center' },
 
-    timeRow: { width: '100%', alignItems: 'flex-end', marginBottom: 8, paddingRight: 4 },
+    timeRow: { width: '100%', alignItems: 'flex-end', marginBottom: 8, paddingRight: 4, zIndex: 100, elevation: 100 },
     durationText: { color: '#FFF', fontSize: 13, fontWeight: 'bold', letterSpacing: 0.5 },
 
-    progressBarContainer: { width: '100%', height: 30, justifyContent: 'center' },
+    progressBarContainer: { width: '100%', height: 30, justifyContent: 'center', zIndex: 100, elevation: 100 },
     progressBarTrack: { width: '100%', height: 4, backgroundColor: 'rgba(255,255,255,0.3)', borderRadius: 2, overflow: 'hidden' },
     progressBarFill: { height: '100%', borderRadius: 2 },
 
@@ -627,14 +578,14 @@ const styles = StyleSheet.create({
         borderRadius: 7,
         backgroundColor: '#FFFFFF',
         marginLeft: -7,
-        elevation: 4,
+        elevation: 10,
         shadowColor: '#00E5FF',
         shadowOffset: { width: 0, height: 0 },
         shadowOpacity: 0.8,
         shadowRadius: 4
     },
 
-    settingsMenu: { position: 'absolute', top: 60, right: 16, width: 220, backgroundColor: 'rgba(20,20,25,0.95)', borderRadius: 12, padding: 16, zIndex: 30, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+    settingsMenu: { position: 'absolute', top: 60, right: 16, width: 220, backgroundColor: 'rgba(20,20,25,0.95)', borderRadius: 12, padding: 16, zIndex: 1000, elevation: 100, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
     settingsHeader: { color: '#8F98A0', fontSize: 11, textTransform: 'uppercase', fontWeight: 'bold', marginBottom: 12, letterSpacing: 1 },
     speedRow: { flexDirection: 'row', justifyContent: 'space-between' },
     speedBtn: { backgroundColor: 'rgba(255,255,255,0.1)', paddingHorizontal: 8, paddingVertical: 6, borderRadius: 6 },
