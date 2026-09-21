@@ -212,6 +212,124 @@ const ReactionButtonUI = ({ isFullScreen, showFloatingEmojis, toggleDistractionF
     );
 };
 
+const QUICK_CHATS = [
+    "I am Iron Man 🤖",
+    "Why so serious? 🤡",
+    "I'll be back 🕶️",
+    "May the Force be with you ⚔️",
+    "Avengers, assemble! 🛡️"
+];
+
+const QuickChatButtonUI = ({ showFloatingMessages, toggleFloatingMessages, sendQuickMessage, extendOverlayTimer }) => {
+    const [pickerVisible, setPickerVisible] = useState(false);
+    const [uiHoveredIndex, setUIHoveredIndex] = useState(-1);
+
+    const timerRef = useRef(null);
+    const isDraggingRef = useRef(false);
+    const hoveredIndexRef = useRef(-1);
+
+    const setHover = (idx) => {
+        if (hoveredIndexRef.current !== idx) {
+            hoveredIndexRef.current = idx;
+            setUIHoveredIndex(idx);
+        }
+    };
+
+    const panResponder = useRef(
+        PanResponder.create({
+            onStartShouldSetPanResponder: () => true,
+            onMoveShouldSetPanResponder: () => true,
+            onPanResponderGrant: () => {
+                isDraggingRef.current = false;
+                setHover(-1);
+                timerRef.current = setTimeout(() => {
+                    if (showFloatingMessages) {
+                        isDraggingRef.current = true;
+                        setPickerVisible(true);
+                        if (extendOverlayTimer) extendOverlayTimer();
+                    }
+                }, 250);
+            },
+            onPanResponderMove: (evt, gestureState) => {
+                if (!isDraggingRef.current) {
+                    if (Math.abs(gestureState.dx) > 10 || Math.abs(gestureState.dy) > 10) {
+                        clearTimeout(timerRef.current);
+                    }
+                    return;
+                }
+
+                const { dx, dy } = gestureState;
+                let index = -1;
+                const ITEM_HEIGHT = 44;
+
+                // Cancel if the user swipes too far left or right off the menu
+                if (Math.abs(dx) > 150) { setHover(-1); return; }
+
+                let absDy = Math.abs(dy);
+                // Swipe UP calculation (stacking vertically)
+                if (dy < 0 && absDy > 45 && absDy < 45 + QUICK_CHATS.length * ITEM_HEIGHT) {
+                    index = Math.floor((absDy - 45) / ITEM_HEIGHT);
+                }
+
+                setHover(index);
+            },
+            onPanResponderRelease: () => {
+                clearTimeout(timerRef.current);
+                if (!isDraggingRef.current) {
+                    toggleFloatingMessages();
+                } else {
+                    if (hoveredIndexRef.current !== -1) {
+                        sendQuickMessage(QUICK_CHATS[hoveredIndexRef.current]);
+                    }
+                    setPickerVisible(false);
+                    setHover(-1);
+                    isDraggingRef.current = false;
+                }
+
+                if (extendOverlayTimer) extendOverlayTimer();
+            },
+            onPanResponderTerminate: () => {
+                clearTimeout(timerRef.current);
+                setPickerVisible(false);
+                setHover(-1);
+                isDraggingRef.current = false;
+            }
+        })
+    ).current;
+
+    const MainBtn = (
+        <View {...panResponder.panHandlers} style={[styles.reactionMainBtn, { marginBottom: 12 }]}>
+            <Ionicons
+                name={showFloatingMessages ? "chatbubble" : "chatbubble-outline"}
+                size={22}
+                color={showFloatingMessages ? "#FFFFFF" : "#E53935"}
+            />
+        </View>
+    );
+
+    const PickerMenu = (
+        <View style={styles.quickChatPickerMenu}>
+            {QUICK_CHATS.map((msg, idx) => {
+                const isHovered = uiHoveredIndex === idx;
+                return (
+                    <View key={msg} style={[styles.quickChatOption, isHovered && styles.quickChatOptionHovered]}>
+                        <Text style={[styles.quickChatOptionText, isHovered && styles.quickChatOptionTextHovered]}>
+                            {msg}
+                        </Text>
+                    </View>
+                );
+            })}
+        </View>
+    );
+
+    return (
+        <View style={{ pointerEvents: 'box-none', flexDirection: 'column-reverse', alignItems: 'flex-end' }}>
+            {MainBtn}
+            {pickerVisible && PickerMenu}
+        </View>
+    );
+};
+
 
 const FloatingEmoji = ({ emoji, sender, onComplete }) => {
     const animValue = useRef(new Animated.Value(0)).current;
@@ -704,6 +822,13 @@ export default function TheatreScreen() {
         setChatInput('');
     };
 
+    const sendQuickMessage = (text) => {
+        const msgData = { id: Date.now().toString(), roomId, sender: username, text: text, isReaction: false };
+        setMessages(prev => [...prev, msgData]);
+        setActiveFloatingMessages(prev => [...prev, { id: msgData.id, sender: username, text: msgData.text }]);
+        socket.emit('send_chat', msgData);
+    };
+
     const handleSearch = async () => {
         if (!searchInput.trim()) return;
         Keyboard.dismiss();
@@ -1134,25 +1259,21 @@ export default function TheatreScreen() {
                     {showOverlayUI && (
                         <View style={styles.rightOverlayWrapper} pointerEvents="box-none">
                             <View style={styles.rightActionButtons} pointerEvents="box-none">
-                                <TouchableOpacity
-                                    style={[styles.reactionMainBtn, { marginBottom: 12 }]}
-                                    activeOpacity={0.7}
-                                    onPress={() => {
+
+                                <QuickChatButtonUI
+                                    showFloatingMessages={showFloatingMessages}
+                                    toggleFloatingMessages={() => {
                                         setShowFloatingMessages(prev => !prev);
                                         wakeVidLinkOverlay();
                                     }}
-                                >
-                                    <Ionicons
-                                        name={showFloatingMessages ? "chatbubble" : "chatbubble-outline"}
-                                        size={22}
-                                        color={showFloatingMessages ? "#FFFFFF" : "#E53935"}
-                                    />
-                                </TouchableOpacity>
+                                    sendQuickMessage={sendQuickMessage}
+                                    extendOverlayTimer={wakeVidLinkOverlay}
+                                />
 
                                 {/* RESTORED EMOJI SLIDER BUTTON */}
                                 <ReactionButtonUI
                                     isFullScreen={isFullScreen}
-                                    showFloatingEmojis={showFloatingEmojis}
+                                    showFloatingEmojis={showFloatingEmojis} 
                                     toggleDistractionFree={toggleDistractionFree}
                                     sendReaction={sendReaction}
                                     extendOverlayTimer={wakeVidLinkOverlay}
