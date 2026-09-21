@@ -1,16 +1,22 @@
 // src/hooks/useMusicEngine.js
 import { useState, useEffect, useRef } from 'react';
+import { AppState } from 'react-native';
 import Toast from 'react-native-toast-message';
 import TrackPlayer, {
     useActiveMediaItem,
     useIsPlaying,
     useProgress,
-    RepeatMode
+    RepeatMode,
+    Event
 } from '@rntp/player';
 import { safeFetchJson, mapSaavnSong } from '../services/jioSaavnApi';
 import { normalizeString } from '../utils/homehelpers';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL;
+
+// Optional volume fade-out (seconds) applied by the native sleep timer.
+// 0 = pause instantly at the end of the timer.
+const SLEEP_FADE_SECONDS = 0;
 
 export const useMusicEngine = (type, token, insets) => {
     const activeTrack = useActiveMediaItem();
@@ -30,8 +36,11 @@ export const useMusicEngine = (type, token, insets) => {
     // ==========================================
     // ⏰ SLEEP TIMER STATE & REFS
     // ==========================================
-    const [sleepTimerRemaining, setSleepTimerRemaining] = useState(null); // stores seconds
-    const sleepTimerRef = useRef(null);
+    // The REAL timer runs natively inside RNTP (works with screen off / app backgrounded).
+    // JS only keeps an end timestamp so the UI can show a countdown.
+    const [sleepTimerRemaining, setSleepTimerRemaining] = useState(null); // seconds, or null when off
+    const sleepTimerRef = useRef(null);      // UI countdown interval (display only)
+    const sleepEndTimeRef = useRef(null);    // wall-clock end time in ms
 
     const currentMusicIndex = localQueueUI.findIndex(
         t => t.mediaId === activeTrack?.mediaId || t.id === activeTrack?.id || t.id === activeTrack?.mediaId
@@ -47,40 +56,75 @@ export const useMusicEngine = (type, token, insets) => {
     }, [nativePlaying]);
 
     // ==========================================
-    // ⏰ SLEEP TIMER LOGIC
+    // ⏰ SLEEP TIMER LOGIC (NATIVE)
     // ==========================================
-    const startSleepTimer = (minutes) => {
-        // Clear any existing timer first
-        if (sleepTimerRef.current) clearInterval(sleepTimerRef.current);
+    const clearSleepTimerUI = () => {
+        if (sleepTimerRef.current) {
+            clearInterval(sleepTimerRef.current);
+            sleepTimerRef.current = null;
+        }
+        sleepEndTimeRef.current = null;
+        setSleepTimerRemaining(null);
+    };
 
+    // Recalculate the countdown from the wall clock (safe to call any time)
+    const syncSleepTimerUI = () => {
+        if (!sleepEndTimeRef.current) return;
+        const remaining = Math.round((sleepEndTimeRef.current - Date.now()) / 1000);
+        if (remaining <= 0) clearSleepTimerUI();
+        else setSleepTimerRemaining(remaining);
+    };
+
+    const startSleepTimer = (minutes) => {
+        // Reset any existing UI countdown
+        clearSleepTimerUI();
+
+        // Cancel / turn off
         if (!minutes || minutes <= 0) {
-            setSleepTimerRemaining(null);
+            try { TrackPlayer.cancelSleepTimer(); } catch (e) { }
             Toast.show({ type: 'hotstarInfo', text1: 'Sleep timer cancelled' });
             return;
         }
 
-        const endTime = Date.now() + minutes * 60000;
-        setSleepTimerRemaining(minutes * 60); // Store in seconds for the UI
+        const totalSeconds = Math.round(minutes * 60);
+
+        try {
+            // Setting a new native timer automatically replaces the previous one
+            if (SLEEP_FADE_SECONDS > 0) {
+                TrackPlayer.sleepAfterTime(totalSeconds, { fadeOutSeconds: SLEEP_FADE_SECONDS });
+            } else {
+                TrackPlayer.sleepAfterTime(totalSeconds);
+            }
+        } catch (e) {
+            console.error('Failed to start native sleep timer:', e);
+            Toast.show({ type: 'error', text1: 'Could not start sleep timer' });
+            return;
+        }
+
+        sleepEndTimeRef.current = Date.now() + totalSeconds * 1000;
+        setSleepTimerRemaining(totalSeconds);
         Toast.show({ type: 'hotstarSuccess', text1: `Sleep timer set for ${minutes} minutes` });
 
-        // Start the countdown
-        sleepTimerRef.current = setInterval(() => {
-            const remainingSecs = Math.round((endTime - Date.now()) / 1000);
-
-            if (remainingSecs <= 0) {
-                // Time's up! Stop the timer and pause the music
-                clearInterval(sleepTimerRef.current);
-                setSleepTimerRemaining(null);
-                handleSetIsPlaying(false); // Pause TrackPlayer natively
-            } else {
-                setSleepTimerRemaining(remainingSecs);
-            }
-        }, 1000);
+        // Display-only countdown. Pausing is NOT done here anymore.
+        sleepTimerRef.current = setInterval(syncSleepTimerUI, 1000);
     };
 
-    // Cleanup timer if the component/hook unmounts completely
     useEffect(() => {
+        // Native timer fired -> reset the UI (the player is already paused natively)
+        const timerSub = TrackPlayer.addEventListener(Event.SleepTimerTriggered, () => {
+            clearSleepTimerUI();
+            setLocalIsPlaying(false);
+        });
+
+        // Resync the countdown the moment the user returns to the app
+        const appStateSub = AppState.addEventListener('change', (state) => {
+            if (state === 'active') syncSleepTimerUI();
+        });
+
         return () => {
+            timerSub.remove();
+            appStateSub.remove();
+            // Only stop the JS display interval. The native timer keeps running on purpose.
             if (sleepTimerRef.current) clearInterval(sleepTimerRef.current);
         };
     }, []);
@@ -238,9 +282,10 @@ export const useMusicEngine = (type, token, insets) => {
         else TrackPlayer.pause();
     };
 
+    // v5 repeat modes are Off / Queue / Track (RepeatMode.All and RepeatMode.One don't exist in v5)
     const toggleLoopMode = () => {
-        const nextMode = loopMode === RepeatMode.Off ? RepeatMode.All :
-            loopMode === RepeatMode.All ? RepeatMode.One : RepeatMode.Off;
+        const nextMode = loopMode === RepeatMode.Off ? RepeatMode.Queue :
+            loopMode === RepeatMode.Queue ? RepeatMode.Track : RepeatMode.Off;
         setLoopMode(nextMode);
         TrackPlayer.setRepeatMode(nextMode);
     };
@@ -276,7 +321,7 @@ export const useMusicEngine = (type, token, insets) => {
         handleSeekTo,
         handleMusicAction,
 
-        // --- NEW EXPORTS FOR SLEEP TIMER ---
+        // --- SLEEP TIMER EXPORTS ---
         startSleepTimer,
         sleepTimerRemaining
     };
