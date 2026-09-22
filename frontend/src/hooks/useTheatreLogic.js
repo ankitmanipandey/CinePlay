@@ -560,7 +560,7 @@ export const useTheatreLogic = (width, height, isDesktop) => {
         router, roomId, isHostLocal, isJoining, isWaitingForHost, roomUsers,
         selectedUserToMod, setSelectedUserToMod, ytId, videoTitle, isPlaying,
         isMuted, isFullScreen, isPinModalVisible, roomPinInput, setRoomPinInput,
-        searchType, setSearchType, searchInput, setSearchInput, searchResults,
+        searchType, setSearchType, searchInput, setSearchInput, searchResults, setSearchResults,
         isSearching, activeTab, setActiveTab, messages, chatInput, setChatInput,
         chatListRef, isKeyboardVisible, isShareModalVisible, setIsShareModalVisible,
         friendsList, isFetchingFriends, selectedFriends, pendingRequests,

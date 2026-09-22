@@ -10,6 +10,7 @@ import { Ionicons } from '@expo/vector-icons';
 
 import { useLoginLogic } from '../hooks/useLoginLogic';
 import CinePlayLogo from '../components/Logo/CinePlayLogo';
+import GradientText from '../components/Logo/GradientText';
 
 export default function LoginScreenWeb() {
     const { width } = useWindowDimensions();
@@ -37,7 +38,7 @@ export default function LoginScreenWeb() {
 
                     <View style={styles.brandCenter}>
                         <CinePlayLogo size={120} />
-                        <Text style={[styles.logoTextDesktop, styles.webGradientText]}>CinePlay</Text>
+                        <GradientText text="CinePlay" fontSize={56} width={280} height={68} />
                         <Text style={styles.brandSubtitle}>Unlimited movies, TV shows, and more.</Text>
                     </View>
                 </LinearGradient>
@@ -142,7 +143,7 @@ export default function LoginScreenWeb() {
                         <View style={styles.spacerMobile}>
                             <View style={styles.logoCenterContainerMobile}>
                                 <CinePlayLogo size={70} />
-                                <Text style={[styles.logoTextMobile, styles.webGradientText]}>CinePlay</Text>
+                                <GradientText text="CinePlay" fontSize={36} width={190} height={44} />
                             </View>
                         </View>
 
@@ -224,20 +225,12 @@ export default function LoginScreenWeb() {
 }
 
 const styles = StyleSheet.create({
-    // --- SHARED WEB FIXES ---
-    webGradientText: {
-        backgroundImage: 'linear-gradient(to right, #00E5FF, #9B51E0, #FF007A)',
-        WebkitBackgroundClip: 'text',
-        WebkitTextFillColor: 'transparent',
-        color: 'transparent',
-    },
 
     // --- DESKTOP STYLES (>= 1024px) ---
     webContainer: { flex: 1, flexDirection: 'row', height: '100vh', backgroundColor: '#0A0A0C' },
     leftPanel: { flex: 1, justifyContent: 'center', alignItems: 'center', position: 'relative' },
     backButtonDesktop: { position: 'absolute', top: 40, left: 40, cursor: 'pointer', zIndex: 10 },
     brandCenter: { alignItems: 'center', gap: 16 },
-    logoTextDesktop: { fontSize: 56, fontWeight: '900', letterSpacing: 1 },
     brandSubtitle: { color: '#8F98A0', fontSize: 20, marginTop: 8, fontWeight: '500' },
     rightPanel: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#121217' },
     formContainerDesktop: { width: '100%', maxWidth: 420, paddingHorizontal: 32 },
@@ -257,7 +250,6 @@ const styles = StyleSheet.create({
     backButtonMobile: { marginTop: 16, width: 40, height: 40, justifyContent: 'center', zIndex: 10, cursor: 'pointer' },
     spacerMobile: { flex: 1, justifyContent: 'center', alignItems: 'center', minHeight: 180, paddingVertical: 20 },
     logoCenterContainerMobile: { alignItems: 'center', gap: 12 },
-    logoTextMobile: { fontSize: 36, fontWeight: '900', letterSpacing: 0.5, lineHeight: 42 },
     contentMobile: { paddingBottom: 40 },
     titleMobile: { fontSize: 20, fontWeight: 'bold', color: '#FFFFFF', marginBottom: 24 },
     inputWrapperMobile: { marginBottom: 20 },

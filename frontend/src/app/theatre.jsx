@@ -69,7 +69,6 @@ const ReactionButtonUI = ({ isFullScreen, showFloatingEmojis, toggleDistractionF
         }
     };
 
-    // 👇 --- DESKTOP HOVER UI BRANCH --- 👇
     if (isDesktop) {
         return (
             <View
@@ -99,9 +98,7 @@ const ReactionButtonUI = ({ isFullScreen, showFloatingEmojis, toggleDistractionF
             </View>
         );
     }
-    // 👆 --- END DESKTOP BRANCH --- 👆
 
-    // 👇 --- MOBILE TOUCH UI BRANCH (PanResponder) --- 👇
     const panResponder = useRef(
         PanResponder.create({
             onStartShouldSetPanResponder: () => true,
@@ -222,7 +219,7 @@ const FloatingMessage = ({ msg, onComplete }) => {
     );
 };
 
-const CHAT_PANEL_RATIO = 0.3;
+const CHAT_PANEL_RATIO = 0.5;
 
 export default function TheatreScreen() {
     const { width, height } = useWindowDimensions();
@@ -285,6 +282,11 @@ export default function TheatreScreen() {
         }
     };
 
+    // NOTE: This renderer is used only by the MOBILE/TABLET portrait bottom "Chat" tab.
+    // The desktop layout uses <TheatreChatPanel /> directly (untouched) and the fullscreen
+    // slide-in panel also uses <TheatreChatPanel /> (untouched, already tags senders).
+    // FIX: every message row now shows a sender tag ("You" for your own messages, the
+    // sender's name for others) for BOTH text messages and GIFs, matching the fullscreen panel.
     const renderChatMessage = ({ item }) => {
         if (item.isReaction) {
             return (
@@ -301,7 +303,9 @@ export default function TheatreScreen() {
 
         return (
             <View style={[styles.chatMsgWrapper, isMe ? styles.chatMsgRight : styles.chatMsgLeft]}>
-                {!isMe && <Text style={styles.chatSenderName}>{item.sender}</Text>}
+                <Text style={[styles.chatSenderName, isMe && styles.chatSenderNameMe]}>
+                    {isMe ? 'You' : item.sender}
+                </Text>
                 {hasGif ? (
                     <View style={[styles.chatBubble, isMe ? styles.chatBubbleMe : styles.chatBubbleThem, { paddingHorizontal: 4, paddingVertical: 4, backgroundColor: 'transparent' }]}>
                         <Image source={{ uri: item.gifUrl }} style={{ width: 160, height: 160, borderRadius: 12, backgroundColor: '#2A2A30' }} resizeMode="cover" />
@@ -365,6 +369,7 @@ export default function TheatreScreen() {
 
     // --------------------------------------------------------
     // DESKTOP LAYOUT (Split Screen Widescreen Watch Party)
+    // UNTOUCHED — exactly as before.
     // --------------------------------------------------------
     if (isDesktop) {
         const desktopVideoHeight = logic.isFullScreen ? height : height * 0.65;
@@ -615,7 +620,7 @@ export default function TheatreScreen() {
                         )}
                     </View>
 
-                    {/* RIGHT COLUMN: Permanent Chat Panel — reuses TheatreChatPanel (same as mobile fullscreen) */}
+                    {/* RIGHT COLUMN: Permanent Chat Panel */}
                     <View style={[styles.desktopRightColumn, logic.isFullScreen && { width: 400 }]}>
                         <TheatreChatPanel
                             messages={logic.messages}
@@ -710,7 +715,9 @@ export default function TheatreScreen() {
     }
 
     // --------------------------------------------------------
-    // MOBILE & TABLET LAYOUT (Exact Native Clone)
+    // MOBILE & TABLET LAYOUT (native app + mobile/tablet webview)
+    // FIXED: fullscreen chat slider no longer shows a black screen
+    // for either the YouTube player OR the VidLink/movie player.
     // --------------------------------------------------------
     return (
         <SafeAreaView style={styles.safeArea} edges={logic.isFullScreen ? [] : ['top', 'left', 'right']}>
@@ -724,12 +731,23 @@ export default function TheatreScreen() {
                         logic.isFullScreen && { position: 'absolute', top: 0, left: 0, zIndex: 9999, elevation: 9999, backgroundColor: '#000', overflow: 'hidden' }
                     ]}
                 >
+                    {/*
+                        VIDEO LAYER — explicit zIndex/elevation + a web-only stacking-context
+                        isolation so it can never bleed above the chat panel that sits on top
+                        of it, whether the video is the YoutubePlayer WebView or the VidLink
+                        iframe/WebView.
+                    */}
                     <Animated.View
-                        style={{
-                            position: 'absolute', left: 0, top: 0, bottom: 0, right: 0,
-                            justifyContent: 'center', alignItems: 'center',
-                            transform: logic.isFullScreen ? [{ translateX: videoTranslateX }] : []
-                        }}
+                        style={[
+                            {
+                                position: 'absolute', left: 0, top: 0, bottom: 0, right: 0,
+                                justifyContent: 'center', alignItems: 'center',
+                                zIndex: 1,
+                                elevation: 1,
+                                transform: logic.isFullScreen ? [{ translateX: videoTranslateX }] : []
+                            },
+                            Platform.OS === 'web' ? { isolation: 'isolate' } : null
+                        ]}
                         onStartShouldSetResponderCapture={() => {
                             logic.overlayTouchRef.current = false;
                             if (logic.ytId && !logic.isVidLink) {
@@ -897,11 +915,12 @@ export default function TheatreScreen() {
                         )}
                     </Animated.View>
 
-                    {showOverlayUI && (
+                    {logic.ytId && (
                         <Animated.View
                             style={[StyleSheet.absoluteFill, { zIndex: 100000, elevation: 100, opacity: logic.overlayAnim }]}
-                            pointerEvents="box-none"
+                            pointerEvents={logic.overlayVisible ? "box-none" : "none"}
                             renderToHardwareTextureAndroid={true}
+                            needsOffscreenAlphaCompositing={true}
                         >
                             {logic.isFullScreen && (
                                 <>
@@ -945,17 +964,37 @@ export default function TheatreScreen() {
                         </Animated.View>
                     )}
 
+                    {/*
+                        CHAT SLIDE-IN PANEL — THE FIX.
+                        1. renderToHardwareTextureAndroid + needsOffscreenAlphaCompositing:
+                           forces this animated, semi-transparent overlay onto its own
+                           hardware layer on Android so it composites correctly above the
+                           YoutubePlayer WebView / VidLink WebView surface instead of
+                           painting black.
+                        2. Explicit zIndex/elevation HIGHER than every other layer
+                           (video = 1, overlay buttons = 100000-100001) so ordering can
+                           never be ambiguous on either platform.
+                        3. `isolation: 'isolate'` (web only) guarantees this view creates
+                           its own stacking context on top of the <iframe>/<WebView>
+                           beneath it, which some browsers otherwise stack unpredictably.
+                        This works identically for the YouTube player AND the VidLink
+                        movie/TV player since both just live inside the video layer below.
+                    */}
                     {logic.chatPanelRendered && logic.isFullScreen && (
                         <Animated.View
-                            style={{
-                                position: 'absolute',
-                                right: 0, top: 0, bottom: 0,
-                                width: panelWidth,
-                                zIndex: 100002,
-                                elevation: 102,
-                                transform: [{ translateX: chatTranslateX }]
-                            }}
+                            style={[
+                                {
+                                    position: 'absolute',
+                                    right: 0, top: 0, bottom: 0,
+                                    width: panelWidth,
+                                    zIndex: 100002,
+                                    elevation: 102,
+                                    transform: [{ translateX: chatTranslateX }]
+                                },
+                                Platform.OS === 'web' ? { isolation: 'isolate' } : null
+                            ]}
                             renderToHardwareTextureAndroid={true}
+                            needsOffscreenAlphaCompositing={true}
                         >
                             <TheatreChatPanel
                                 messages={logic.messages}
@@ -1524,6 +1563,7 @@ const styles = StyleSheet.create({
     chatMsgLeft: { alignSelf: 'flex-start' },
     chatMsgRight: { alignSelf: 'flex-end' },
     chatSenderName: { color: '#8F98A0', fontSize: 11, marginBottom: 4, marginLeft: 4 },
+    chatSenderNameMe: { color: '#00E5FF' },
     chatBubble: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 16 },
     chatBubbleThem: { backgroundColor: '#2A2A30', borderBottomLeftRadius: 4 },
     chatBubbleMe: { borderBottomRightRadius: 4 },
@@ -1628,16 +1668,7 @@ const styles = StyleSheet.create({
         fontSize: 15,
         outlineStyle: 'none'
     },
-    floatingMessagesZoneDesktop: {
-        position: 'absolute',
-        bottom: 20,
-        left: 20,
-        width: 340,
-        maxHeight: '60%',
-        pointerEvents: 'none',
-        justifyContent: 'flex-end',
-        zIndex: 99998
-    }, desktopContainerFullScreen: {
+    desktopContainerFullScreen: {
         position: 'absolute',
         top: 0, left: 0, right: 0, bottom: 0,
         zIndex: 999999,
@@ -1650,7 +1681,6 @@ const styles = StyleSheet.create({
         borderRadius: 0,
         borderWidth: 0,
     },
-
     desktopViewersBar: { backgroundColor: '#14141A', borderRadius: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)', paddingVertical: 16, paddingHorizontal: 20, marginBottom: 20 },
     desktopViewersBarTitle: { color: '#FFFFFF', fontSize: 14, fontWeight: 'bold', marginBottom: 12 },
     desktopViewersScroll: { gap: 12, alignItems: 'center' },
@@ -1658,7 +1688,6 @@ const styles = StyleSheet.create({
     desktopViewerAvatar: { width: 26, height: 26, borderRadius: 13, backgroundColor: '#9B51E0', justifyContent: 'center', alignItems: 'center' },
     desktopViewerAvatarText: { color: '#FFF', fontSize: 12, fontWeight: 'bold' },
     desktopViewerChipText: { color: '#E6E6EA', fontSize: 14, fontWeight: '600' },
-
     desktopHostPanelTitle: { color: '#FFFFFF', fontSize: 15, fontWeight: 'bold', marginBottom: 16 },
     desktopSearchToggleRow: { flexDirection: 'row', gap: 12, marginBottom: 16 },
     desktopSearchToggleBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#1C1C22', paddingVertical: 14, borderRadius: 12, gap: 8, borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)', cursor: 'pointer' },

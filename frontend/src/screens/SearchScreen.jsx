@@ -1,5 +1,6 @@
 import React from 'react';
 import { StyleSheet, Text, View, TextInput, TouchableOpacity, ScrollView, Image, ActivityIndicator, useWindowDimensions, Platform } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context'; // <-- Imported SafeAreaView
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
@@ -27,7 +28,7 @@ export default function SearchScreenWeb() {
   // --------------------------------------------------------
   if (isDesktop) {
     return (
-      <View style={styles.desktopContainer}>
+      <SafeAreaView style={styles.desktopContainer}>
         <View style={styles.desktopHeaderRow}>
           <View style={[styles.searchBox, isAiMode && styles.searchBoxAi, isListening && styles.searchBoxActive]}>
             <Ionicons name={isAiMode ? "sparkles" : (isYtMode ? "logo-youtube" : "search")} size={22} color={isAiMode ? "#9B51E0" : (isYtMode ? "#FF007A" : "#8F98A0")} style={styles.searchIcon} />
@@ -134,7 +135,7 @@ export default function SearchScreenWeb() {
             </ScrollView>
           )}
         </View>
-      </View>
+      </SafeAreaView>
     );
   }
 
@@ -142,7 +143,7 @@ export default function SearchScreenWeb() {
   // MOBILE & TABLET LAYOUT (Exact Native Clone)
   // --------------------------------------------------------
   return (
-    <View style={styles.mobileContainer}>
+    <SafeAreaView style={styles.mobileContainer}>
       <View style={styles.mobileSearchHeader}>
         <View style={[styles.mobileSearchBox, isAiMode && styles.searchBoxAi, isListening && styles.searchBoxActive]}>
           <Ionicons name={isAiMode ? "sparkles" : (isYtMode ? "logo-youtube" : "search")} size={20} color={isAiMode ? "#9B51E0" : (isYtMode ? "#FF007A" : "#8F98A0")} style={styles.searchIcon} />
@@ -251,7 +252,7 @@ export default function SearchScreenWeb() {
           </ScrollView>
         )}
       </View>
-    </View>
+    </SafeAreaView>
   );
 }
 

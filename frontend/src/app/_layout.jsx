@@ -265,6 +265,22 @@ export default function RootLayout() {
     checkUserAuth();
   }, []);
 
+  useEffect(() => {
+    if (Platform.OS === 'web' || !TrackPlayer) return;
+
+    (async () => {
+      try {
+        await TrackPlayer.setupPlayer();
+        console.log('✅ TrackPlayer initialized');
+
+        // Commented out until we find the right argument shape:
+        // await TrackPlayer.setCommands([...]);
+      } catch (e) {
+        console.error('❌ TrackPlayer setup failed:', e);
+      }
+    })();
+  }, []);
+
   if (isLoading) return (
     <LinearGradient colors={['#170D22', '#0A0A0C']} style={styles.loadingContainer}>
       <ActivityIndicator size="large" color="#1F80E0" />

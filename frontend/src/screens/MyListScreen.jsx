@@ -10,7 +10,8 @@ export default function MyListScreenWeb() {
 
     const {
         router, insets, activeTab, setActiveTab, isLoading,
-        watchlist, watched, handleAuthAction, handleStatusChange, activeData
+        watchlist, watched, handleAuthAction, handleStatusChange, activeData,
+        moviesData
     } = useMyListLogic();
 
     // --------------------------------------------------------

@@ -28,8 +28,8 @@ export const QUICK_PHRASES = [
     'Oh no!!!',
 ];
 
-const LONG_PRESS_MS = 250;
-const DOUBLE_TAP_MS = 260;
+const LONG_PRESS_MS = 220;
+const DOUBLE_TAP_MS = 320;
 const COLS = 2;
 const CELL_H = 36;
 const PAD = 6;

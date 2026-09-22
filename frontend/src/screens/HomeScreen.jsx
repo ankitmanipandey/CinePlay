@@ -25,6 +25,7 @@ import CinePlayLogo from '../components/Logo/CinePlayLogo';
 
 import { useHomeLogic } from '../hooks/useHomeLogic';
 import { getImageUrl } from '../constants/config';
+import GradientText from '../components/Logo/GradientText';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
     UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -325,9 +326,7 @@ export default function HomeScreen() {
                             {Platform.OS === 'web' ? (
                                 <Text style={[styles.appName, styles.webGradientText]}>CinePlay</Text>
                             ) : (
-                                <MaskedView style={styles.maskedView} maskElement={<Text style={styles.appName}>CinePlay</Text>}>
-                                    <LinearGradient colors={['#00E5FF', '#9B51E0', '#FF007A']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={StyleSheet.absoluteFill} />
-                                </MaskedView>
+                                <GradientText text="CinePlay" fontSize={26} width={150} height={36} />
                             )}
                         </View>
                         <TouchableOpacity style={styles.headerRightBtn} onPress={() => handleAuthAction(() => router.push('/my-list'))}>
@@ -508,6 +507,7 @@ export default function HomeScreen() {
             )}
             {showMusicModal && (
                 <ReAnimated.View
+                    pointerEvents={isMusicModalOpen ? 'auto' : 'none'}
                     style={[
                         StyleSheet.absoluteFillObject,
                         { zIndex: 10000, elevation: 10000, backgroundColor: '#0A0A0C' },
@@ -526,10 +526,6 @@ export default function HomeScreen() {
                     </View>
                 </ReAnimated.View>
             )}
-
-            <View style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 9999, elevation: 9999 }} pointerEvents="box-none">
-                <Toast config={toastConfig} position="top" topOffset={insets.top > 0 ? insets.top + 10 : 50} />
-            </View>
         </LinearGradient>
     );
 }

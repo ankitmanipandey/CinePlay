@@ -176,6 +176,8 @@ export const useMusicEngine = (type, token, insets) => {
         setLocalQueueUI(rntpQueue);
 
         await TrackPlayer.setMediaItems(rntpQueue, selectedIndex);
+        await TrackPlayer.play(); 
+
 
         // INSTANT UI FIX: Immediately tell the app it is playing!
         setLocalIsPlaying(true);
