@@ -13,8 +13,7 @@ buddyRouter.get('/search', protect, async (req, res) => {
         if (!query) return res.status(200).json([]);
 
         const users = await User.find({
-            _id: { $ne: req.user._id },
-            $or: [
+            _id: { $ne: req.user._id }, $or: [
                 { name: { $regex: query, $options: 'i' } },
                 { email: { $regex: query, $options: 'i' } }
             ]
@@ -32,12 +31,15 @@ buddyRouter.post('/request', protect, async (req, res) => {
         const { receiverId } = req.body;
         const senderId = req.user._id;
 
+        if (receiverId.toString() === senderId.toString()) {
+            return res.status(400).json({ message: 'You cannot add yourself.' });
+        }
+
         const receiver = await User.findById(receiverId);
         const sender = await User.findById(senderId);
 
         if (!receiver) return res.status(404).json({ message: 'User not found' });
 
-        // 🚨 FIX: Convert both IDs to strings for a flawless comparison
         const isAlreadyFriend = receiver.friends.some(id => id.toString() === senderId.toString());
         const hasPendingRequest = receiver.friendRequests.some(id => id.toString() === senderId.toString());
 
@@ -48,7 +50,6 @@ buddyRouter.post('/request', protect, async (req, res) => {
             return res.status(400).json({ message: 'Cinerequest already sent.' });
         }
 
-        // Add to requests
         receiver.friendRequests.push(senderId);
 
         const newNotification = {
@@ -60,24 +61,23 @@ buddyRouter.post('/request', protect, async (req, res) => {
         await receiver.save();
 
         const globalNamespace = req.app.locals.globalNamespace;
-        const onlineUsers = req.app.locals.onlineUsers;
-        const receiverSocketId = onlineUsers.get(receiverId.toString());
+        const savedNotification = receiver.notifications[receiver.notifications.length - 1];
 
-        if (receiverSocketId) {
-            const savedNotification = receiver.notifications[receiver.notifications.length - 1];
-            globalNamespace.to(receiverSocketId).emit('new_notification', savedNotification);
-        } else {
-            if (receiver.expoPushToken && Expo.isExpoPushToken(receiver.expoPushToken)) {
-                let expo = new Expo();
-                let pushMessages = [{
-                    to: receiver.expoPushToken,
-                    sound: 'default',
-                    title: '👋 New Cinerequest!',
-                    body: `${sender.name} sent you a Cinerequest.`,
-                    data: { type: 'CINEREQUEST', senderId: sender._id },
-                }];
-                try { await expo.sendPushNotificationsAsync(pushMessages); } catch (pushErr) { }
-            }
+        // Emit live to the receiver's room
+        globalNamespace.to(receiverId.toString()).emit('new_notification', savedNotification);
+
+        // Check if they are actually connected right now; if not, send a Push Notification
+        const sockets = await globalNamespace.in(receiverId.toString()).fetchSockets();
+        if (sockets.length === 0 && receiver.expoPushToken && Expo.isExpoPushToken(receiver.expoPushToken)) {
+            let expo = new Expo();
+            let pushMessages = [{
+                to: receiver.expoPushToken,
+                sound: 'default',
+                title: '👋 New Cinerequest!',
+                body: `${sender.name} sent you a Cinerequest.`,
+                data: { type: 'CINEREQUEST', senderId: sender._id },
+            }];
+            try { await expo.sendPushNotificationsAsync(pushMessages); } catch (pushErr) { }
         }
 
         res.status(200).json({ message: 'Cinerequest sent successfully' });
@@ -97,16 +97,19 @@ buddyRouter.post('/accept', protect, async (req, res) => {
         }
 
         const user = await User.findById(userId);
+
+        if (!user.friendRequests.some(id => id.toString() === senderId.toString())) {
+            return res.status(400).json({ message: 'No pending request found from this user.' });
+        }
+
         const sender = await User.findById(senderId);
 
         if (!user || !sender) {
             return res.status(404).json({ message: 'User or Sender not found' });
         }
 
-        // 1. Clean up friend request array
         user.friendRequests = user.friendRequests.filter(id => id.toString() !== senderId.toString());
 
-        // 2. Clear the notification card (safely handles missing notificationId)
         if (notificationId) {
             user.notifications = user.notifications.filter(n => n._id.toString() !== notificationId);
         } else {
@@ -115,7 +118,6 @@ buddyRouter.post('/accept', protect, async (req, res) => {
             );
         }
 
-        // 3. Add to both friends arrays safely
         if (!user.friends.some(id => id.toString() === senderId.toString())) {
             user.friends.push(senderId);
         }
@@ -123,7 +125,6 @@ buddyRouter.post('/accept', protect, async (req, res) => {
             sender.friends.push(userId);
         }
 
-        // 4. Alert sender (User A) that their request was accepted
         const acceptanceNotification = {
             type: 'ACCEPTED_ALERT',
             senderId: userId,
@@ -134,26 +135,23 @@ buddyRouter.post('/accept', protect, async (req, res) => {
         await user.save();
         await sender.save();
 
-        // 5. Initialize Socket & Push logic
         const globalNamespace = req.app.locals.globalNamespace;
-        const onlineUsers = req.app.locals.onlineUsers;
-        const senderSocketId = onlineUsers.get(senderId.toString());
+        const savedAcceptance = sender.notifications[sender.notifications.length - 1];
 
-        if (senderSocketId) {
-            const savedAcceptance = sender.notifications[sender.notifications.length - 1];
-            globalNamespace.to(senderSocketId).emit('new_notification', savedAcceptance);
-        } else {
-            if (sender.expoPushToken && Expo.isExpoPushToken(sender.expoPushToken)) {
-                let expo = new Expo();
-                let pushMessages = [{
-                    to: sender.expoPushToken,
-                    sound: 'default',
-                    title: '🎉 Cinerequest Accepted!',
-                    body: `${user.name} accepted your Cinerequest. You are now CineBuddies!`,
-                    data: { type: 'CINEREQUEST_ACCEPTED', buddyId: user._id },
-                }];
-                try { await expo.sendPushNotificationsAsync(pushMessages); } catch (pushErr) { }
-            }
+        // Emit live to the sender's room
+        globalNamespace.to(senderId.toString()).emit('new_notification', savedAcceptance);
+
+        const sockets = await globalNamespace.in(senderId.toString()).fetchSockets();
+        if (sockets.length === 0 && sender.expoPushToken && Expo.isExpoPushToken(sender.expoPushToken)) {
+            let expo = new Expo();
+            let pushMessages = [{
+                to: sender.expoPushToken,
+                sound: 'default',
+                title: '🎉 Cinerequest Accepted!',
+                body: `${user.name} accepted your Cinerequest. You are now CineBuddies!`,
+                data: { type: 'CINEREQUEST_ACCEPTED', buddyId: user._id },
+            }];
+            try { await expo.sendPushNotificationsAsync(pushMessages); } catch (pushErr) { }
         }
 
         res.status(200).json({ message: 'Cinerequest accepted' });
@@ -181,25 +179,20 @@ buddyRouter.post('/reject', protect, async (req, res) => {
             return res.status(404).json({ message: 'User not found' });
         }
 
-        // 1. Clean up friend request array
         user.friendRequests = user.friendRequests.filter(id => id.toString() !== senderId.toString());
 
-        // 2. Identify the type of notification BEFORE clearing it
-        let notificationType = null; // 👈 FIX 1: Do not default to CINEREQUEST
+        let notificationType = null;
 
         if (notificationId) {
             const targetNotif = user.notifications.find(n => n._id.toString() === notificationId);
 
-            // 👈 FIX 2: If the notification was already deleted on the first click, stop here safely!
             if (!targetNotif) {
                 return res.status(200).json({ message: 'Notification already handled' });
             }
 
             notificationType = targetNotif.type;
-            // Clear the notification
             user.notifications = user.notifications.filter(n => n._id.toString() !== notificationId);
         } else {
-            // Fallback clear
             notificationType = 'CINEREQUEST';
             user.notifications = user.notifications.filter(n =>
                 !(n.type === 'CINEREQUEST' && n.senderId.toString() === senderId.toString())
@@ -208,7 +201,6 @@ buddyRouter.post('/reject', protect, async (req, res) => {
 
         await user.save();
 
-        // 3. ONLY fire the rejection alert if they actually rejected a friend request
         if (notificationType === 'CINEREQUEST') {
             const rejectionAlert = {
                 type: 'REJECTED_ALERT',
@@ -218,37 +210,27 @@ buddyRouter.post('/reject', protect, async (req, res) => {
             sender.notifications.push(rejectionAlert);
             await sender.save();
 
-            // 4. Initialize Socket & Push logic
             const globalNamespace = req.app.locals.globalNamespace;
-            const onlineUsers = req.app.locals.onlineUsers;
-            const senderSocketId = onlineUsers.get(senderId.toString());
+            const savedRejection = sender.notifications[sender.notifications.length - 1];
 
-            if (senderSocketId) {
-                const savedRejection = sender.notifications[sender.notifications.length - 1];
-                globalNamespace.to(senderSocketId).emit('request_rejected', savedRejection);
-            } else {
-                if (sender.expoPushToken && Expo.isExpoPushToken(sender.expoPushToken)) {
-                    const { Expo } = require('expo-server-sdk');
-                    let expo = new Expo();
-                    let pushMessages = [{
-                        to: sender.expoPushToken,
-                        sound: 'default',
-                        title: 'Cinerequest Update',
-                        body: `${user.name} rejected your Cinerequest.`,
-                        data: { type: 'REJECTED_ALERT' },
-                    }];
-                    try {
-                        await expo.sendPushNotificationsAsync(pushMessages);
-                    } catch (pushErr) {
-                        console.error('Expo Push Failed:', pushErr);
-                    }
-                }
+            globalNamespace.to(senderId.toString()).emit('request_rejected', savedRejection);
+
+            const sockets = await globalNamespace.in(senderId.toString()).fetchSockets();
+            if (sockets.length === 0 && sender.expoPushToken && Expo.isExpoPushToken(sender.expoPushToken)) {
+                let expo = new Expo();
+                let pushMessages = [{
+                    to: sender.expoPushToken,
+                    sound: 'default',
+                    title: 'Cinerequest Update',
+                    body: `${user.name} rejected your Cinerequest.`,
+                    data: { type: 'REJECTED_ALERT' },
+                }];
+                try { await expo.sendPushNotificationsAsync(pushMessages); } catch (pushErr) { console.error('Expo Push Failed:', pushErr); }
             }
 
             return res.status(200).json({ message: 'Cinerequest rejected' });
         }
 
-        // If it was just a THEATRE_INVITE being dismissed, exit quietly
         res.status(200).json({ message: 'Notification dismissed silently' });
 
     } catch (error) {
@@ -263,12 +245,11 @@ buddyRouter.post('/unfriend', protect, async (req, res) => {
         const { friendId } = req.body;
         const userId = req.user._id;
 
-        // 1. Remove from friends AND clear any stale friendRequests between them
         await User.findByIdAndUpdate(userId, {
             $pull: {
                 friends: friendId,
                 friendRequests: friendId,
-                'notifications': { senderId: friendId } // Optional: clears old cards
+                'notifications': { senderId: friendId }
             }
         });
 
@@ -281,14 +262,11 @@ buddyRouter.post('/unfriend', protect, async (req, res) => {
         });
 
         const globalNamespace = req.app.locals.globalNamespace;
-        const onlineUsers = req.app.locals.onlineUsers;
 
-        const friendSocketId = onlineUsers.get(friendId.toString());
-        if (friendSocketId) {
-            globalNamespace.to(friendSocketId).emit('friend_removed', {
-                unfriendedBy: userId.toString()
-            });
-        }
+        // Let the friend's client know they were removed so their UI updates
+        globalNamespace.to(friendId.toString()).emit('friend_removed', {
+            unfriendedBy: userId.toString()
+        });
 
         res.status(200).json({ message: 'Removed from CineBuddies' });
     } catch (error) {
@@ -310,7 +288,7 @@ buddyRouter.get('/notifications', protect, async (req, res) => {
 buddyRouter.get('/list', protect, async (req, res) => {
     try {
         const user = await User.findById(req.user._id).populate('friends', 'name email profilePicture');
-        const onlineUsers = req.app.locals.onlineUsers;
+        const globalNamespace = req.app.locals.globalNamespace;
 
         const friendsWithUnreadCounts = await Promise.all(user.friends.map(async (friend) => {
             const unreadCount = await Message.countDocuments({
@@ -319,10 +297,13 @@ buddyRouter.get('/list', protect, async (req, res) => {
                 isRead: { $ne: true }
             });
 
+            // Check if the friend's socket room has any active connections
+            const sockets = await globalNamespace.in(friend._id.toString()).fetchSockets();
+
             return {
                 ...friend.toObject(),
                 unreadCount,
-                isOnline: onlineUsers ? onlineUsers.has(friend._id.toString()) : false
+                isOnline: sockets.length > 0
             };
         }));
 
@@ -346,24 +327,17 @@ buddyRouter.post('/invite', protect, async (req, res) => {
         const rooms = req.app.locals.rooms;
         const room = rooms ? rooms[roomId] : null;
 
-        // ==========================================
-        // NEW IN-MEMORY BLOCK & AUTO-FORGIVE LOGIC 
-        // ==========================================
         if (room && room.hostUserId) {
-            // 1. Check Room-Specific Memory Block List instead of MongoDB!
             const isBlocked = room.blockedUsers && room.blockedUsers.includes(receiverId.toString());
 
             if (isBlocked) {
-                // If the HOST is the one sending the invite, forgive and unblock!
                 if (senderId.toString() === room.hostUserId.toString()) {
                     room.blockedUsers = room.blockedUsers.filter(id => id !== receiverId.toString());
                 } else {
-                    // If a regular viewer is trying to invite someone the Host blocked, stop them.
                     return res.status(403).json({ message: 'Your Friend is blocked from this room.' });
                 }
             }
 
-            // 2. Pre-approve the user if the Host invited them (bypasses gates)
             if (room.hostUserId.toString() === senderId.toString()) {
                 room.preApprovedUsers = room.preApprovedUsers || [];
                 if (!room.preApprovedUsers.includes(receiverId.toString())) {
@@ -371,7 +345,6 @@ buddyRouter.post('/invite', protect, async (req, res) => {
                 }
             }
         }
-        // ==========================================
 
         const displayTitle = videoTitle ? `"${videoTitle}"` : 'a video';
         const notificationMessage = `You got a Theatre Invite from ${sender.name} for ${displayTitle}, click to join`;
@@ -386,25 +359,21 @@ buddyRouter.post('/invite', protect, async (req, res) => {
         await receiver.save();
 
         const globalNamespace = req.app.locals.globalNamespace;
-        const onlineUsers = req.app.locals.onlineUsers;
-        const receiverSocketId = onlineUsers.get(receiverId.toString());
+        const savedNotification = receiver.notifications[receiver.notifications.length - 1];
 
-        if (receiverSocketId) {
-            const savedNotification = receiver.notifications[receiver.notifications.length - 1];
-            globalNamespace.to(receiverSocketId).emit('new_notification', savedNotification);
-        } else {
-            if (receiver.expoPushToken && Expo.isExpoPushToken(receiver.expoPushToken)) {
-                const { Expo } = require('expo-server-sdk'); // Ensure Expo is required if not at top
-                let expo = new Expo();
-                let messages = [{
-                    to: receiver.expoPushToken,
-                    sound: 'default',
-                    title: '🎬 CinePlay Invite',
-                    body: notificationMessage,
-                    data: { roomId: roomId, type: 'THEATRE_INVITE' },
-                }];
-                try { await expo.sendPushNotificationsAsync(messages); } catch (pushErr) { }
-            }
+        globalNamespace.to(receiverId.toString()).emit('new_notification', savedNotification);
+
+        const sockets = await globalNamespace.in(receiverId.toString()).fetchSockets();
+        if (sockets.length === 0 && receiver.expoPushToken && Expo.isExpoPushToken(receiver.expoPushToken)) {
+            let expo = new Expo();
+            let messages = [{
+                to: receiver.expoPushToken,
+                sound: 'default',
+                title: '🎬 CinePlay Invite',
+                body: notificationMessage,
+                data: { roomId: roomId, type: 'THEATRE_INVITE' },
+            }];
+            try { await expo.sendPushNotificationsAsync(messages); } catch (pushErr) { }
         }
 
         res.status(200).json({ message: 'Invite sent successfully' });
@@ -418,12 +387,10 @@ buddyRouter.get('/discover', protect, async (req, res) => {
     try {
         const userId = req.user._id;
 
-        // 1. Get Friends and Received Requests
         const user = await User.findById(userId)
             .populate('friends', '_id name email profilePicture')
             .populate('friendRequests', '_id name email profilePicture');
 
-        // 2. Get Sent Requests (Users who have MY id in their friendRequests array)
         const sentRequests = await User.find({ friendRequests: userId })
             .select('_id name email profilePicture');
 

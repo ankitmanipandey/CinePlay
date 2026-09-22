@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const socketIo = require('socket.io');
 require('dotenv').config();
+const cors = require('cors');
 const connectDB = require('../database/connectDB');
 const authRouter = require('../routes/authRouter');
 const userRouter = require('../routes/userRouter');
@@ -18,16 +19,56 @@ const { protect } = require('../middleware/authMiddleware');
 const app = express();
 
 const server = http.createServer(app);
+
+const allowedOrigins = ['http://localhost:8081', 'https://your-netlify-url.netlify.app']; // Add your actual Netlify URL
+
+app.use(cors({
+    origin: allowedOrigins,
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    credentials: true
+}));
+
 const io = socketIo(server, {
     cors: {
-        origin: '*',
-        methods: ['GET', 'POST']
+        origin: allowedOrigins,
+        methods: ['GET', 'POST'],
+        credentials: true
     }
 });
 
 app.use(express.json());
 
 app.get('/', (req, res) => { res.status(200).send('Server is awake'); });
+
+// =========================================================
+// CORS PROXY ROUTE FOR WEB VIEW (ESPN/TV DATA)
+// =========================================================
+app.get('/api/proxy/fetch', async (req, res) => {
+    try {
+        const targetUrl = req.query.url;
+        if (!targetUrl) return res.status(400).json({ error: 'Target URL is required' });
+
+        // Add a standard Chrome User-Agent so GitHub/ESPN don't block the Node.js request
+        const response = await fetch(targetUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                'Accept': 'application/json'
+            }
+        });
+
+        // Ensure we actually got a successful response before trying to parse JSON
+        if (!response.ok) {
+            throw new Error(`External API responded with status: ${response.status}`);
+        }
+
+        const data = await response.json();
+        res.status(200).json(data);
+
+    } catch (error) {
+        console.error('[Proxy Error]:', error.message);
+        res.status(500).json({ error: 'Failed to fetch data from external API' });
+    }
+});
 
 app.use('/api/auth', authRouter);
 app.use('/api/user', userRouter);
@@ -420,6 +461,9 @@ apiNamespace.on('connection', (socket) => {
         socket.to(roomId).emit('new_video', { roomId, ytId: data.ytId, title: data.title });
     }));
 
+    // ---------------------------------------------------------
+    // SYNC ACTION - current host only
+    // ---------------------------------------------------------
     socket.on('sync_action', safe(async (data = {}) => {
         const roomId = asId(data.roomId) || socket.data.roomId;
         const room = rooms[roomId];
@@ -507,29 +551,39 @@ apiNamespace.on('connection', (socket) => {
 // 2. GLOBAL SOCKET NAMESPACE (/global) for CineBuddies
 // =========================================================
 const globalNamespace = io.of('/global');
-const onlineUsers = new Map(); // Tracks online users: userId -> socket.id
 app.locals.globalNamespace = globalNamespace;
-app.locals.onlineUsers = onlineUsers;
 app.locals.rooms = rooms;
-
-module.exports.onlineUsers = onlineUsers;
 module.exports.globalNamespace = globalNamespace;
 
-globalNamespace.on('connection', (socket) => {
-    socket.on('register_user', (userId) => {
-        if (userId) {
-            const uid = userId.toString();
-            onlineUsers.set(uid, socket.id);
-            socket.data.userId = uid;
-            globalNamespace.emit('user_status', { userId: uid, isOnline: true });
-        }
-    });
+// 1. Authenticate the global socket just like the theatre socket
+globalNamespace.use((socket, next) => {
+    const token = socket.handshake?.auth?.token;
+    if (token && token !== 'null' && token !== 'undefined') {
+        try {
+            const decoded = jwt.verify(token, process.env.JWT_SECRET);
+            socket.data.userId = String(decoded.id);
+            return next();
+        } catch (err) { }
+    }
+    next(new Error("Not authorized"));
+});
 
-    socket.on('disconnect', () => {
-        const userId = socket.data.userId;
-        if (userId && onlineUsers.get(userId) === socket.id) {
-            onlineUsers.delete(userId);
-            globalNamespace.emit('user_status', { userId: userId, isOnline: false });
+// 2. Connect using Socket Rooms (Supports multi-device natively)
+globalNamespace.on('connection', (socket) => {
+    const uid = socket.data.userId;
+
+    if (uid) {
+        socket.join(uid);
+        globalNamespace.emit('user_status', { userId: uid, isOnline: true });
+    }
+
+    socket.on('disconnect', async () => {
+        if (uid) {
+            // Check if they have other devices still connected
+            const sockets = await globalNamespace.in(uid).fetchSockets();
+            if (sockets.length === 0) {
+                globalNamespace.emit('user_status', { userId: uid, isOnline: false });
+            }
         }
     });
 });

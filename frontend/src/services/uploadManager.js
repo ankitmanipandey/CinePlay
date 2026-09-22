@@ -1,4 +1,5 @@
 // services/uploadManager.js
+import { Platform } from 'react-native';
 import notifee, { AndroidImportance, EventType } from '@notifee/react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as VideoThumbnails from 'expo-video-thumbnails';
@@ -9,6 +10,7 @@ import { router } from 'expo-router';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL || 'http://192.168.x.x:5000/api';
 const CHANNEL_ID = 'cineplay-video-upload';
+const IS_WEB = Platform.OS === 'web';
 
 // Keep notification icon payload well under Android's ~1MB Binder transaction limit
 const MAX_ICON_BASE64_BYTES = 150 * 1024;
@@ -22,6 +24,7 @@ let resolveServiceTask = null;
 let unsubscribeForegroundEvent = null;
 
 // Register Foreground Service handler once at app startup
+// (caller already guards this with Platform.OS !== 'web', kept as-is)
 export const registerUploadForegroundService = () => {
     notifee.registerForegroundService((notification) => {
         return new Promise((resolve) => {
@@ -44,8 +47,9 @@ export const cancelActiveUpload = () => {
     isCancelled = true;
 };
 
-// Helper: Setup Notification Channel
+// Helper: Setup Notification Channel — no-op on web, notifee has no web support
 async function ensureChannel() {
+    if (IS_WEB) return;
     await notifee.createChannel({
         id: CHANNEL_ID,
         name: 'Video Uploads',
@@ -54,10 +58,11 @@ async function ensureChannel() {
     });
 }
 
-// Helper: Update Foreground Notification
+// Helper: Update Foreground Notification — no-op on web
 // `thumbnailUri` should already be a small base64 data URI (or undefined) — see
 // getNotificationSafeThumbnail(). Never pass a raw/full-res thumbnail here.
 async function updateNotification({ title, progress, thumbnailUri }) {
+    if (IS_WEB) return;
     await notifee.displayNotification({
         id: 'active-upload',
         title: `Uploading: ${title}`,
@@ -83,8 +88,9 @@ async function updateNotification({ title, progress, thumbnailUri }) {
 
 // Generates a small, notification-safe icon (resized + compressed) from a video
 // thumbnail. Returns null on any failure — a missing icon is fine, a crashed
-// upload from an oversized Binder transaction is not.
+// upload from an oversized Binder transaction is not. No-op on web (no notification to attach it to).
 async function getNotificationSafeThumbnail(sourceUri) {
+    if (IS_WEB) return null;
     try {
         const manipulated = await ImageManipulator.manipulateAsync(
             sourceUri,
@@ -106,6 +112,27 @@ async function getNotificationSafeThumbnail(sourceUri) {
         console.log('Notification thumbnail resize failed:', e.message);
         return null;
     }
+}
+
+// Reads one chunk of the source file as an ArrayBuffer, ready to hand straight
+// to xhr.send(). Branches by platform because there is no shared filesystem API:
+// native reads by path via expo-file-system (base64 in, decoded to ArrayBuffer),
+// web slices the real browser File/Blob object directly (no base64 round-trip needed).
+async function readFileChunk({ localFileUri, fileObject, offset, length }) {
+    if (IS_WEB) {
+        if (!fileObject) {
+            throw new Error('Missing fileObject: required to read file chunks on web');
+        }
+        const blobSlice = fileObject.slice(offset, offset + length);
+        return await blobSlice.arrayBuffer();
+    }
+
+    const base64Chunk = await FileSystem.readAsStringAsync(localFileUri, {
+        encoding: FileSystem.EncodingType.Base64,
+        position: offset,
+        length,
+    });
+    return decode(base64Chunk);
 }
 
 // Uploads a single part with retry + timeout, resolving the ETag on success.
@@ -166,10 +193,12 @@ function uploadPartWithRetry(presignedUrl, binaryBuffer, isCancelledFn) {
 // Main Upload Function
 export const uploadFileInBackground = async ({
     localFileUri,
+    fileObject, // browser File/Blob — required on web, unused on native
     filename,
     mimeType,
     fileSize,
     title,
+    token,
     onProgress
 }) => {
     isCancelled = false;
@@ -177,8 +206,25 @@ export const uploadFileInBackground = async ({
     if (!localFileUri || !fileSize || fileSize <= 0) {
         throw new Error('Invalid file: missing URI or size');
     }
+    if (!token) {
+        // Fail fast and clearly instead of letting every request below 401 silently.
+        throw new Error('Missing auth token');
+    }
+    if (IS_WEB && !fileObject) {
+        throw new Error('Missing fileObject: required to upload on web');
+    }
 
-    await notifee.requestPermission();
+    // Every backend route this file talks to (thumbnail-upload-url, multipart/init,
+    // multipart/part-url, multipart/complete, multipart/abort) is behind `protect`,
+    // so every one of those calls needs this. The only calls that must NOT get this
+    // header are the direct PUTs to the R2 presigned URLs (those authenticate via
+    // the signature in the URL itself, not your app's JWT).
+    const authHeaders = { headers: { Authorization: `Bearer ${token}` } };
+
+    // notifee has no web implementation at all — requestPermission()/etc. would throw.
+    if (!IS_WEB) {
+        await notifee.requestPermission();
+    }
     await ensureChannel();
 
     let notificationThumbnailUri = null; // small, notification-safe icon
@@ -191,19 +237,24 @@ export const uploadFileInBackground = async ({
     let uploadId;
 
     try {
+        // expo-video-thumbnails also has no web implementation — this whole block
+        // is already wrapped in try/catch, so on web it just falls through to the
+        // catch below and continues without a thumbnail, same as any other failure.
         const thumb = await VideoThumbnails.getThumbnailAsync(localFileUri, { time: 1000 });
         notificationThumbnailUri = await getNotificationSafeThumbnail(thumb.uri);
 
         const thumbInitRes = await axios.post(`${BACKEND_URL}/media/thumbnail-upload-url`, {
             filename: `thumb_${Date.now()}.jpg`,
             type: 'image/jpeg'
-        });
+        }, authHeaders);
 
         const { uploadUrl: thumbUploadUrl, publicUrl: thumbPublicUrl, key: thumbKey } = thumbInitRes.data;
 
         await FileSystem.uploadAsync(thumbUploadUrl, thumb.uri, {
             httpMethod: 'PUT',
             headers: { 'Content-Type': 'image/jpeg' }
+            // No Authorization header here — this PUT goes straight to the
+            // presigned R2 URL, not our backend.
         });
 
         finalThumbnailPublicUrl = thumbPublicUrl;
@@ -218,7 +269,7 @@ export const uploadFileInBackground = async ({
     // Start the foreground service immediately. Only the FIRST call carries the
     // icon — notifee/Android keeps the previously-set largeIcon on subsequent
     // updates to the same notification id, so re-sending it every chunk (every
-    // 8MB) would just be unnecessary Binder IPC traffic.
+    // 8MB) would just be unnecessary Binder IPC traffic. No-op on web.
     await updateNotification({ title, progress: 0, thumbnailUri: notificationThumbnailUri });
 
     try {
@@ -227,7 +278,7 @@ export const uploadFileInBackground = async ({
             filename,
             mimeType,
             fileSize,
-        });
+        }, authHeaders);
 
         ({ uploadId, key } = initRes.data);
         const { partSize, partCount: rawPartCount, publicUrl } = initRes.data;
@@ -242,21 +293,15 @@ export const uploadFileInBackground = async ({
             const offset = (partNumber - 1) * partSize;
             const length = Math.min(partSize, fileSize - offset);
 
-            // Read chunk from local file
-            const base64Chunk = await FileSystem.readAsStringAsync(localFileUri, {
-                encoding: FileSystem.EncodingType.Base64,
-                position: offset,
-                length,
-            });
-
-            const binaryBuffer = decode(base64Chunk);
+            // Read chunk from local file — branches internally by platform
+            const binaryBuffer = await readFileChunk({ localFileUri, fileObject, offset, length });
 
             // Fetch presigned URL for this part
             const partUrlRes = await axios.post(`${BACKEND_URL}/media/multipart/part-url`, {
                 key,
                 uploadId,
                 partNumber,
-            });
+            }, authHeaders);
 
             const { url: presignedPartUrl } = partUrlRes.data;
 
@@ -280,30 +325,34 @@ export const uploadFileInBackground = async ({
             key,
             uploadId,
             parts: completedParts,
-        });
+        }, authHeaders);
 
-        // 3. Stop the foreground service and remove the progress bar
-        await notifee.stopForegroundService();
-        await notifee.cancelNotification('active-upload');
+        // 3. Stop the foreground service and remove the progress bar (no-op on web)
+        if (!IS_WEB) {
+            await notifee.stopForegroundService();
+            await notifee.cancelNotification('active-upload');
 
-        // 4. Show a final "Success" notification that stays in the tray
-        await notifee.displayNotification({
-            id: `upload-success-${Date.now()}`,
-            title: 'Upload Complete ✅',
-            body: `"${title}" has been successfully uploaded!`,
-            android: {
-                channelId: CHANNEL_ID,
-                smallIcon: 'ic_launcher',
-                autoCancel: true,
-                pressAction: { id: 'default' },
-                ...(notificationThumbnailUri ? { largeIcon: notificationThumbnailUri } : {}),
-            },
-        });
+            // 4. Show a final "Success" notification that stays in the tray
+            await notifee.displayNotification({
+                id: `upload-success-${Date.now()}`,
+                title: 'Upload Complete ✅',
+                body: `"${title}" has been successfully uploaded!`,
+                android: {
+                    channelId: CHANNEL_ID,
+                    smallIcon: 'ic_launcher',
+                    autoCancel: true,
+                    pressAction: { id: 'default' },
+                    ...(notificationThumbnailUri ? { largeIcon: notificationThumbnailUri } : {}),
+                },
+            });
+        }
 
         return { publicUrl, key, thumbnailUrl: finalThumbnailPublicUrl, thumbnailKey: finalThumbnailKey };
     } catch (error) {
-        await notifee.stopForegroundService();
-        await notifee.cancelNotification('active-upload');
+        if (!IS_WEB) {
+            await notifee.stopForegroundService();
+            await notifee.cancelNotification('active-upload');
+        }
 
         // `key`/`uploadId` come from the successful init call (declared in the
         // outer scope above), not from the error response — the part-url,
@@ -311,7 +360,7 @@ export const uploadFileInBackground = async ({
         // on error.response.data here meant abort silently never fired.
         if (key && uploadId) {
             try {
-                await axios.post(`${BACKEND_URL}/media/multipart/abort`, { key, uploadId });
+                await axios.post(`${BACKEND_URL}/media/multipart/abort`, { key, uploadId }, authHeaders);
             } catch (abortErr) {
                 console.log('Abort error:', abortErr.message);
             }

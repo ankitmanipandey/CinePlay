@@ -8,7 +8,7 @@ import TrackPlayer, {
     useProgress,
     RepeatMode,
     Event
-} from '@rntp/player';
+} from '../services/trackPlayer';
 import { safeFetchJson, mapSaavnSong } from '../services/jioSaavnApi';
 import { normalizeString } from '../utils/homehelpers';
 
@@ -179,7 +179,6 @@ export const useMusicEngine = (type, token, insets) => {
 
         // INSTANT UI FIX: Immediately tell the app it is playing!
         setLocalIsPlaying(true);
-        TrackPlayer.play();
     };
 
     useEffect(() => {

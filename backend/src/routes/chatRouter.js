@@ -6,7 +6,17 @@ const { Expo } = require('expo-server-sdk');
 
 const chatRouter = express.Router();
 
-// 1. GET CHAT HISTORY & BUDDY INFO
+// 1. GET TOTAL UNREAD CHATS COUNT
+chatRouter.get('/unread-count', protect, async (req, res) => {
+    try {
+        const count = await Message.countDocuments({ receiver: req.user._id, isRead: { $ne: true } });
+        res.status(200).json({ count });
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching unread count' });
+    }
+});
+
+// 2. GET CHAT HISTORY & BUDDY INFO
 chatRouter.get('/:buddyId', protect, async (req, res) => {
     try {
         const buddy = await User.findById(req.params.buddyId).select('name email profilePicture friends');
@@ -21,8 +31,11 @@ chatRouter.get('/:buddyId', protect, async (req, res) => {
             ]
         }).sort('createdAt');
 
-        const onlineUsers = req.app.locals.onlineUsers;
-        const isOnline = onlineUsers ? onlineUsers.has(req.params.buddyId.toString()) : false;
+        const globalNamespace = req.app.locals.globalNamespace;
+
+        // Native Socket.IO check for active connections
+        const sockets = await globalNamespace.in(req.params.buddyId.toString()).fetchSockets();
+        const isOnline = sockets.length > 0;
 
         const { friends, ...buddyPublic } = buddy.toObject();
 
@@ -36,7 +49,7 @@ chatRouter.get('/:buddyId', protect, async (req, res) => {
     }
 });
 
-// 2. SEND DIRECT MESSAGE & PUSH NOTIFICATION
+// 3. SEND DIRECT MESSAGE & PUSH NOTIFICATION
 chatRouter.post('/send', protect, async (req, res) => {
     try {
         const { receiverId, text } = req.body;
@@ -69,23 +82,24 @@ chatRouter.post('/send', protect, async (req, res) => {
         };
 
         const globalNamespace = req.app.locals.globalNamespace;
-        const onlineUsers = req.app.locals.onlineUsers;
-        const receiverSocketId = onlineUsers.get(receiverId.toString());
 
-        if (receiverSocketId) {
-            globalNamespace.to(receiverSocketId).emit('receive_direct_message', cleanMessage);
-        } else {
-            if (receiverUser.expoPushToken && Expo.isExpoPushToken(receiverUser.expoPushToken)) {
-                let expo = new Expo();
-                let pushMessages = [{
-                    to: receiverUser.expoPushToken,
-                    sound: 'default',
-                    title: senderUser.name,
-                    body: text,
-                    data: { buddyId: senderUser._id, type: 'NEW_CHAT' },
-                }];
-                try { await expo.sendPushNotificationsAsync(pushMessages); } catch (pushErr) { }
-            }
+        // Emit directly to the receiver's room (handles multiple devices instantly)
+        globalNamespace.to(receiverId.toString()).emit('receive_direct_message', cleanMessage);
+        globalNamespace.to(req.user._id.toString()).emit('receive_direct_message', cleanMessage);
+
+        // Fetch active sockets to see if a push notification is needed
+        const sockets = await globalNamespace.in(receiverId.toString()).fetchSockets();
+
+        if (sockets.length === 0 && receiverUser.expoPushToken && Expo.isExpoPushToken(receiverUser.expoPushToken)) {
+            let expo = new Expo();
+            let pushMessages = [{
+                to: receiverUser.expoPushToken,
+                sound: 'default',
+                title: senderUser.name,
+                body: text,
+                data: { buddyId: senderUser._id, type: 'NEW_CHAT' },
+            }];
+            try { await expo.sendPushNotificationsAsync(pushMessages); } catch (pushErr) { }
         }
 
         res.status(201).json(newMessage);
@@ -94,7 +108,7 @@ chatRouter.post('/send', protect, async (req, res) => {
     }
 });
 
-// 3. MARK MESSAGES AS READ & NOTIFY CLIENT
+// 4. MARK MESSAGES AS READ & NOTIFY CLIENT
 chatRouter.put('/mark-read', protect, async (req, res) => {
     try {
         const { buddyId } = req.body;
@@ -105,28 +119,16 @@ chatRouter.put('/mark-read', protect, async (req, res) => {
             { $set: { isRead: true } }
         );
 
-        // Notify the reader's own client(s) so badges can decrement immediately
         const globalNamespace = req.app.locals.globalNamespace;
-        const onlineUsers = req.app.locals.onlineUsers;
-        const mySocketId = onlineUsers.get(req.user._id.toString());
 
-        if (mySocketId && result.modifiedCount > 0) {
-            globalNamespace.to(mySocketId).emit('messages_read', { count: result.modifiedCount });
+        // Notify the reader's own client(s) directly via their room so badges decrement immediately
+        if (result.modifiedCount > 0) {
+            globalNamespace.to(req.user._id.toString()).emit('messages_read', { count: result.modifiedCount });
         }
 
         res.status(200).json({ message: 'Messages marked as read' });
     } catch (error) {
         res.status(500).json({ message: 'Error marking messages as read' });
-    }
-});
-
-// 4. GET TOTAL UNREAD CHATS COUNT
-chatRouter.get('/unread-count', protect, async (req, res) => {
-    try {
-        const count = await Message.countDocuments({ receiver: req.user._id, isRead: { $ne: true } });
-        res.status(200).json({ count });
-    } catch (error) {
-        res.status(500).json({ message: 'Error fetching unread count' });
     }
 });
 

@@ -23,7 +23,8 @@ export const filterValidMedia = async (items) => {
 
             return hasYoutubeVideo ? item : null;
         } catch (error) {
-            return null; // Exclude item if video check fails
+            console.error('Smart Search Error:', error?.response?.status, error?.response?.data || error.message);
+            return [];
         }
     });
 

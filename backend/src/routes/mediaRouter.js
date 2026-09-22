@@ -12,6 +12,7 @@ const {
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const crypto = require('crypto');
 const Media = require('../models/Media');
+const { protect } = require('../middleware/authMiddleware');
 
 const mediaRouter = express.Router();
 
@@ -33,7 +34,7 @@ const MAX_STORAGE_BYTES = 9.5 * 1024 * 1024 * 1024; // 9.5 GB
 // -------------------------------------------------------------------
 
 // 1. Initialize Multipart Upload (Includes your storage check)
-mediaRouter.post('/multipart/init', async (req, res) => {
+mediaRouter.post('/multipart/init', protect, async (req, res) => {
     try {
         const { filename, mimeType, fileSize } = req.body;
         if (!filename || !fileSize) {
@@ -97,7 +98,7 @@ mediaRouter.post('/multipart/init', async (req, res) => {
 });
 
 // 2. Get Presigned URL for an INDIVIDUAL chunk (part)
-mediaRouter.post('/multipart/part-url', async (req, res) => {
+mediaRouter.post('/multipart/part-url', protect, async (req, res) => {
     try {
         const { key, uploadId, partNumber } = req.body;
 
@@ -118,7 +119,7 @@ mediaRouter.post('/multipart/part-url', async (req, res) => {
 });
 
 // 3. Tell R2 to combine the chunks into the final video
-mediaRouter.post('/multipart/complete', async (req, res) => {
+mediaRouter.post('/multipart/complete', protect, async (req, res) => {
     try {
         const { key, uploadId, parts } = req.body;
 
@@ -141,7 +142,7 @@ mediaRouter.post('/multipart/complete', async (req, res) => {
 });
 
 // 4. Cancel the upload and delete the partial chunks from R2
-mediaRouter.post('/multipart/abort', async (req, res) => {
+mediaRouter.post('/multipart/abort', protect, async (req, res) => {
     try {
         const { key, uploadId } = req.body;
         const command = new AbortMultipartUploadCommand({
@@ -163,7 +164,7 @@ mediaRouter.post('/multipart/abort', async (req, res) => {
 // -------------------------------------------------------------------
 
 // Save Video to DB after R2 upload completes
-mediaRouter.post('/confirm-upload', async (req, res) => {
+mediaRouter.post('/confirm-upload', protect, async (req, res) => {
     try {
         const { title, url, r2Key, thumbnailUrl, thumbnailKey, userId, duration } = req.body;
 
@@ -186,7 +187,7 @@ mediaRouter.post('/confirm-upload', async (req, res) => {
 });
 
 // Fetch User's Videos
-mediaRouter.get('/my-videos/:userId', async (req, res) => {
+mediaRouter.get('/my-videos/:userId', protect, async (req, res) => {
     try {
         const videos = await Media.find({ user: req.params.userId }).sort({ createdAt: -1 });
         res.status(200).json(videos);
@@ -197,10 +198,14 @@ mediaRouter.get('/my-videos/:userId', async (req, res) => {
 });
 
 // Delete Video from R2 and DB
-mediaRouter.delete('/delete/:videoId', async (req, res) => {
+mediaRouter.delete('/delete/:videoId', protect, async (req, res) => {
     try {
         const media = await Media.findById(req.params.videoId);
         if (!media) return res.status(404).json({ error: "Video not found" });
+
+        if (media.user.toString() !== req.user._id.toString()) {
+            return res.status(403).json({ error: "Unauthorized to delete this video" });
+        }
 
         const keysToDelete = [media.r2Key, media.thumbnailKey].filter(Boolean);
         await Promise.all(keysToDelete.map(Key =>
@@ -217,7 +222,7 @@ mediaRouter.delete('/delete/:videoId', async (req, res) => {
 
 
 // Get Total Storage Usage
-mediaRouter.get('/storage-usage', async (req, res) => {
+mediaRouter.get('/storage-usage', protect, async (req, res) => {
     try {
         let totalSize = 0;
         let isTruncated = true;
@@ -244,7 +249,7 @@ mediaRouter.get('/storage-usage', async (req, res) => {
     }
 });
 
-mediaRouter.post('/thumbnail-upload-url', async (req, res) => {
+mediaRouter.post('/thumbnail-upload-url', protect, async (req, res) => {
     try {
         const { filename, type } = req.body;
         const key = `thumbnails/${Date.now()}_${crypto.randomUUID()}.jpg`;
