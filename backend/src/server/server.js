@@ -20,7 +20,7 @@ const app = express();
 
 const server = http.createServer(app);
 
-const allowedOrigins = ['http://localhost:8081', 'https://your-netlify-url.netlify.app']; // Add your actual Netlify URL
+const allowedOrigins = ['http://localhost:8081', 'https://cineplayap.netlify.app']; // Add your actual Netlify URL
 
 app.use(cors({
     origin: allowedOrigins,
