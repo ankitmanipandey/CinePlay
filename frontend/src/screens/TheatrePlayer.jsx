@@ -1,14 +1,25 @@
-import React, { forwardRef, useEffect, useRef } from 'react';
-import { Animated, Easing, StyleSheet, Text, TouchableOpacity, View, useWindowDimensions } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useVideoPlayer, VideoView } from 'expo-video';
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import {
+    Animated,
+    Dimensions,
+    Easing,
+    PanResponder,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    TouchableWithoutFeedback,
+    View
+} from 'react-native';
 import Svg, { Circle, Defs, Stop, LinearGradient as SvgLinearGradient } from 'react-native-svg';
 import YoutubePlayer from 'react-native-youtube-iframe';
-import { VideoView } from 'expo-video';
-import { LinearGradient } from 'expo-linear-gradient';
-import { Ionicons } from '@expo/vector-icons';
+import { VolumeManager } from 'react-native-volume-manager';
 
-import { useTheatrePlayerLogic, formatTime } from '../hooks/useTheatrePlayerLogic';
+const FADE_IN_MS = 200;
+const FADE_OUT_MS = 300;
 
-// Reusable Loading Animation
 const GradientLoader = () => {
     const spinValue = useRef(new Animated.Value(0)).current;
     useEffect(() => {
@@ -34,18 +45,389 @@ const GradientLoader = () => {
     );
 };
 
-const TheatrePlayer = forwardRef((props, ref) => {
-    const { width, height, isPlaying, isMuted, isHostBool, onPlayerStateChange } = props;
-    const { width: windowWidth } = useWindowDimensions();
-    const isDesktop = windowWidth >= 1024;
+const formatTime = (seconds) => {
+    if (!seconds || isNaN(seconds)) return "00:00";
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
+};
 
-    const {
-        isCustom, customUrl, youtubeId, ytRef,
-        controlsVisible, fadeAnim, showSettings, setShowSettings, brightness,
-        swipeIndicator, isBuffering, isScrubbing, nativePlayer, mainPanResponder,
-        progressPanResponder, togglePlayPause, handleSpeedChange, handleSkipRef,
-        progressWidthRef, displayTime, progressPercent, duration
-    } = useTheatrePlayerLogic(props, ref);
+const TheatrePlayer = forwardRef(({
+    ytId, isPlaying, isHostBool, onPlayerStateChange, width, height, isMuted,
+    isFullScreen, onExit, onToggleOrientation, onControlsToggle,
+    fadeAnim: fadeAnimProp
+}, ref) => {
+
+    const isCustom = ytId && ytId.startsWith('CUSTOM:');
+    const customUrl = isCustom ? ytId.replace('CUSTOM:', '') : null;
+    const youtubeId = isCustom ? null : ytId;
+
+    const ytRef = useRef(null);
+    const widthRef = useRef(width);
+    widthRef.current = width;
+
+    const [controlsVisible, setControlsVisible] = useState(true);
+    const internalFade = useRef(new Animated.Value(1)).current;
+    const fadeAnim = fadeAnimProp || internalFade;
+    const controlsTimer = useRef(null);
+    const [showSettings, setShowSettings] = useState(false);
+
+    const [brightness, setBrightness] = useState(1);
+    const [volume, setVolume] = useState(1);
+    const brightnessRef = useRef(1);
+    const volumeRef = useRef(1);
+
+    const [swipeIndicator, setSwipeIndicator] = useState({ visible: false, type: '', value: 0 });
+
+    const lastTap = useRef({ time: 0, timeout: null });
+    const swipeState = useRef({ isSwiping: false, startY: 0, startVal: 0, side: '' });
+
+    useEffect(() => {
+        let isMounted = true;
+        (async () => {
+            try {
+                const currentV = await VolumeManager.getVolume();
+                const v = typeof currentV === 'number' ? currentV : currentV.volume;
+                if (isMounted) {
+                    volumeRef.current = v;
+                    setVolume(v);
+                }
+            } catch (e) { }
+        })();
+
+        const volumeListener = VolumeManager.addVolumeListener((result) => {
+            if (isMounted) {
+                volumeRef.current = result.volume;
+                setVolume(result.volume);
+            }
+        });
+
+        return () => {
+            isMounted = false;
+            volumeListener?.remove();
+        };
+    }, []);
+
+    const toggleControlsRef = useRef(null);
+    const showControlsRef = useRef(null);
+    const handleSkipRef = useRef(null);
+
+    const [currentTime, setCurrentTime] = useState(0);
+    const [duration, setDuration] = useState(0);
+    const [isBuffering, setIsBuffering] = useState(false);
+
+    const progressWidthRef = useRef(0);
+    const [isScrubbing, setIsScrubbing] = useState(false);
+    const [scrubTime, setScrubTime] = useState(0);
+    const isScrubbingRef = useRef(false);
+    const scrubStartX = useRef(0);
+
+    const lastTimeRef = useRef(0);
+    const stallCounter = useRef(0);
+
+    const nativePlayer = useVideoPlayer(customUrl || '', (player) => {
+        player.loop = false;
+        player.muted = isMuted;
+        player.preservesPitch = true;
+        player.play();
+    });
+
+    const nativePlayerRef = useRef(nativePlayer);
+    useEffect(() => { nativePlayerRef.current = nativePlayer; }, [nativePlayer]);
+
+    const durationRef = useRef(duration);
+    useEffect(() => { durationRef.current = duration; }, [duration]);
+
+    useEffect(() => {
+        if (!nativePlayer || !isCustom) return;
+        try {
+            nativePlayer.muted = isMuted;
+            if (isPlaying && !nativePlayer.playing) nativePlayer.play();
+            if (!isPlaying && nativePlayer.playing) nativePlayer.pause();
+        } catch (e) { }
+    }, [isPlaying, isMuted, nativePlayer, isCustom]);
+
+    useEffect(() => {
+        if (!nativePlayer || !isCustom) return;
+
+        const subStatus = nativePlayer.addListener('statusChange', (status) => {
+            if (status.status === 'loading' || status.status === 'buffering') setIsBuffering(true);
+            else if (status.status === 'readyToPlay') {
+                setIsBuffering(false);
+                stallCounter.current = 0;
+                if (isPlaying && !nativePlayer.playing) nativePlayer.play();
+            }
+        });
+
+        const subPlay = nativePlayer.addListener('playingChange', (isPlayingState) => {
+            if (isPlayingState.isPlaying) {
+                setIsBuffering(false);
+                stallCounter.current = 0;
+            } else {
+                if (isPlaying && durationRef.current > 0 && nativePlayer.currentTime >= durationRef.current - 0.5) {
+                    onPlayerStateChange('paused');
+                }
+            }
+        });
+
+        const interval = setInterval(() => {
+            try {
+                if (!nativePlayer || !isCustom) return;
+                const currentNativeTime = nativePlayer.currentTime;
+
+                if (nativePlayer.playing && !isScrubbingRef.current) {
+                    if (currentNativeTime === lastTimeRef.current) {
+                        stallCounter.current += 1;
+                        if (stallCounter.current >= 2) setIsBuffering(true);
+                    } else {
+                        stallCounter.current = 0;
+                        setIsBuffering(false);
+                    }
+                } else if (!nativePlayer.playing && !isScrubbingRef.current && isPlaying) {
+                    setIsBuffering(true);
+                }
+
+                if (!isScrubbingRef.current) setCurrentTime(currentNativeTime);
+                if (nativePlayer.duration) setDuration(nativePlayer.duration);
+                lastTimeRef.current = currentNativeTime;
+            } catch (e) { }
+        }, 500);
+
+        return () => {
+            subStatus.remove();
+            subPlay.remove();
+            clearInterval(interval);
+        };
+    }, [nativePlayer, isCustom, isPlaying, onPlayerStateChange]);
+
+    const showControlsTemporarily = () => {
+        setControlsVisible(true);
+        if (onControlsToggle) onControlsToggle(true);
+
+        Animated.timing(fadeAnim, { toValue: 1, duration: FADE_IN_MS, useNativeDriver: true }).start();
+
+        if (controlsTimer.current) clearTimeout(controlsTimer.current);
+        controlsTimer.current = setTimeout(() => {
+            if (!showSettings && isPlaying && !isScrubbingRef.current) {
+                Animated.timing(fadeAnim, { toValue: 0, duration: FADE_OUT_MS, useNativeDriver: true }).start(({ finished }) => {
+                    if (!finished) return;
+                    setControlsVisible(false);
+                    if (onControlsToggle) onControlsToggle(false);
+                });
+            }
+        }, 6000);
+    };
+
+    showControlsRef.current = showControlsTemporarily;
+
+    toggleControlsRef.current = () => {
+        if (controlsVisible) {
+            Animated.timing(fadeAnim, { toValue: 0, duration: FADE_OUT_MS, useNativeDriver: true }).start(({ finished }) => {
+                if (!finished) return;
+                setControlsVisible(false);
+                if (onControlsToggle) onControlsToggle(false);
+            });
+            if (controlsTimer.current) clearTimeout(controlsTimer.current);
+        } else {
+            showControlsTemporarily();
+        }
+    };
+
+    useImperativeHandle(ref, () => ({
+        getCurrentTime: async () => {
+            try {
+                if (youtubeId && ytRef.current) return (await ytRef.current.getCurrentTime()) ?? 0;
+                if (isCustom && nativePlayerRef.current) return nativePlayerRef.current.currentTime ?? 0;
+            } catch (e) { }
+            return 0;
+        },
+        seekTo: (seconds, allowSeekAhead) => {
+            try {
+                if (youtubeId && ytRef.current) {
+                    ytRef.current.seekTo(seconds, allowSeekAhead);
+                } else if (isCustom && nativePlayerRef.current) {
+                    nativePlayerRef.current.currentTime = seconds;
+                    setCurrentTime(seconds);
+                }
+            } catch (e) { }
+        },
+        extendControls: () => showControlsRef.current?.(),
+        toggleControls: () => toggleControlsRef.current?.()
+    }), [isCustom, youtubeId]);
+
+    useEffect(() => {
+        showControlsTemporarily();
+        return () => clearTimeout(controlsTimer.current);
+    }, [isPlaying, showSettings]);
+
+    useEffect(() => {
+        showControlsTemporarily();
+    }, [ytId]);
+
+    handleSkipRef.current = (seconds) => {
+        if (!isHostBool) return;
+        const player = nativePlayerRef.current;
+        if (!player) return;
+        try {
+            const newTime = Math.max(0, Math.min(durationRef.current, player.currentTime + seconds));
+            player.currentTime = newTime;
+
+            if (isPlaying) {
+                setIsBuffering(true);
+                stallCounter.current = 2;
+                player.play();
+            }
+
+            setCurrentTime(newTime);
+            lastTimeRef.current = newTime;
+            showControlsTemporarily();
+        } catch (e) { }
+    };
+
+    const mainPanResponder = useRef(
+        PanResponder.create({
+            onStartShouldSetPanResponder: () => true,
+            onMoveShouldSetPanResponder: (evt, gestureState) => Math.abs(gestureState.dy) > 10,
+            onPanResponderGrant: (evt) => {
+                const currentWidth = widthRef.current;
+                const x = evt.nativeEvent.locationX;
+                const side = x < currentWidth / 2 ? 'left' : 'right';
+
+                swipeState.current = {
+                    isSwiping: false,
+                    startY: evt.nativeEvent.locationY,
+                    startVal: side === 'left' ? brightnessRef.current : volumeRef.current,
+                    side: side
+                };
+            },
+            onPanResponderMove: (evt, gestureState) => {
+                if (Math.abs(gestureState.dy) > 10) {
+                    swipeState.current.isSwiping = true;
+
+                    const { height: currentHeight } = Dimensions.get('window');
+                    const delta = -(gestureState.dy / (currentHeight / 1.5));
+                    const newVal = Math.max(0, Math.min(1, swipeState.current.startVal + delta));
+
+                    if (swipeState.current.side === 'left') {
+                        brightnessRef.current = newVal;
+                        setBrightness(newVal);
+                        setSwipeIndicator({ visible: true, type: 'brightness', value: Math.round(newVal * 100) });
+                    } else {
+                        volumeRef.current = newVal;
+                        setVolume(newVal);
+                        VolumeManager.setVolume(newVal);
+                        setSwipeIndicator({ visible: true, type: 'volume', value: Math.round(newVal * 100) });
+                    }
+                }
+            },
+            onPanResponderRelease: (evt, gestureState) => {
+                if (swipeState.current.isSwiping) {
+                    setSwipeIndicator({ visible: false, type: '', value: 0 });
+                } else {
+                    const now = Date.now();
+                    const currentWidth = widthRef.current;
+                    const x = evt.nativeEvent.locationX;
+                    const DOUBLE_TAP_DELAY = 300;
+
+                    if (now - lastTap.current.time < DOUBLE_TAP_DELAY) {
+                        if (lastTap.current.timeout) clearTimeout(lastTap.current.timeout);
+                        lastTap.current.time = 0;
+
+                        if (x < currentWidth / 2) handleSkipRef.current(-10);
+                        else handleSkipRef.current(10);
+                    } else {
+                        lastTap.current.time = now;
+                        lastTap.current.timeout = setTimeout(() => {
+                            if (lastTap.current.time === now) {
+                                toggleControlsRef.current();
+                            }
+                        }, DOUBLE_TAP_DELAY);
+                    }
+                }
+                swipeState.current.isSwiping = false;
+            },
+            onPanResponderTerminate: () => {
+                setSwipeIndicator({ visible: false, type: '', value: 0 });
+                swipeState.current.isSwiping = false;
+            }
+        })
+    ).current;
+
+    const progressPanResponder = useRef(
+        PanResponder.create({
+            onStartShouldSetPanResponder: () => true,
+            onMoveShouldSetPanResponder: () => true,
+            onPanResponderGrant: (evt) => {
+                isScrubbingRef.current = true;
+                setIsScrubbing(true);
+                showControlsRef.current?.();
+
+                const x = evt.nativeEvent.locationX;
+                scrubStartX.current = x;
+
+                if (progressWidthRef.current > 0) {
+                    const percentage = Math.max(0, Math.min(1, x / progressWidthRef.current));
+                    setScrubTime(percentage * durationRef.current);
+                }
+            },
+            onPanResponderMove: (evt, gestureState) => {
+                const newX = scrubStartX.current + gestureState.dx;
+                if (progressWidthRef.current > 0) {
+                    const percentage = Math.max(0, Math.min(1, newX / progressWidthRef.current));
+                    setScrubTime(percentage * durationRef.current);
+                }
+                showControlsRef.current?.();
+            },
+            onPanResponderRelease: (evt, gestureState) => {
+                const newX = scrubStartX.current + gestureState.dx;
+                let newTime = 0;
+                if (progressWidthRef.current > 0) {
+                    const percentage = Math.max(0, Math.min(1, newX / progressWidthRef.current));
+                    newTime = percentage * durationRef.current;
+                }
+
+                const player = nativePlayerRef.current;
+                if (player) {
+                    try {
+                        if (player.duration > 0) {
+                            player.currentTime = newTime;
+                            if (isPlaying) {
+                                setIsBuffering(true);
+                                stallCounter.current = 2;
+                                player.play();
+                            }
+                        }
+                    } catch (e) { }
+                }
+
+                setCurrentTime(newTime);
+                setScrubTime(newTime);
+                lastTimeRef.current = newTime;
+                isScrubbingRef.current = false;
+                setIsScrubbing(false);
+            },
+            onPanResponderTerminate: () => {
+                isScrubbingRef.current = false;
+                setIsScrubbing(false);
+            }
+        })
+    ).current;
+
+    const togglePlayPause = () => {
+        if (!isHostBool) return;
+        onPlayerStateChange(isPlaying ? 'paused' : 'playing');
+        showControlsTemporarily();
+    };
+
+    const handleSpeedChange = (speed) => {
+        const player = nativePlayerRef.current;
+        if (!player) return;
+        try { player.playbackRate = speed; } catch (e) { }
+        setShowSettings(false);
+    };
+
+    const displayTime = isScrubbing ? scrubTime : currentTime;
+    const progressPercent = duration > 0 ? (displayTime / duration) * 100 : 0;
 
     return (
         <View style={{ width: width, height: height, backgroundColor: '#000', position: 'relative' }}>
@@ -70,7 +452,6 @@ const TheatrePlayer = forwardRef((props, ref) => {
 
                     <View style={[StyleSheet.absoluteFill, { backgroundColor: 'black', opacity: 1 - brightness, zIndex: 1 }]} pointerEvents="none" />
 
-                    {/* Gesture layer for brightness/volume/tap-to-toggle */}
                     <View style={[StyleSheet.absoluteFill, { zIndex: 2 }]} {...mainPanResponder.panHandlers} />
 
                     {swipeIndicator.visible && (
@@ -82,25 +463,23 @@ const TheatrePlayer = forwardRef((props, ref) => {
 
                     {controlsVisible && (
                         <Animated.View style={[styles.overlayWrapper, { opacity: fadeAnim }]} pointerEvents="box-none">
+
                             <LinearGradient colors={['rgba(0,0,0,0.8)', 'transparent']} style={styles.topShadow} pointerEvents="none" />
 
                             <View style={[styles.topBar, { justifyContent: 'flex-end' }]} pointerEvents="box-none">
                                 {isHostBool && (
-                                    <TouchableOpacity
-                                        style={[styles.topBtn, isDesktop && { cursor: 'pointer' }]}
-                                        onPress={() => setShowSettings(!showSettings)}
-                                    >
-                                        <Ionicons name="settings-outline" size={isDesktop ? 28 : 24} color="#FFF" />
+                                    <TouchableOpacity style={styles.topBtn} onPress={() => { setShowSettings(!showSettings); showControlsTemporarily(); }}>
+                                        <Ionicons name="settings-outline" size={24} color="#FFF" />
                                     </TouchableOpacity>
                                 )}
                             </View>
 
                             {showSettings && isHostBool && (
-                                <View style={isDesktop ? styles.settingsMenuDesktop : styles.settingsMenu}>
+                                <View style={styles.settingsMenu}>
                                     <Text style={styles.settingsHeader}>Playback Speed</Text>
                                     <View style={styles.speedRow}>
                                         {[0.5, 1, 1.5, 2].map(speed => (
-                                            <TouchableOpacity key={speed} style={[styles.speedBtn, isDesktop && { cursor: 'pointer' }]} onPress={() => handleSpeedChange(speed)}>
+                                            <TouchableOpacity key={speed} style={styles.speedBtn} onPress={() => handleSpeedChange(speed)}>
                                                 <Text style={styles.speedText}>{speed}x</Text>
                                             </TouchableOpacity>
                                         ))}
@@ -113,27 +492,18 @@ const TheatrePlayer = forwardRef((props, ref) => {
                                     <GradientLoader />
                                 ) : (
                                     <>
-                                        <TouchableOpacity
-                                            style={[styles.middleBtn, !isHostBool && { opacity: 0 }, isDesktop && { cursor: 'pointer' }]}
-                                            onPress={() => handleSkipRef.current(-10)} disabled={!isHostBool}
-                                        >
-                                            <Ionicons name="play-back" size={isDesktop ? 52 : 42} color="#FFF" />
-                                            <Text style={isDesktop ? styles.skipTextDesktop : styles.skipText}>10s</Text>
+                                        <TouchableOpacity style={[styles.middleBtn, !isHostBool && { opacity: 0 }]} onPress={() => handleSkipRef.current(-10)} disabled={!isHostBool}>
+                                            <Ionicons name="play-back" size={42} color="#FFF" />
+                                            <Text style={styles.skipText}>10s</Text>
                                         </TouchableOpacity>
 
-                                        <TouchableOpacity
-                                            style={[styles.playPauseBtn, !isHostBool && { opacity: 0 }, isDesktop && { cursor: 'pointer' }]}
-                                            onPress={togglePlayPause} disabled={!isHostBool}
-                                        >
-                                            <Ionicons name={isPlaying ? "pause" : "play"} size={isDesktop ? 84 : 64} color="#FFF" style={{ marginLeft: isPlaying ? 0 : 4 }} />
+                                        <TouchableOpacity style={[styles.playPauseBtn, !isHostBool && { opacity: 0 }]} onPress={togglePlayPause} disabled={!isHostBool}>
+                                            <Ionicons name={isPlaying ? "pause" : "play"} size={64} color="#FFF" style={{ marginLeft: isPlaying ? 0 : 4 }} />
                                         </TouchableOpacity>
 
-                                        <TouchableOpacity
-                                            style={[styles.middleBtn, !isHostBool && { opacity: 0 }, isDesktop && { cursor: 'pointer' }]}
-                                            onPress={() => handleSkipRef.current(10)} disabled={!isHostBool}
-                                        >
-                                            <Ionicons name="play-forward" size={isDesktop ? 52 : 42} color="#FFF" />
-                                            <Text style={isDesktop ? styles.skipTextDesktop : styles.skipText}>10s</Text>
+                                        <TouchableOpacity style={[styles.middleBtn, !isHostBool && { opacity: 0 }]} onPress={() => handleSkipRef.current(10)} disabled={!isHostBool}>
+                                            <Ionicons name="play-forward" size={42} color="#FFF" />
+                                            <Text style={styles.skipText}>10s</Text>
                                         </TouchableOpacity>
                                     </>
                                 )}
@@ -151,14 +521,14 @@ const TheatrePlayer = forwardRef((props, ref) => {
                                     onLayout={(e) => progressWidthRef.current = e.nativeEvent.layout.width}
                                     {...(isHostBool ? progressPanResponder.panHandlers : {})}
                                 >
-                                    <View style={[styles.progressBarTrack, isDesktop && { height: 6 }]} pointerEvents="none">
+                                    <View style={styles.progressBarTrack} pointerEvents="none">
                                         <LinearGradient
                                             colors={['#00E5FF', '#9B51E0', '#FF007A']}
                                             start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
                                             style={[styles.progressBarFill, { width: `${progressPercent}%` }]}
                                         />
                                     </View>
-                                    <View style={[styles.progressKnob, isDesktop && { width: 16, height: 16, marginTop: -8, marginLeft: -8 }, { left: `${progressPercent}%` }]} pointerEvents="none" />
+                                    <View style={[styles.progressKnob, { left: `${progressPercent}%` }]} pointerEvents="none" />
                                 </View>
                             </LinearGradient>
                         </Animated.View>
@@ -166,10 +536,8 @@ const TheatrePlayer = forwardRef((props, ref) => {
                 </View>
             ) : (
                 <View style={styles.emptyPlayer}>
-                    <Ionicons name="tv-outline" size={isDesktop ? 64 : 48} color="#8F98A0" />
-                    <Text style={[styles.emptyText, isDesktop && { fontSize: 16 }]}>
-                        {isHostBool ? "Search and select a video to start" : "Waiting for the Host..."}
-                    </Text>
+                    <Ionicons name="tv-outline" size={48} color="#8F98A0" />
+                    <Text style={styles.emptyText}>{isHostBool ? "Search and select a video to start" : "Waiting for the Host..."}</Text>
                 </View>
             )}
         </View>
@@ -181,7 +549,6 @@ export default TheatrePlayer;
 const styles = StyleSheet.create({
     emptyPlayer: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#000' },
     emptyText: { color: '#8F98A0', marginTop: 12, fontSize: 14 },
-    loaderContainer: { width: 44, height: 44, justifyContent: 'center', alignItems: 'center' },
 
     overlayWrapper: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, width: '100%', height: '100%', zIndex: 9999, elevation: 100 },
     topShadow: { position: 'absolute', top: 0, left: 0, right: 0, height: 80 },
@@ -193,7 +560,6 @@ const styles = StyleSheet.create({
 
     middleBtn: { alignItems: 'center', justifyContent: 'center', width: 60, height: 60 },
     skipText: { color: '#FFF', fontSize: 13, fontWeight: 'bold', marginTop: -4 },
-    skipTextDesktop: { color: '#FFF', fontSize: 15, fontWeight: 'bold', marginTop: -4 },
     playPauseBtn: { width: 76, height: 76, justifyContent: 'center', alignItems: 'center' },
 
     timeRow: { width: '100%', alignItems: 'flex-end', marginBottom: 8, paddingRight: 4, zIndex: 100, elevation: 100 },
@@ -204,17 +570,28 @@ const styles = StyleSheet.create({
     progressBarFill: { height: '100%', borderRadius: 2 },
 
     progressKnob: {
-        position: 'absolute', top: '50%', marginTop: -7, width: 14, height: 14,
-        borderRadius: 7, backgroundColor: '#FFFFFF', marginLeft: -7,
-        elevation: 10, shadowColor: '#00E5FF', shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.8, shadowRadius: 4
+        position: 'absolute',
+        top: '50%',
+        marginTop: -7,
+        width: 14,
+        height: 14,
+        borderRadius: 7,
+        backgroundColor: '#FFFFFF',
+        marginLeft: -7,
+        elevation: 10,
+        shadowColor: '#00E5FF',
+        shadowOffset: { width: 0, height: 0 },
+        shadowOpacity: 0.8,
+        shadowRadius: 4
     },
 
     settingsMenu: { position: 'absolute', top: 60, right: 16, width: 220, backgroundColor: 'rgba(20,20,25,0.95)', borderRadius: 12, padding: 16, zIndex: 1000, elevation: 100, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
-    settingsMenuDesktop: { position: 'absolute', top: 60, right: 16, width: 260, backgroundColor: 'rgba(20,20,25,0.95)', borderRadius: 12, padding: 20, zIndex: 1000, elevation: 100, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
     settingsHeader: { color: '#8F98A0', fontSize: 11, textTransform: 'uppercase', fontWeight: 'bold', marginBottom: 12, letterSpacing: 1 },
     speedRow: { flexDirection: 'row', justifyContent: 'space-between' },
     speedBtn: { backgroundColor: 'rgba(255,255,255,0.1)', paddingHorizontal: 8, paddingVertical: 6, borderRadius: 6 },
     speedText: { color: '#FFF', fontSize: 12, fontWeight: 'bold' },
+
+    loaderContainer: { width: 44, height: 44, justifyContent: 'center', alignItems: 'center' },
 
     swipeIndicatorContainer: { position: 'absolute', top: '30%', alignSelf: 'center', backgroundColor: 'rgba(0,0,0,0.65)', paddingHorizontal: 24, paddingVertical: 16, borderRadius: 16, alignItems: 'center', zIndex: 50 },
     swipeIndicatorText: { color: '#FFF', fontSize: 16, fontWeight: 'bold', marginTop: 8 }

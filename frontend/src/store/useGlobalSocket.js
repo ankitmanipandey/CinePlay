@@ -1,61 +1,47 @@
 import { create } from 'zustand';
 import { io } from 'socket.io-client';
-import * as Notifications from 'expo-notifications';
-import { Platform } from 'react-native'; // <-- NEW IMPORT
+import * as Notifications from 'expo-notifications'; // <-- IMPORT ADDED
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL;
-
-// Helper to safely set badges only on iOS/Android
-const setSafeBadgeCount = (count) => {
-    if (Platform.OS !== 'web') {
-        Notifications.setBadgeCountAsync(count).catch(() => { });
-    }
-};
 
 export const useGlobalSocket = create((set, get) => ({
     globalSocket: null,
     activeChatId: null,
+
+    // Global Notification Count State
     unreadNotifsCount: 0,
 
+    // --- UPDATED: These now sync with the Device App Icon Badge ---
     setUnreadNotifsCount: (count) => {
         set({ unreadNotifsCount: count });
-        setSafeBadgeCount(count);
+        Notifications.setBadgeCountAsync(count); // Sync with OS App Icon
     },
     incrementNotifs: () => {
-        // Removed side-effect from inside the set() function per React best practices
-        const newCount = get().unreadNotifsCount + 1;
-        set({ unreadNotifsCount: newCount });
-        setSafeBadgeCount(newCount);
+        set((state) => {
+            const newCount = state.unreadNotifsCount + 1;
+            Notifications.setBadgeCountAsync(newCount); // Sync with OS App Icon
+            return { unreadNotifsCount: newCount };
+        });
     },
     clearNotifs: () => {
         set({ unreadNotifsCount: 0 });
-        setSafeBadgeCount(0);
+        Notifications.setBadgeCountAsync(0); // Clear OS App Icon Badge
     },
+    // --------------------------------------------------------------
 
     setActiveChat: (id) => set({ activeChatId: id }),
 
-    connectGlobalSocket: (userId, token) => {
-        if (!userId || !token || get().globalSocket) return;
+    connectGlobalSocket: (userId) => {
+        if (!userId || get().globalSocket) return;
 
         const SOCKET_URL = BACKEND_URL.replace(/\/api\/?$/, '');
-
-        const socket = io(`${SOCKET_URL}/global`, {
-            auth: { token }
-        });
+        const socket = io(`${SOCKET_URL}/global`);
 
         socket.on('connect', () => {
-            console.log('Global socket connected via JWT');
+            socket.emit('register_user', userId);
         });
 
-        // <-- NEW: Handle JWT Expiration 
-        socket.on('connect_error', (err) => {
-            if (err.message === 'Not authorized') {
-                console.error('Socket auth failed: Token expired or invalid.');
-                // Optional: You can trigger your auth store's logout function here
-                // useAuthStore.getState().logout(); 
-            }
-        });
-
+        // 1. Listen for rejections
         socket.on('request_rejected', (alert) => {
             get().incrementNotifs();
             import('react-native-toast-message').then(({ default: Toast }) => {
@@ -69,6 +55,7 @@ export const useGlobalSocket = create((set, get) => ({
             });
         });
 
+        // 2. Listen for Invites, Requests, and Acceptances
         socket.on('new_notification', (notification) => {
             get().incrementNotifs();
             import('react-native-toast-message').then(({ default: Toast }) => {
@@ -94,9 +81,9 @@ export const useGlobalSocket = create((set, get) => ({
             });
         });
 
+        // 3. Direct Message Toasts
         socket.on('receive_direct_message', (msg) => {
-            // Echo fix: Don't toast if WE are the ones who just sent the message!
-            if (get().activeChatId !== msg.sender && msg.sender !== userId) {
+            if (get().activeChatId !== msg.sender) {
                 import('react-native-toast-message').then(({ default: Toast }) => {
                     Toast.show({
                         type: 'hotstarInfo',
@@ -117,7 +104,7 @@ export const useGlobalSocket = create((set, get) => ({
         if (globalSocket) {
             globalSocket.disconnect();
             set({ globalSocket: null, activeChatId: null, unreadNotifsCount: 0 });
-            setSafeBadgeCount(0);
+            Notifications.setBadgeCountAsync(0); // Clear badge on logout
         }
     }
 }));

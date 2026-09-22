@@ -1,7 +1,4 @@
 import { create } from 'zustand';
-import { Platform } from 'react-native';
-
-const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL;
 
 // ESPN's Public CDN Endpoints (No API Key Required!)
 const ENDPOINTS = [
@@ -18,27 +15,12 @@ export const useSportsStore = create((set) => ({
         try {
             // Fetch all sports simultaneously
             const responses = await Promise.all(
-                ENDPOINTS.map(endpoint => {
-                    const targetUrl = Platform.OS === 'web'
-                        ? `${BACKEND_URL}/proxy/fetch?url=${encodeURIComponent(endpoint.url)}`
-                        : endpoint.url;
-
-                    return fetch(targetUrl)
-                        .then(res => res.json())
-                        .then(data => ({ sport: endpoint.sport, data }))
-                        .catch(error => {
-                            console.warn(`Failed to fetch ${endpoint.sport}:`, error);
-                            return null;
-                        });
-                })
+                ENDPOINTS.map(endpoint => fetch(endpoint.url).then(res => res.json()).then(data => ({ sport: endpoint.sport, data })))
             );
-
-            // Filter out any failed CORS/network requests
-            const validResponses = responses.filter(res => res !== null);
 
             let allMappedMatches = [];
 
-            validResponses.forEach(({ sport, data }) => {
+            responses.forEach(({ sport, data }) => {
                 if (!data.events) return;
 
                 const mapped = data.events.map((match) => {

@@ -1,133 +1,223 @@
-import React from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, FlatList, Image, ActivityIndicator, useWindowDimensions, ScrollView } from 'react-native';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import {
+    StyleSheet,
+    Text,
+    View,
+    TouchableOpacity,
+    FlatList,
+    Image,
+    ActivityIndicator,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { useMyListLogic } from '../hooks/useMyListLogic';
+import { useRouter, useLocalSearchParams } from 'expo-router';
+import Toast from 'react-native-toast-message';
 
-export default function MyListScreenWeb() {
-    const { width } = useWindowDimensions();
-    const isDesktop = width >= 1024;
+// --- Global State & Config ---
+import { useUserListStore } from '../store/useUserListStore';
+import { useAuthStore } from '../store/useAuthStore';
+import { tmdbService } from '../services/tmdbService';
+import { getImageUrl } from '../constants/config';
 
-    const {
-        router, insets, activeTab, setActiveTab, isLoading,
-        watchlist, watched, handleAuthAction, handleStatusChange, activeData,
-        moviesData
-    } = useMyListLogic();
+// Base URL for backend sync
+const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL;
 
-    // --------------------------------------------------------
-    // DESKTOP LAYOUT (Grid Widescreen)
-    // --------------------------------------------------------
-    if (isDesktop) {
-        return (
-            <View style={styles.desktopContainer}>
-                <View style={styles.desktopHeader}>
-                    <View style={styles.headerLeftDesktop}>
-                        <TouchableOpacity onPress={() => router.back()} style={styles.backBtnDesktop}>
-                            <Ionicons name="arrow-back" size={28} color="#FFFFFF" />
-                        </TouchableOpacity>
-                        <Text style={styles.headerTitleDesktop}>My Activity</Text>
-                    </View>
+const MyListScreen = () => {
+    const router = useRouter();
+    const insets = useSafeAreaInsets();
+    const params = useLocalSearchParams();
 
-                    <View style={styles.desktopTabs}>
-                        <TouchableOpacity style={styles.desktopTab} onPress={() => setActiveTab('watchlist')} activeOpacity={0.8}>
-                            <Text style={[styles.desktopTabText, activeTab === 'watchlist' && styles.activeTabText]}>Watchlist</Text>
-                            {activeTab === 'watchlist' && <LinearGradient colors={['#00E5FF', '#9B51E0', '#FF007A']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.desktopTabIndicator} />}
-                        </TouchableOpacity>
-                        <TouchableOpacity style={styles.desktopTab} onPress={() => setActiveTab('watched')} activeOpacity={0.8}>
-                            <Text style={[styles.desktopTabText, activeTab === 'watched' && styles.activeTabText]}>Watched</Text>
-                            {activeTab === 'watched' && <LinearGradient colors={['#00E5FF', '#9B51E0', '#FF007A']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.desktopTabIndicator} />}
-                        </TouchableOpacity>
-                    </View>
-                </View>
+    const [activeTab, setActiveTab] = useState(params.tab === 'watched' ? 'watched' : 'watchlist');
+    const [moviesData, setMoviesData] = useState([]);
+    const [isLoading, setIsLoading] = useState(true);
 
-                {isLoading ? (
-                    <ActivityIndicator size="large" color="#00E5FF" style={{ marginTop: 100 }} />
-                ) : activeData.length === 0 ? (
-                    <View style={styles.emptyContainerDesktop}>
-                        <Ionicons name="film-outline" size={64} color="rgba(255,255,255,0.2)" />
-                        <Text style={styles.emptyTextDesktop}>No movies in this list yet.</Text>
-                    </View>
-                ) : (
-                    <ScrollView
-                        showsVerticalScrollIndicator={false} // <-- Added this to hide the scrollbar
-                        contentContainerStyle={styles.desktopGrid}
-                    >
-                        {activeData.map((item) => {
-                            const inWatchlist = !!watchlist[item.id];
-                            const inWatched = !!watched[item.id];
+    // Global Stores
+    const { watchlist, watched, toggleWatchlist, toggleWatched } = useUserListStore();
+    const { token } = useAuthStore();
 
-                            return (
-                                <View key={item.id} style={styles.desktopCard}>
-                                    <View style={styles.desktopPosterContainer}>
-                                        <Image source={{ uri: item.poster }} style={styles.desktopPoster} />
-                                        <View style={styles.desktopRatingBadge}>
-                                            <Ionicons name="star" size={12} color="#F5C518" />
-                                            <Text style={styles.desktopRatingText}>{item.rating}</Text>
-                                        </View>
-                                        <TouchableOpacity
-                                            style={styles.desktopPlayOverlay}
-                                            onPress={() => router.push({ pathname: '/player', params: { id: item.id, type: item.media_type } })}
-                                        >
-                                            <LinearGradient colors={['#00E5FF', '#9B51E0', '#FF007A']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.playGradientDesktop}>
-                                                <Ionicons name="play" size={24} color="#FFFFFF" style={{ marginLeft: 3 }} />
-                                            </LinearGradient>
-                                        </TouchableOpacity>
-                                    </View>
-                                    <View style={styles.desktopDetails}>
-                                        <Text style={styles.desktopTitle} numberOfLines={1}>{item.title}</Text>
-                                        <Text style={styles.desktopMeta}>{item.year} • {item.duration}</Text>
-                                        <View style={styles.desktopActions}>
-                                            <TouchableOpacity style={styles.smallIconBtnDesktop} onPress={() => handleAuthAction(() => handleStatusChange(item.id, item.media_type, 'watchlist'))}>
-                                                <Ionicons name={inWatchlist ? "bookmark" : "bookmark-outline"} size={16} color={inWatchlist ? "#FF007A" : "#FFFFFF"} />
-                                            </TouchableOpacity>
-                                            <TouchableOpacity style={styles.smallIconBtnDesktop} onPress={() => handleAuthAction(() => handleStatusChange(item.id, item.media_type, 'watched'))}>
-                                                <Ionicons name="checkmark-done" size={16} color={inWatched ? "#00E5FF" : "#FFFFFF"} />
-                                            </TouchableOpacity>
-                                        </View>
-                                    </View>
-                                </View>
-                            );
-                        })}
-                    </ScrollView>
-                )}
-            </View>
-        );
-    }
+    // Update active tab dynamically if params change while component is mounted
+    useEffect(() => {
+        if (params.tab === 'watched' || params.tab === 'watchlist') {
+            setActiveTab(params.tab);
+        }
+    }, [params.tab]);
 
-    // --------------------------------------------------------
-    // MOBILE & TABLET LAYOUT (Exact Native Clone)
-    // --------------------------------------------------------
+    // Fetch details for all IDs currently stored in the user's lists
+    useEffect(() => {
+        const fetchListDetails = async () => {
+            if (moviesData.length === 0) setIsLoading(true);
+
+            try {
+                const watchlistIds = Object.keys(watchlist);
+                const watchedIds = Object.keys(watched);
+                const allIds = Array.from(new Set([...watchlistIds, ...watchedIds]));
+
+                if (allIds.length === 0) {
+                    setMoviesData([]);
+                    setIsLoading(false);
+                    return;
+                }
+
+                const detailedItemsPromises = allIds.map(async (id) => {
+                    const type = watchlist[id] === 'tv' || watched[id] === 'tv' ? 'tv' : 'movie';
+                    const details = await tmdbService.getDetails(id, type);
+
+                    if (!details) return null;
+
+                    return {
+                        id: String(details.id),
+                        title: details.title || details.name,
+                        duration: details.runtime ? `${Math.floor(details.runtime / 60)}h ${details.runtime % 60}m` : 'N/A',
+                        year: (details.release_date || details.first_air_date || '').substring(0, 4),
+                        genre: details.genres?.map(g => g.name).join(', ') || 'General',
+                        rating: details.vote_average ? details.vote_average.toFixed(1) : 'NR',
+                        poster: getImageUrl(details.poster_path),
+                        media_type: type
+                    };
+                });
+
+                const results = await Promise.all(detailedItemsPromises);
+                setMoviesData(results.filter(Boolean));
+            } catch (error) {
+                console.error('Error loading list details:', error);
+            } finally {
+                setIsLoading(false);
+            }
+        };
+
+        const handle = requestIdleCallback(() => {
+            fetchListDetails();
+        });
+
+        // Cleanup if the component unmounts before it fires
+        return () => cancelIdleCallback(handle);
+    }, [token, watchlist, watched]);
+
+    // --- 1. Instant Auth Check ---
+    const handleAuthAction = useCallback((actionCallback) => {
+        if (!token) {
+            Toast.show({
+                type: 'hotstarInfo',
+                text1: 'Log in for personalization',
+                position: 'top',
+                topOffset: insets.top > 0 ? insets.top + 10 : 50,
+                visibilityTime: 2500,
+            });
+        } else {
+            actionCallback();
+        }
+    }, [token, insets.top]);
+
+    // --- 2. API Sync & Optimistic Update ---
+    const handleStatusChange = useCallback(async (id, mediaType, targetStatus) => {
+        if (targetStatus === 'watchlist') toggleWatchlist(id, mediaType);
+        if (targetStatus === 'watched') toggleWatched(id, mediaType);
+
+        try {
+            const tmdbIdWithType = `${id}:${mediaType}`;
+
+            const response = await fetch(`${BACKEND_URL}/user/${targetStatus}/toggle`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${token}`
+                },
+                body: JSON.stringify({ tmdbId: tmdbIdWithType })
+            });
+
+            if (!response.ok) throw new Error('Failed to update list on server');
+
+            const data = await response.json();
+
+            const arrayToMap = (arr) => arr.reduce((acc, curr) => {
+                const [idStr, typeStr] = String(curr).split(':');
+                acc[idStr] = typeStr || 'movie';
+                return acc;
+            }, {});
+
+            useUserListStore.setState({
+                watchlist: arrayToMap(data.watchlist),
+                watched: arrayToMap(data.watched)
+            });
+
+        } catch (error) {
+            console.error('API Sync Error:', error);
+            Toast.show({ type: 'error', text1: `Failed to move to ${targetStatus}` });
+
+            if (targetStatus === 'watchlist') toggleWatchlist(id, mediaType);
+            if (targetStatus === 'watched') toggleWatched(id, mediaType);
+        }
+    }, [toggleWatchlist, toggleWatched, token]);
+
+    const activeData = useMemo(() => {
+        return moviesData.filter(movie => {
+            if (activeTab === 'watchlist') return !!watchlist[movie.id];
+            if (activeTab === 'watched') return !!watched[movie.id];
+            return false;
+        });
+    }, [moviesData, activeTab, watchlist, watched]);
+
     const renderMovieItem = ({ item }) => {
         const inWatchlist = !!watchlist[item.id];
         const inWatched = !!watched[item.id];
 
         return (
-            <View style={styles.movieCardMobile}>
-                <View style={styles.posterContainerMobile}>
-                    <Image source={{ uri: item.poster }} style={styles.posterMobile} resizeMode="cover" />
-                    <View style={styles.translucentRatingBadgeMobile}>
+            <View style={styles.movieCard}>
+                <View style={styles.posterContainer}>
+                    <Image source={{ uri: item.poster }} style={styles.poster} resizeMode="cover" />
+                    <View style={styles.translucentRatingBadge}>
                         <Ionicons name="star" size={10} color="#F5C518" />
-                        <Text style={styles.ratingTextMobile}>{item.rating}</Text>
+                        <Text style={styles.ratingText}>{item.rating}</Text>
                     </View>
                 </View>
 
-                <View style={styles.detailsContainerMobile}>
-                    <Text style={styles.titleMobile} numberOfLines={2}>{item.title}</Text>
-                    <Text style={styles.metadataMobile}>{item.year}  •  {item.duration}</Text>
-                    <Text style={styles.genreMobile} numberOfLines={1}>{item.genre}</Text>
+                <View style={styles.detailsContainer}>
+                    <Text style={styles.title} numberOfLines={2}>{item.title}</Text>
+                    <Text style={styles.metadata}>{item.year}  •  {item.duration}</Text>
+                    <Text style={styles.genre} numberOfLines={1}>{item.genre}</Text>
 
-                    <View style={styles.actionButtonsRowMobile}>
-                        <TouchableOpacity style={styles.smallIconBtnMobile} activeOpacity={0.8} onPress={() => handleAuthAction(() => handleStatusChange(item.id, item.media_type, 'watchlist'))}>
-                            <Ionicons name={inWatchlist ? "bookmark" : "bookmark-outline"} size={16} color={inWatchlist ? "#FF007A" : "#FFFFFF"} />
+                    <View style={styles.actionButtonsRow}>
+                        <TouchableOpacity
+                            style={styles.smallIconBtn}
+                            activeOpacity={0.8}
+                            onPress={() => handleAuthAction(() => handleStatusChange(item.id, item.media_type, 'watchlist'))}
+                        >
+                            <Ionicons
+                                name={inWatchlist ? "bookmark" : "bookmark-outline"}
+                                size={16}
+                                // Theme Pink for active Watchlist
+                                color={inWatchlist ? "#FF007A" : "#FFFFFF"}
+                            />
                         </TouchableOpacity>
-                        <TouchableOpacity style={styles.smallIconBtnMobile} activeOpacity={0.8} onPress={() => handleAuthAction(() => handleStatusChange(item.id, item.media_type, 'watched'))}>
-                            <Ionicons name="checkmark-done" size={14} color={inWatched ? "#00E5FF" : "#FFFFFF"} />
+
+                        <TouchableOpacity
+                            style={styles.smallIconBtn}
+                            activeOpacity={0.8}
+                            onPress={() => handleAuthAction(() => handleStatusChange(item.id, item.media_type, 'watched'))}
+                        >
+                            <Ionicons
+                                name="checkmark-done"
+                                size={14}
+                                // Theme Cyan for active Watched
+                                color={inWatched ? "#00E5FF" : "#FFFFFF"}
+                            />
                         </TouchableOpacity>
                     </View>
                 </View>
 
-                <TouchableOpacity style={styles.playIconBtnMobile} activeOpacity={0.7} onPress={() => router.push({ pathname: '/player', params: { id: item.id, type: item.media_type } })}>
-                    <LinearGradient colors={['#00E5FF', '#9B51E0', '#FF007A']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.playGradientMobile}>
+                {/* Gradient Play Button */}
+                <TouchableOpacity
+                    style={styles.playIconBtn}
+                    activeOpacity={0.7}
+                    onPress={() => router.push({ pathname: '/player', params: { id: item.id, type: item.media_type } })}
+                >
+                    <LinearGradient
+                        colors={['#00E5FF', '#9B51E0', '#FF007A']}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 1 }}
+                        style={styles.playGradient}
+                    >
                         <Ionicons name="play" size={20} color="#FFFFFF" style={{ marginLeft: 2 }} />
                     </LinearGradient>
                 </TouchableOpacity>
@@ -136,30 +226,56 @@ export default function MyListScreenWeb() {
     };
 
     return (
-        <LinearGradient colors={['#170D22', '#0A0A0C']} style={styles.backgroundMobile}>
-            <View style={[styles.containerMobile, { paddingTop: insets.top }]}>
-                <View style={styles.headerMobile}>
-                    <TouchableOpacity onPress={() => router.back()} style={styles.backButtonMobile}>
+        <LinearGradient colors={['#170D22', '#0A0A0C']} style={styles.background}>
+            <View style={[styles.container, { paddingTop: insets.top }]}>
+
+                <View style={styles.header}>
+                    <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
                         <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
                     </TouchableOpacity>
-                    <Text style={styles.headerTitleMobile}>My Activity</Text>
-                    <View style={styles.headerPlaceholderMobile} />
+                    <Text style={styles.headerTitle}>My Activity</Text>
+                    <View style={styles.headerPlaceholder} />
                 </View>
 
-                <View style={styles.tabContainerMobile}>
-                    <TouchableOpacity style={styles.tabMobile} onPress={() => setActiveTab('watchlist')} activeOpacity={0.8}>
-                        <Text style={[styles.tabTextMobile, activeTab === 'watchlist' && styles.activeTabText]}>Watchlist</Text>
-                        {activeTab === 'watchlist' && <LinearGradient colors={['#00E5FF', '#9B51E0', '#FF007A']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.activeTabIndicatorMobile} />}
+                <View style={styles.tabContainer}>
+                    <TouchableOpacity
+                        style={styles.tab}
+                        onPress={() => setActiveTab('watchlist')}
+                        activeOpacity={0.8}
+                    >
+                        <Text style={[styles.tabText, activeTab === 'watchlist' && styles.activeTabText]}>Watchlist</Text>
+                        {/* Gradient Indicator for Watchlist */}
+                        {activeTab === 'watchlist' && (
+                            <LinearGradient
+                                colors={['#00E5FF', '#9B51E0', '#FF007A']}
+                                start={{ x: 0, y: 0 }}
+                                end={{ x: 1, y: 0 }}
+                                style={styles.activeTabIndicator}
+                            />
+                        )}
                     </TouchableOpacity>
 
-                    <TouchableOpacity style={styles.tabMobile} onPress={() => setActiveTab('watched')} activeOpacity={0.8}>
-                        <Text style={[styles.tabTextMobile, activeTab === 'watched' && styles.activeTabText]}>Watched</Text>
-                        {activeTab === 'watched' && <LinearGradient colors={['#00E5FF', '#9B51E0', '#FF007A']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.activeTabIndicatorMobile} />}
+                    <TouchableOpacity
+                        style={styles.tab}
+                        onPress={() => setActiveTab('watched')}
+                        activeOpacity={0.8}
+                    >
+                        <Text style={[styles.tabText, activeTab === 'watched' && styles.activeTabText]}>Watched</Text>
+                        {/* Gradient Indicator for Watched */}
+                        {activeTab === 'watched' && (
+                            <LinearGradient
+                                colors={['#00E5FF', '#9B51E0', '#FF007A']}
+                                start={{ x: 0, y: 0 }}
+                                end={{ x: 1, y: 0 }}
+                                style={styles.activeTabIndicator}
+                            />
+                        )}
                     </TouchableOpacity>
                 </View>
 
                 {isLoading && moviesData.length === 0 ? (
-                    <View style={styles.loaderContainerMobile}>
+                    <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+                        {/* Theme Cyan Loader */}
                         <ActivityIndicator size="large" color="#00E5FF" />
                     </View>
                 ) : (
@@ -168,86 +284,138 @@ export default function MyListScreenWeb() {
                         extraData={{ watchlist, watched }}
                         keyExtractor={(item) => item.id}
                         renderItem={renderMovieItem}
-                        contentContainerStyle={styles.listContentMobile}
+                        contentContainerStyle={styles.listContent}
                         showsVerticalScrollIndicator={false}
                         ListEmptyComponent={
-                            <View style={styles.emptyContainerMobile}>
-                                <Ionicons name="film-outline" size={48} color="rgba(255,255,255,0.2)" style={styles.emptyIconMobile} />
-                                <Text style={styles.emptyTextMobile}>No movies in this list yet.</Text>
+                            <View style={styles.emptyContainer}>
+                                <Ionicons name="film-outline" size={48} color="rgba(255,255,255,0.2)" style={styles.emptyIcon} />
+                                <Text style={styles.emptyText}>No movies in this list yet.</Text>
                             </View>
                         }
                     />
                 )}
+
             </View>
         </LinearGradient>
     );
-}
+};
+
+export default MyListScreen;
 
 const styles = StyleSheet.create({
-    // --- DESKTOP STYLES (>= 1024px) ---
-    desktopContainer: { flex: 1, backgroundColor: '#0A0A0C', padding: 32 },
-    desktopHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 32 },
-    headerLeftDesktop: { flexDirection: 'row', alignItems: 'center' },
-    backBtnDesktop: { marginRight: 24, cursor: 'pointer' },
-    headerTitleDesktop: { color: '#FFFFFF', fontSize: 32, fontWeight: 'bold' },
+    background: { flex: 1 },
+    container: { flex: 1 },
+    header: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        paddingHorizontal: 16,
+        paddingVertical: 12
+    },
+    backButton: { padding: 4 },
+    headerTitle: { color: '#FFFFFF', fontSize: 18, fontWeight: 'bold', letterSpacing: 0.5 },
+    headerPlaceholder: { width: 32 },
 
-    desktopTabs: { flexDirection: 'row', backgroundColor: '#1C1C22', borderRadius: 24, padding: 6, gap: 8 },
-    desktopTab: { paddingHorizontal: 24, paddingVertical: 12, borderRadius: 20, position: 'relative', cursor: 'pointer' },
-    desktopTabText: { color: '#8F98A0', fontSize: 15, fontWeight: '600' },
+    tabContainer: {
+        flexDirection: 'row',
+        borderBottomWidth: 1,
+        borderBottomColor: 'rgba(255,255,255,0.08)',
+        marginBottom: 8
+    },
+    tab: {
+        flex: 1,
+        paddingVertical: 16,
+        alignItems: 'center',
+        position: 'relative', // Allows absolute positioning of the gradient bar
+    },
+    activeTabIndicator: {
+        position: 'absolute',
+        bottom: -1, // Sits exactly over the container's bottom border
+        left: 0,
+        right: 0,
+        height: 3,
+        borderTopLeftRadius: 3,
+        borderTopRightRadius: 3,
+    },
+    tabText: { color: '#8F98A0', fontSize: 15, fontWeight: '600' },
     activeTabText: { color: '#FFFFFF', fontWeight: 'bold' },
-    desktopTabIndicator: { position: 'absolute', bottom: 0, left: 24, right: 24, height: 3, borderRadius: 2 },
 
-    desktopGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 24, paddingBottom: 60 },
-    desktopCard: { width: 220, backgroundColor: '#17171C', borderRadius: 16, overflow: 'hidden', borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
-    desktopPosterContainer: { width: '100%', height: 330, position: 'relative' },
-    desktopPoster: { width: '100%', height: '100%' },
-    desktopRatingBadge: { position: 'absolute', top: 12, left: 12, flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.7)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
-    desktopRatingText: { color: '#FFF', fontSize: 12, fontWeight: 'bold', marginLeft: 4 },
-    desktopPlayOverlay: { position: 'absolute', bottom: -24, right: 16, width: 48, height: 48, borderRadius: 24, overflow: 'hidden', shadowColor: '#9B51E0', shadowOpacity: 0.5, shadowRadius: 10, elevation: 5, cursor: 'pointer' },
-    playGradientDesktop: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+    listContent: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 40 },
+    movieCard: {
+        flexDirection: 'row',
+        backgroundColor: '#1E1428',
+        borderRadius: 12,
+        marginBottom: 16,
+        overflow: 'hidden',
+        alignItems: 'center',
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.05)'
+    },
 
-    desktopDetails: { padding: 16, paddingTop: 32 },
-    desktopTitle: { color: '#FFFFFF', fontSize: 18, fontWeight: 'bold', marginBottom: 4 },
-    desktopMeta: { color: '#8F98A0', fontSize: 13, marginBottom: 12 },
-    desktopActions: { flexDirection: 'row', gap: 12 },
-    smallIconBtnDesktop: { width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.05)', justifyContent: 'center', alignItems: 'center', cursor: 'pointer' },
+    posterContainer: {
+        position: 'relative',
+    },
+    poster: { width: 105, height: 155 },
+    translucentRatingBadge: {
+        position: 'absolute',
+        top: 6,
+        left: 6,
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: 'rgba(0, 0, 0, 0.65)',
+        paddingHorizontal: 6,
+        paddingVertical: 3,
+        borderRadius: 4,
+    },
+    ratingText: {
+        color: '#FFFFFF',
+        fontSize: 10,
+        fontWeight: 'bold',
+        marginLeft: 3,
+        marginTop: 1,
+    },
 
-    emptyContainerDesktop: { alignItems: 'center', marginTop: 100 },
-    emptyTextDesktop: { color: '#8F98A0', fontSize: 18, marginTop: 16 },
+    detailsContainer: {
+        flex: 1,
+        paddingHorizontal: 16,
+        paddingVertical: 12,
+        justifyContent: 'center'
+    },
+    title: { color: '#FFFFFF', fontSize: 16, fontWeight: 'bold', marginBottom: 4, letterSpacing: 0.3 },
+    metadata: { color: '#8F98A0', fontSize: 12, marginBottom: 4, fontWeight: '500' },
+    genre: { color: '#A0A0A5', fontSize: 11, fontStyle: 'italic' },
 
-    // --- MOBILE & TABLET STYLES (< 1024px) ---
-    backgroundMobile: { flex: 1 },
-    containerMobile: { flex: 1 },
-    headerMobile: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12 },
-    backButtonMobile: { padding: 4, cursor: 'pointer' },
-    headerTitleMobile: { color: '#FFFFFF', fontSize: 18, fontWeight: 'bold', letterSpacing: 0.5 },
-    headerPlaceholderMobile: { width: 32 },
+    actionButtonsRow: {
+        flexDirection: 'row',
+        gap: 12,
+        marginTop: 12,
+    },
+    smallIconBtn: {
+        width: 32,
+        height: 32,
+        borderRadius: 16,
+        backgroundColor: 'rgba(255, 255, 255, 0.1)',
+        justifyContent: 'center',
+        alignItems: 'center',
+        borderWidth: 1,
+        borderColor: 'rgba(255, 255, 255, 0.2)',
+    },
 
-    tabContainerMobile: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.08)', marginBottom: 8 },
-    tabMobile: { flex: 1, paddingVertical: 16, alignItems: 'center', position: 'relative', cursor: 'pointer' },
-    tabTextMobile: { color: '#8F98A0', fontSize: 15, fontWeight: '600' },
-    activeTabIndicatorMobile: { position: 'absolute', bottom: -1, left: 0, right: 0, height: 3, borderTopLeftRadius: 3, borderTopRightRadius: 3 },
+    // Gradient Play Button Styles
+    playIconBtn: {
+        width: 44,
+        height: 44,
+        borderRadius: 22,
+        overflow: 'hidden',
+        marginRight: 14,
+    },
+    playGradient: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
 
-    loaderContainerMobile: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-    listContentMobile: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 40 },
-    movieCardMobile: { flexDirection: 'row', backgroundColor: '#1E1428', borderRadius: 12, marginBottom: 16, overflow: 'hidden', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)', cursor: 'pointer' },
-    posterContainerMobile: { position: 'relative' },
-    posterMobile: { width: 105, height: 155 },
-    translucentRatingBadgeMobile: { position: 'absolute', top: 6, left: 6, flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0, 0, 0, 0.65)', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 4 },
-    ratingTextMobile: { color: '#FFFFFF', fontSize: 10, fontWeight: 'bold', marginLeft: 3, marginTop: 1 },
-
-    detailsContainerMobile: { flex: 1, paddingHorizontal: 16, paddingVertical: 12, justifyContent: 'center' },
-    titleMobile: { color: '#FFFFFF', fontSize: 16, fontWeight: 'bold', marginBottom: 4, letterSpacing: 0.3 },
-    metadataMobile: { color: '#8F98A0', fontSize: 12, marginBottom: 4, fontWeight: '500' },
-    genreMobile: { color: '#A0A0A5', fontSize: 11, fontStyle: 'italic' },
-
-    actionButtonsRowMobile: { flexDirection: 'row', gap: 12, marginTop: 12 },
-    smallIconBtnMobile: { width: 32, height: 32, borderRadius: 16, backgroundColor: 'rgba(255, 255, 255, 0.1)', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.2)', cursor: 'pointer' },
-
-    playIconBtnMobile: { width: 44, height: 44, borderRadius: 22, overflow: 'hidden', marginRight: 14, cursor: 'pointer' },
-    playGradientMobile: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-
-    emptyContainerMobile: { alignItems: 'center', marginTop: '40%' },
-    emptyIconMobile: { marginBottom: 16 },
-    emptyTextMobile: { color: '#8F98A0', fontSize: 15, fontWeight: '500' }
+    emptyContainer: { alignItems: 'center', marginTop: '40%' },
+    emptyIcon: { marginBottom: 16 },
+    emptyText: { color: '#8F98A0', fontSize: 15, fontWeight: '500' }
 });

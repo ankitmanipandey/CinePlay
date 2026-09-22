@@ -12,8 +12,7 @@ import {
     useWindowDimensions,
     Image,
     Modal,
-    ActivityIndicator,
-    Platform
+    ActivityIndicator
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -28,8 +27,8 @@ export const QUICK_PHRASES = [
     'Oh no!!!',
 ];
 
-const LONG_PRESS_MS = 220;
-const DOUBLE_TAP_MS = 320;
+const LONG_PRESS_MS = 250;
+const DOUBLE_TAP_MS = 260;
 const COLS = 2;
 const CELL_H = 36;
 const PAD = 6;
@@ -428,7 +427,6 @@ export const TheatreChatPanel = ({ messages, username, onSend, onSendGif, onClos
                                 columnWrapperStyle={{ gap: 8, marginBottom: 8 }}
                                 contentContainerStyle={{ paddingBottom: 12 }}
                                 keyboardShouldPersistTaps="handled"
-                                {...(Platform.OS === 'web' ? { dataSet: { hideScrollbar: 'true' } } : {})}
                                 ListEmptyComponent={<Text style={{ color: '#8F98A0', textAlign: 'center', marginTop: 20 }}>No GIFs found.</Text>}
                                 renderItem={({ item }) => (
                                     <TouchableOpacity style={{ flex: 1 }} onPress={() => handleSendGif(item.images.fixed_height.url)}>

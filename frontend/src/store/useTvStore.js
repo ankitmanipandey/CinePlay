@@ -1,34 +1,18 @@
 import { create } from 'zustand';
-import { Platform } from 'react-native';
-
-const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL;
 
 const CHANNELS_API = 'https://iptv-org.github.io/api/channels.json';
 const STREAMS_API = 'https://iptv-org.github.io/api/streams.json';
-const LOGOS_API = 'https://iptv-org.github.io/api/logos.json';
+const LOGOS_API = 'https://iptv-org.github.io/api/logos.json'; // <-- Added Logos API
 
+// Supported category slugs (iptv-org uses 'sport', but we also handle 'sports')
 const SUPPORTED_CATEGORIES = ['news', 'sport', 'sports', 'music', 'movies', 'entertainment'];
-const TARGET_COUNTRIES = ['IN'];
-const MAX_PER_CATEGORY = 40;
+const TARGET_COUNTRIES = ['IN']; // Filters dataset to India for rapid load times
+const MAX_PER_CATEGORY = 40; // Hard cap per category to keep memory footprint low
 
-const fetchWithTimeout = async (url, ms = 10000) => {
-    const targetUrl = Platform.OS === 'web'
-        ? `${BACKEND_URL}/proxy/fetch?url=${encodeURIComponent(url)}`
-        : url;
-
+const fetchWithTimeout = (url, ms = 10000) => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), ms);
-
-    try {
-        const res = await fetch(targetUrl, { signal: controller.signal });
-        if (!res.ok) {
-            const bodyText = await res.text().catch(() => '');
-            throw new Error(`Request to ${targetUrl} failed: ${res.status} ${res.statusText} — ${bodyText.slice(0, 200)}`);
-        }
-        return res;
-    } finally {
-        clearTimeout(timeout);
-    }
+    return fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timeout));
 };
 
 export const useTvStore = create((set, get) => ({
@@ -117,6 +101,7 @@ export const useTvStore = create((set, get) => ({
         }
     },
 
+    // UI helper function that accepts both category and language
     filterByCategory: (category, language) => {
         const { allChannels } = get();
 
@@ -130,13 +115,16 @@ export const useTvStore = create((set, get) => ({
 
         // 2. Apply Language Filter
         if (language && language !== 'any' && language !== 'others') {
+            // Translate app's 2-letter codes to the 3-letter broadcast codes
             const langMap = { 'hi': 'hin', 'en': 'eng', 'ta': 'tam', 'te': 'tel', 'pa': 'pan', 'ml': 'mal' };
             const langCode3 = langMap[language] || language;
 
             filtered = filtered.filter(c => {
+                // If channel has language metadata, strictly match it
                 if (c.languages && c.languages.length > 0) {
                     return c.languages.includes(langCode3);
                 }
+                // If it lacks metadata, don't aggressively hide it just in case
                 return true;
             });
         }

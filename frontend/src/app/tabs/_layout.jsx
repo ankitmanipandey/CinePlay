@@ -1,7 +1,7 @@
 import React from 'react';
 import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { StyleSheet, Platform, View, useWindowDimensions } from 'react-native';
+import { StyleSheet, Platform, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -37,10 +37,6 @@ export default function TabLayout() {
     // Fetch the safe area insets to account for system navigation bars
     const insets = useSafeAreaInsets();
 
-    // --- Breakpoint Detection ---
-    const { width: windowWidth } = useWindowDimensions();
-    const isDesktop = windowWidth >= 1024;
-
     return (
         <Tabs
             screenOptions={{
@@ -51,12 +47,9 @@ export default function TabLayout() {
                 tabBarStyle: [
                     styles.tabBar,
                     {
-                        // ✅ INCREASED height to give the label more room to render properly
-                        height: (Platform.OS === 'ios' ? 88 : 70) + insets.bottom,
-                        // ✅ REDUCED bottom padding so the text isn't pushed out of bounds
-                        paddingBottom: (Platform.OS === 'ios' ? 26 : 8) + insets.bottom,
-                        // 🚨 Hide the entire bottom tab bar completely on Desktop
-                        display: isDesktop ? 'none' : 'flex',
+                        // Dynamically add the bottom inset to ensure the tab bar sits above system buttons
+                        height: (Platform.OS === 'ios' ? 88 : 65) + insets.bottom,
+                        paddingBottom: (Platform.OS === 'ios' ? 30 : 10) + insets.bottom,
                     }
                 ],
                 tabBarLabelStyle: styles.tabBarLabel,
@@ -115,15 +108,15 @@ const styles = StyleSheet.create({
         right: 0,
     },
     tabBarLabel: {
-        fontSize: 11, // ✅ Slightly adjusted for better readability
+        fontSize: 10,
         fontWeight: '600',
         marginTop: 2,
     },
     iconContainer: {
         alignItems: 'center',
-        justifyContent: 'center',
+        justify: 'center',
         width: '100%',
-        // ✅ REMOVED height: '100%' so it stops squishing the label downwards
+        height: '100%',
         position: 'relative',
     },
     activeTopBar: {

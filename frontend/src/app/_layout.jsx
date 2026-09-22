@@ -4,11 +4,7 @@ import notifee, { EventType } from '@notifee/react-native';
 import Constants from 'expo-constants';
 import axios from 'axios';
 import React, { useEffect, useState, useRef } from 'react';
-import {
-  View, Text, StyleSheet, ActivityIndicator, Animated, Dimensions,
-  Platform, PermissionsAndroid, Linking, BackHandler, useWindowDimensions,
-  TouchableOpacity, Pressable, ScrollView
-} from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator, Animated, Dimensions, Platform, PermissionsAndroid, Linking, BackHandler } from 'react-native';
 import { Stack, useRouter, usePathname } from 'expo-router';
 import Toast from 'react-native-toast-message';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -17,82 +13,155 @@ import * as SecureStore from 'expo-secure-store';
 import { ThemeProvider, DarkTheme } from 'expo-router/react-navigation';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
-import TrackPlayer, { PlayerCommand, Event } from '../services/trackPlayer';
+// --- RNTP V5 IMPORT ---
+// Removed AppKilledPlaybackBehavior entirely
+import TrackPlayer, { PlayerCommand, Event } from '@rntp/player';
+
+// --- GLOBAL STORES ---
 import { useAuthStore } from '../store/useAuthStore';
 import { useGlobalSocket } from '../store/useGlobalSocket';
-import { useMovieStore } from '../store/useMovieStore';
+
+// --- SERVICES ---
 import { registerUploadForegroundService } from '../services/uploadManager';
-import CinePlayLogo from '../components/Logo/CinePlayLogo';
 
-if (Platform.OS !== 'web') {
-  registerUploadForegroundService();
-}
+// Execute registerUploadForegroundService unconditionally at the top level.
+registerUploadForegroundService();
 
+// --- TRACK PLAYER BACKGROUND SERVICE (v5) ---
 if (TrackPlayer) {
   TrackPlayer.registerBackgroundEventHandler(() => async (event) => {
     switch (event.type) {
-      case Event.RemotePlay: await TrackPlayer.play(); break;
-      case Event.RemotePause: await TrackPlayer.pause(); break;
-      case Event.RemoteNext: await TrackPlayer.skipToNext(); break;
-      case Event.RemotePrevious: await TrackPlayer.skipToPrevious(); break;
-      case Event.RemoteSeek: await TrackPlayer.seekTo(event.position); break;
+      case Event.RemotePlay:
+        await TrackPlayer.play();
+        break;
+      case Event.RemotePause:
+        await TrackPlayer.pause();
+        break;
+      case Event.RemoteNext:
+        await TrackPlayer.skipToNext();
+        break;
+      case Event.RemotePrevious:
+        await TrackPlayer.skipToPrevious();
+        break;
+      case Event.RemoteSeek:
+        await TrackPlayer.seekTo(event.position);
+        break;
     }
   });
-} else if (Platform.OS !== 'web') {
-  console.warn("⚠️ TrackPlayer native module is not linked.");
+} else {
+  console.warn("⚠️ TrackPlayer native module is not linked. Please rebuild the app.");
 }
 
+const { width } = Dimensions.get('window');
+
+// --- PUSH NOTIFICATION CONFIGURATION ---
 Notifications.setNotificationHandler({
-  handleNotification: async () => ({ shouldShowAlert: true, shouldPlaySound: true, shouldSetBadge: true }),
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: true,
+  }),
 });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Fetching the Expo push token needs a connection to exp.host. If the network blocks it,
+// retry a few times and then give up quietly (null) instead of throwing an uncaught error.
 async function getExpoPushTokenWithRetry(projectId, retries = 3) {
-  if (!projectId) return null;
+  if (!projectId) {
+    console.warn('Push token skipped: no EAS projectId found');
+    return null;
+  }
   for (let i = 0; i < retries; i++) {
-    try { return (await Notifications.getExpoPushTokenAsync({ projectId })).data; }
-    catch (e) { if (i < retries - 1) await sleep(2000 * (i + 1)); }
+    try {
+      return (await Notifications.getExpoPushTokenAsync({ projectId })).data;
+    } catch (e) {
+      console.warn(`Push token attempt ${i + 1}/${retries} failed:`, e?.message);
+      if (i < retries - 1) await sleep(2000 * (i + 1));
+    }
   }
   return null;
 }
 
-// --------------------------------------------------------
-// ANIMATED TOAST (Responsive for Desktop & Mobile)
-// --------------------------------------------------------
-const AnimatedToast = ({ text1, text2, colors, iconName, onPress }) => {
-  const { width: windowWidth } = useWindowDimensions();
-  const isDesktop = windowWidth >= 1024;
+async function registerForPushNotificationsAsync() {
+  let token;
 
-  // Start animation from off-screen right
-  const slideAnim = useRef(new Animated.Value(windowWidth)).current;
+  if (Platform.OS === 'android') {
+    if (Platform.Version >= 33) {
+      const currentStatus = await PermissionsAndroid.check(
+        PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS
+      );
+
+      if (!currentStatus) {
+        const granted = await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS
+        );
+
+        if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+          Toast.show({
+            type: 'hotstarInfo',
+            text1: 'Notifications are off',
+            text2: 'Tap here to enable them in Settings.',
+            onPress: () => Linking.openSettings()
+          });
+          return null;
+        }
+      }
+    }
+
+    await Notifications.setNotificationChannelAsync('default', {
+      name: 'default',
+      importance: Notifications.AndroidImportance.MAX,
+      vibrationPattern: [0, 250, 250, 250],
+      lightColor: '#FF007A',
+    });
+  }
+
+  if (Device.isDevice) {
+    const { status: existingStatus } = await Notifications.getPermissionsAsync();
+    let finalStatus = existingStatus;
+
+    if (existingStatus !== 'granted') {
+      const { status } = await Notifications.requestPermissionsAsync();
+      finalStatus = status;
+    }
+
+    if (finalStatus !== 'granted') {
+      return null;
+    }
+
+    const projectId = Constants.expoConfig?.extra?.eas?.projectId ?? Constants.easConfig?.projectId;
+    token = await getExpoPushTokenWithRetry(projectId);
+  }
+
+  return token;
+}
+
+const AnimatedToast = ({ text1, text2, colors, iconName, onPress }) => {
+  const slideAnim = useRef(new Animated.Value(width)).current;
 
   useEffect(() => {
     Animated.spring(slideAnim, {
       toValue: 0,
       useNativeDriver: true,
       friction: 8,
-      tension: 60
+      tension: 60,
     }).start();
   }, [slideAnim]);
 
   return (
-    <Animated.View style={[
-      styles.toastWrapper,
-      isDesktop && styles.desktopToastWrapper,
-      { transform: [{ translateX: slideAnim }] }
-    ]}>
+    <Animated.View style={[styles.toastWrapper, { transform: [{ translateX: slideAnim }] }]}>
       <LinearGradient
         colors={colors}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
-        style={[styles.toastContainer, isDesktop && styles.desktopToastContainer]}
+        style={styles.toastContainer}
         onTouchEnd={onPress}
       >
-        <Ionicons name={iconName} size={isDesktop ? 24 : 20} color="#FFFFFF" />
+        <Ionicons name={iconName} size={20} color="#FFFFFF" />
         <View style={styles.toastTextContainer}>
-          <Text style={[styles.toastText, isDesktop && styles.desktopToastText]}>{text1}</Text>
-          {text2 && <Text style={[styles.toastSubText, isDesktop && styles.desktopToastSubText]}>{text2}</Text>}
+          <Text style={styles.toastText}>{text1}</Text>
+          {text2 && <Text style={styles.toastSubText}>{text2}</Text>}
         </View>
       </LinearGradient>
     </Animated.View>
@@ -100,331 +169,217 @@ const AnimatedToast = ({ text1, text2, colors, iconName, onPress }) => {
 };
 
 export const toastConfig = {
-  hotstarSuccess: ({ text1, text2, onPress }) => <AnimatedToast text1={text1} text2={text2} onPress={onPress} colors={['#1F80E0', '#D63484']} iconName="checkmark-circle" />,
-  hotstarInfo: ({ text1, text2, onPress }) => <AnimatedToast text1={text1} text2={text2} onPress={onPress} colors={['#1F80E0', '#D63484']} iconName="information-circle" />,
-  hotstarError: ({ text1, text2, onPress }) => <AnimatedToast text1={text1} text2={text2} onPress={onPress} colors={['#E53935', '#990000']} iconName="alert-circle" />
-};
-
-// ==========================================
-// 🔧 HOISTED COMPONENTS
-// ==========================================
-
-const NavItem = ({ icon, label, route, router, sidebarOpacity, onPressOverride }) => (
-  <TouchableOpacity
-    style={styles.navRailItem}
-    onPress={() => {
-      if (onPressOverride) {
-        onPressOverride();
-      } else if (route) {
-        router.push(route);
-      }
-    }}
-  >
-    <Ionicons name={icon} size={22} color="#E0E0E0" style={styles.navIcon} />
-    <Animated.Text style={[styles.navLabel, { opacity: sidebarOpacity }]} numberOfLines={1}>
-      {label}
-    </Animated.Text>
-  </TouchableOpacity>
-);
-
-const ExpandableNavItem = ({
-  icon, label, filterKey, options, scrollIndex,
-  filters, setFilter, isSidebarExpanded, sidebarOpacity,
-  scrollViewRef, handleSidebarEnter
-}) => {
-  const [isLocalExpanded, setIsLocalExpanded] = useState(false);
-  const heightAnim = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    if (!isSidebarExpanded && isLocalExpanded) {
-      setIsLocalExpanded(false);
-      Animated.timing(heightAnim, { toValue: 0, duration: 150, useNativeDriver: false }).start();
-    }
-  }, [isSidebarExpanded]);
-
-  const toggleExpand = () => {
-    if (!isSidebarExpanded) handleSidebarEnter();
-    const nextState = !isLocalExpanded;
-    setIsLocalExpanded(nextState);
-
-    Animated.spring(heightAnim, {
-      toValue: nextState ? options.length * 42 : 0,
-      friction: 8,
-      tension: 50,
-      useNativeDriver: false
-    }).start();
-
-    if (nextState && scrollViewRef.current) {
-      setTimeout(() => {
-        scrollViewRef.current.scrollTo({ y: scrollIndex * 60, animated: true });
-      }, 150);
-    }
-  };
-
-  const handleSelectOption = (optValue) => {
-    setFilter(filterKey, optValue);
-  };
-
-  const selectedOptionLabel = options.find(o => o.value === filters?.[filterKey])?.label || '';
-
-  return (
-    <View>
-      <TouchableOpacity style={styles.navRailItem} onPress={toggleExpand}>
-        <Ionicons name={icon} size={22} color="#E0E0E0" style={styles.navIcon} />
-        <Animated.View style={[styles.expandableHeaderContainer, { opacity: sidebarOpacity }]}>
-          <View style={styles.navLabelStack}>
-            <Text style={styles.navLabel} numberOfLines={1}>{label}</Text>
-            <Text style={[styles.navSubLabel, !selectedOptionLabel && { opacity: 0 }]} numberOfLines={1}>
-              {selectedOptionLabel || ' '}
-            </Text>
-          </View>
-          <Ionicons name={isLocalExpanded ? "chevron-up" : "chevron-down"} size={16} color="#B0B5B9" />
-        </Animated.View>
-      </TouchableOpacity>
-
-      {isSidebarExpanded && (
-        <Animated.View style={{ height: heightAnim, overflow: 'hidden', paddingLeft: 60 }}>
-          {options.map((opt) => {
-            const isSelected = filters?.[filterKey] === opt.value;
-            return (
-              <TouchableOpacity
-                key={opt.value}
-                style={styles.filterOptionBtn}
-                onPress={() => handleSelectOption(opt.value)}
-              >
-                <Text style={[styles.filterOptionText, isSelected && styles.filterOptionTextActive]} numberOfLines={1}>
-                  {opt.label}
-                </Text>
-                {isSelected && <Ionicons name="checkmark" size={16} color="#00E5FF" />}
-              </TouchableOpacity>
-            );
-          })}
-        </Animated.View>
-      )}
-    </View>
-  );
+  hotstarSuccess: ({ text1, text2, onPress }) => (
+    <AnimatedToast text1={text1} text2={text2} onPress={onPress} colors={['#1F80E0', '#D63484']} iconName="checkmark-circle" />
+  ),
+  hotstarInfo: ({ text1, text2, onPress }) => (
+    <AnimatedToast text1={text1} text2={text2} onPress={onPress} colors={['#1F80E0', '#D63484']} iconName="information-circle" />
+  ),
+  hotstarError: ({ text1, text2, onPress }) => (
+    <AnimatedToast text1={text1} text2={text2} onPress={onPress} colors={['#E53935', '#990000']} iconName="alert-circle" />
+  )
 };
 
 export default function RootLayout() {
   const [isLoading, setIsLoading] = useState(true);
+
   const router = useRouter();
-  const { width: windowWidth } = useWindowDimensions();
-  const isDesktop = windowWidth >= 1024;
+  const pathname = usePathname();
 
   const restoreSession = useAuthStore((state) => state.restoreSession);
   const token = useAuthStore((state) => state.token);
+  const user = useAuthStore((state) => state.user);
 
   const connectGlobalSocket = useGlobalSocket((state) => state.connectGlobalSocket);
   const disconnectGlobalSocket = useGlobalSocket((state) => state.disconnectGlobalSocket);
+  const setUnreadNotifsCount = useGlobalSocket((state) => state.setUnreadNotifsCount);
 
-  const filters = useMovieStore((state) => state.filters);
-  const setFilter = useMovieStore((state) => state.setFilter);
+  const lastNotificationResponse = Notifications.useLastNotificationResponse();
+  const handledNotificationId = useRef(null);
 
-  // --- Smooth Sidebar Animation Logic ---
-  const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
-  const sidebarWidth = useRef(new Animated.Value(76)).current;
-  const sidebarOpacity = useRef(new Animated.Value(0)).current;
-  const scrollViewRef = useRef(null);
-
-  const handleSidebarEnter = () => {
-    setIsSidebarExpanded(true);
-    Animated.parallel([
-      Animated.spring(sidebarWidth, { toValue: 280, friction: 9, tension: 60, useNativeDriver: false }),
-      Animated.timing(sidebarOpacity, { toValue: 1, duration: 200, useNativeDriver: false })
-    ]).start();
-  };
-
-  const handleSidebarLeave = () => {
-    Animated.parallel([
-      Animated.spring(sidebarWidth, { toValue: 76, friction: 9, tension: 60, useNativeDriver: false }),
-      Animated.timing(sidebarOpacity, { toValue: 0, duration: 150, useNativeDriver: false })
-    ]).start(() => setIsSidebarExpanded(false));
-  };
-
-  // --- HOME BUTTON OVERRIDE ---
-  const handleHomePress = () => {
-    useMovieStore.setState({
-      filters: { region: 'all', type: 'all', language: 'any', platform: 'any' },
-      isLoading: true
-    });
-    useMovieStore.getState().fetchAllData();
-    router.push('/tabs/home');
-  };
-
+  // 0. Track Player Setup Initialization (v5)
   useEffect(() => {
-    const checkUserAuth = async () => {
+    async function setupPlayer() {
       try {
-        let storedToken = Platform.OS === 'web' ? localStorage.getItem('userToken') : await SecureStore.getItemAsync('userToken');
-        let userDataString = Platform.OS === 'web' ? localStorage.getItem('userData') : await SecureStore.getItemAsync('userData');
-        if (storedToken) {
-          restoreSession(storedToken, userDataString ? JSON.parse(userDataString) : { email: 'User', name: 'User' });
-          router.replace('/tabs/home');
-        }
-      } catch (error) { } finally { setIsLoading(false); }
-    };
-    checkUserAuth();
-  }, []);
+        await TrackPlayer.setupPlayer({
+          contentType: 'music',
+          // Note: In v5, audio background playback is natively continuous out of the box.
+        });
 
-  useEffect(() => {
-    if (Platform.OS === 'web' || !TrackPlayer) return;
+        // Configures the notification/lock screen capabilities
+        await TrackPlayer.setCommands({
+          capabilities: [
+            PlayerCommand.PlayPause,
+            PlayerCommand.Next,
+            PlayerCommand.Previous,
+            PlayerCommand.Seek,
+          ],
+          forwardInterval: 15,
+          backwardInterval: 15,
+        });
 
-    (async () => {
-      try {
-        await TrackPlayer.setupPlayer();
-        console.log('✅ TrackPlayer initialized');
-
-        // Commented out until we find the right argument shape:
-        // await TrackPlayer.setCommands([...]);
+        console.log('✅ TrackPlayer setup completed.');
       } catch (e) {
         console.error('❌ TrackPlayer setup failed:', e);
       }
-    })();
+    }
+    setupPlayer();
   }, []);
 
-  if (isLoading) return (
-    <LinearGradient colors={['#170D22', '#0A0A0C']} style={styles.loadingContainer}>
-      <ActivityIndicator size="large" color="#1F80E0" />
-    </LinearGradient>
-  );
+  // 1. Initial Auth Check
+  useEffect(() => {
+    const checkUserAuth = async () => {
+      try {
+        const storedToken = await SecureStore.getItemAsync('userToken');
+        const userDataString = await SecureStore.getItemAsync('userData');
 
-  // --- CONDITIONAL LOGIC CHECKERS ---
-  const showLiveFeed = filters.type === 'live';
+        if (storedToken) {
+          const userData = userDataString ? JSON.parse(userDataString) : { email: 'User', name: 'User' };
+          restoreSession(storedToken, userData);
+          router.replace('/tabs/home');
+        }
+      } catch (error) {
+        console.error('Error checking authentication state:', error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
 
-  let showLanguage = true;
-  if (filters.type === 'live') {
-    const tvFeeds = ['news', 'music', 'entertainment', 'movies'];
-    if (!tvFeeds.includes(filters.liveCategory)) {
-      showLanguage = false;
+    checkUserAuth();
+  }, []);
+
+  // 2. Global Socket Connection & Push Notification Manager
+  useEffect(() => {
+    if (token && user?._id) {
+      connectGlobalSocket(user._id);
+
+      axios.get(`${process.env.EXPO_PUBLIC_API_URL}/buddies/notifications`, {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+        .then(res => {
+          const unread = res.data.filter(n => !n.isRead).length;
+          setUnreadNotifsCount(unread);
+        })
+        .catch(err => { });
+
+      const timer = setTimeout(() => {
+        registerForPushNotificationsAsync()
+          .then(async (pushToken) => {
+            if (pushToken) {
+              try {
+                await axios.put(`${process.env.EXPO_PUBLIC_API_URL}/user/push-token`,
+                  { token: pushToken },
+                  { headers: { Authorization: `Bearer ${token}` } }
+                );
+              } catch (err) { }
+            }
+          })
+          .catch((e) => console.warn('Push registration failed:', e?.message));
+      }, 1500);
+
+      return () => clearTimeout(timer);
+
+    } else {
+      disconnectGlobalSocket();
     }
+  }, [token, user]);
+
+  // 3. Deep Linking: Handle Tapping on Push Notifications
+  useEffect(() => {
+    if (!isLoading && user && lastNotificationResponse) {
+      const responseId = lastNotificationResponse.notification.request.identifier;
+
+      if (handledNotificationId.current !== responseId) {
+        handledNotificationId.current = responseId;
+        const data = lastNotificationResponse.notification.request.content.data;
+
+        if (data?.type === 'THEATRE_INVITE' && data?.roomId) {
+          setTimeout(() => {
+            router.push(`/theatre?roomId=${data.roomId}&isHost=false`);
+          }, 800);
+        }
+        else if (data?.type === 'NEW_CHAT' && data?.buddyId) {
+          setTimeout(() => {
+            router.push(`/chat?buddyId=${data.buddyId}`);
+          }, 800);
+        }
+        else if (data?.type === 'CINEREQUEST_ACCEPTED' && data?.buddyId) {
+          setTimeout(() => {
+            router.push(`/chat?buddyId=${data.buddyId}`);
+          }, 800);
+        }
+        else if (data?.type === 'CINEREQUEST' || data?.type === 'REJECTED_ALERT') {
+          setTimeout(() => {
+            router.push('/notifications');
+          }, 800);
+        }
+      }
+    }
+  }, [lastNotificationResponse, isLoading, user]);
+
+  // 3.5. Deep Linking for Notifee Background Uploads (Cold Start)
+  useEffect(() => {
+    if (!isLoading && user) {
+      notifee.getInitialNotification().then((initial) => {
+        if (initial?.notification?.id === 'active-upload') {
+          setTimeout(() => {
+            router.push('/my-videos');
+          }, 800);
+        }
+      });
+    }
+  }, [isLoading, user]);
+
+  // 4. Double Back to Exit Manager (WITH HOME FALLBACK)
+  useEffect(() => {
+    let backPressCount = 0;
+
+    const onBackPress = () => {
+      if (router.canGoBack()) return false;
+      if (pathname !== '/tabs/home') {
+        router.replace('/tabs/home');
+        return true;
+      }
+      if (backPressCount === 1) {
+        BackHandler.exitApp();
+        return true;
+      }
+      backPressCount = 1;
+      Toast.show({
+        type: 'hotstarInfo',
+        text1: 'Press back again to exit',
+        position: 'bottom',
+        bottomOffset: 100,
+      });
+      setTimeout(() => { backPressCount = 0; }, 2000);
+      return true;
+    };
+
+    const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => subscription.remove();
+  }, [router, pathname]);
+
+  if (isLoading) {
+    return (
+      <LinearGradient colors={['#170D22', '#0A0A0C']} style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color="#1F80E0" />
+      </LinearGradient>
+    );
   }
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <ThemeProvider value={DarkTheme}>
-        <View style={{ flex: 1, backgroundColor: '#0A0A0C' }}>
-
-          {/* DESKTOP ANIMATED ABSOLUTE SIDEBAR */}
-          {isDesktop && (
-            <Animated.View style={[styles.desktopNavRail, { width: sidebarWidth }]}>
-
-              <View style={{ position: 'absolute', width: 280, height: '100%' }} pointerEvents="none">
-                <LinearGradient
-                  colors={['rgba(10, 10, 12, 0.95)', 'rgba(19, 14, 33, 0.85)', 'rgba(10, 10, 12, 0)']}
-                  start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                  locations={[0, 0.70, 1]}
-                  style={styles.sidebarGradient}
-                />
-              </View>
-
-              <Pressable
-                onHoverIn={handleSidebarEnter}
-                onHoverOut={handleSidebarLeave}
-                style={[styles.navHoverArea, { width: 280 }]}
-              >
-                <View style={styles.fixedHeaderSection}>
-                  <View style={styles.logoWrapper}>
-                    <CinePlayLogo size={32} />
-                    <Animated.Text style={[styles.navAppName, styles.webGradientText, { opacity: sidebarOpacity }]} numberOfLines={1}>
-                      CinePlay
-                    </Animated.Text>
-                  </View>
-
-                  <NavItem icon="home" label="Home" onPressOverride={handleHomePress} sidebarOpacity={sidebarOpacity} />
-                  <NavItem icon="search" label="Search" route="/tabs/search" router={router} sidebarOpacity={sidebarOpacity} />
-                </View>
-
-                <ScrollView
-                  ref={scrollViewRef}
-                  showsVerticalScrollIndicator={false}
-                  contentContainerStyle={{ paddingBottom: 20 }}
-                >
-                  <View style={styles.navRailFilters}>
-                    <ExpandableNavItem
-                      icon="grid-outline" label="Category" filterKey="type" scrollIndex={0}
-                      filters={filters} setFilter={setFilter} isSidebarExpanded={isSidebarExpanded}
-                      sidebarOpacity={sidebarOpacity} scrollViewRef={scrollViewRef} handleSidebarEnter={handleSidebarEnter}
-                      options={[
-                        { label: 'All', value: 'all' },
-                        { label: 'Movies', value: 'movie' },
-                        { label: 'TV Shows/WebSeries', value: 'tv' },
-                        { label: 'Music', value: 'music' },
-                        { label: 'Live Sports & TV', value: 'live' }
-                      ]}
-                    />
-
-                    {showLiveFeed && (
-                      <ExpandableNavItem
-                        icon="radio-outline" label="Live Feed" filterKey="liveCategory" scrollIndex={1}
-                        filters={filters} setFilter={setFilter} isSidebarExpanded={isSidebarExpanded}
-                        sidebarOpacity={sidebarOpacity} scrollViewRef={scrollViewRef} handleSidebarEnter={handleSidebarEnter}
-                        options={[
-                          { label: 'Cricket', value: 'Cricket' },
-                          { label: 'Football', value: 'Football' },
-                          { label: 'Basketball', value: 'Basketball' },
-                          { label: 'Live News', value: 'news' },
-                          { label: 'Live Music', value: 'music' },
-                          { label: 'Entertainment TV', value: 'entertainment' },
-                          { label: 'Movies TV', value: 'movies' }
-                        ]}
-                      />
-                    )}
-
-                    <ExpandableNavItem
-                      icon="laptop-outline" label="Platform" filterKey="platform" scrollIndex={showLiveFeed ? 2 : 1}
-                      filters={filters} setFilter={setFilter} isSidebarExpanded={isSidebarExpanded}
-                      sidebarOpacity={sidebarOpacity} scrollViewRef={scrollViewRef} handleSidebarEnter={handleSidebarEnter}
-                      options={[
-                        { label: 'Any', value: 'any' },
-                        { label: 'Netflix', value: '8' },
-                        { label: 'Prime Video', value: '119' },
-                        { label: 'JioHotstar', value: '122|220|337' },
-                        { label: 'SonyLiv', value: '237' },
-                        { label: 'Zee5', value: '232' }
-                      ]}
-                    />
-                    <ExpandableNavItem
-                      icon="globe-outline" label="Region" filterKey="region" scrollIndex={showLiveFeed ? 3 : 2}
-                      filters={filters} setFilter={setFilter} isSidebarExpanded={isSidebarExpanded}
-                      sidebarOpacity={sidebarOpacity} scrollViewRef={scrollViewRef} handleSidebarEnter={handleSidebarEnter}
-                      options={[
-                        { label: 'All', value: 'all' },
-                        { label: 'Indian', value: 'indian' },
-                        { label: 'Others', value: 'others' }
-                      ]}
-                    />
-
-                    {showLanguage && (
-                      <ExpandableNavItem
-                        icon="language-outline" label="Language" filterKey="language" scrollIndex={showLiveFeed ? 4 : 3}
-                        filters={filters} setFilter={setFilter} isSidebarExpanded={isSidebarExpanded}
-                        sidebarOpacity={sidebarOpacity} scrollViewRef={scrollViewRef} handleSidebarEnter={handleSidebarEnter}
-                        options={[
-                          { label: 'Any', value: 'any' },
-                          { label: 'Hindi', value: 'hi' },
-                          { label: 'English', value: 'en' },
-                          { label: 'Punjabi', value: 'pa' },
-                          { label: 'Tamil', value: 'ta' },
-                          { label: 'Others', value: 'others' }
-                        ]}
-                      />
-                    )}
-                  </View>
-                </ScrollView>
-
-                <View style={styles.navRailBottom}>
-                  <NavItem icon="bookmark" label="My List" route="/my-list" router={router} sidebarOpacity={sidebarOpacity} />
-                  <NavItem icon="person-circle" label="My Space" route="/tabs/profile" router={router} sidebarOpacity={sidebarOpacity} />
-                </View>
-              </Pressable>
-            </Animated.View>
-          )}
-
-          <View style={{ flex: 1, paddingLeft: isDesktop ? 76 : 0 }}>
-            <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: '#0A0A0C' }, animation: 'slide_from_right' }} />
-            {/* Desktop uses a 40px top offset to clear any window bezels, Mobile uses 50px for the notch */}
-            <Toast config={toastConfig} position="top" topOffset={isDesktop ? 40 : 50} />
-          </View>
-        </View>
+        <Stack
+          screenOptions={{
+            headerShown: false,
+            contentStyle: { backgroundColor: '#0A0A0C' },
+            animation: 'slide_from_right',
+            gestureEnabled: true,
+            gestureDirection: 'horizontal',
+          }}
+        />
+        <Toast config={toastConfig} position="top" topOffset={50} />
       </ThemeProvider>
     </GestureHandlerRootView>
   );
@@ -432,49 +387,9 @@ export default function RootLayout() {
 
 const styles = StyleSheet.create({
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-
-  // --- TOAST STYLES (Mobile Defaults) ---
   toastWrapper: { width: '100%', alignItems: 'center', paddingHorizontal: 16 },
-  toastContainer: { flexDirection: 'row', alignItems: 'center', width: '100%', paddingVertical: 12, paddingHorizontal: 16, borderRadius: 16, elevation: 5 },
+  toastContainer: { flexDirection: 'row', alignItems: 'center', width: '100%', paddingVertical: 12, paddingHorizontal: 16, borderRadius: 16, elevation: 5, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 3.84 },
   toastTextContainer: { marginLeft: 12, flex: 1 },
   toastText: { color: '#FFFFFF', fontWeight: 'bold', fontSize: 14 },
-  toastSubText: { color: '#E0E0E0', fontSize: 12, marginTop: 2 },
-
-  // --- DESKTOP TOAST MODIFIERS ---
-  desktopToastWrapper: { alignItems: 'flex-end', paddingRight: 40 }, // Floats to top-right
-  desktopToastContainer: {
-    width: 350,
-    paddingVertical: 16,
-    paddingHorizontal: 20,
-    borderRadius: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.5,
-    shadowRadius: 16,
-    cursor: 'pointer'
-  },
-  desktopToastText: { fontSize: 16, letterSpacing: 0.2 },
-  desktopToastSubText: { fontSize: 13, marginTop: 4 },
-
-  // --- SIDEBAR STYLES ---
-  desktopNavRail: { position: 'absolute', top: 0, bottom: 0, left: 0, zIndex: 1000, overflow: 'hidden' },
-  sidebarGradient: { ...StyleSheet.absoluteFillObject },
-  navHoverArea: { flex: 1, paddingVertical: 24, overflow: 'hidden' },
-  fixedHeaderSection: { paddingBottom: 8 },
-  navRailFilters: { gap: 8, paddingBottom: 20 },
-  navRailBottom: { gap: 12, paddingTop: 16, borderTopWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
-  logoWrapper: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 22, paddingBottom: 30, gap: 12 },
-  navAppName: { fontSize: 22, fontWeight: '900', letterSpacing: 0.5 },
-  webGradientText: { backgroundImage: 'linear-gradient(to right, #00E5FF, #9B51E0, #FF007A)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', color: 'transparent' },
-
-  navRailItem: { flexDirection: 'row', alignItems: 'center', height: 56, paddingHorizontal: 26 },
-  navIcon: { minWidth: 30, textShadowColor: 'rgba(0,0,0,0.5)', textShadowOffset: { width: 0, height: 2 }, textShadowRadius: 4 },
-  navLabel: { color: '#E0E0E0', fontSize: 17, fontWeight: '700', marginLeft: 14, letterSpacing: 0.2 },
-  navSubLabel: { color: '#00E5FF', fontSize: 11, fontWeight: '600', marginLeft: 14, marginTop: 2, textTransform: 'uppercase' },
-  navLabelStack: { justifyContent: 'center' },
-
-  expandableHeaderContainer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', flex: 1, paddingRight: 20 },
-  filterOptionBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', height: 42, paddingRight: 20 },
-  filterOptionText: { color: '#A0A5AA', fontSize: 14, fontWeight: '600' },
-  filterOptionTextActive: { color: '#00E5FF', fontWeight: 'bold' },
+  toastSubText: { color: '#E0E0E0', fontSize: 13, marginTop: 4, lineHeight: 18 }
 });
