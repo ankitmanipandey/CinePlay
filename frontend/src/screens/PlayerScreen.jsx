@@ -31,8 +31,8 @@ export default function PlayerScreen() {
 
     const [isVideoPlaying, setIsVideoPlaying] = useState(true);
 
-    // UPDATED: Filmu is now the default server
-    const [server, setServer] = useState('filmu');
+    // UPDATED: Vidlink is now the default server (Server 1)
+    const [server, setServer] = useState('vidlink');
 
     const creatingRoomRef = useRef(false);
 
@@ -79,9 +79,9 @@ export default function PlayerScreen() {
     };
 
     const handleCreateWatchParty = (vidIdArg, titleArg) => {
-        // UPDATED: Vidlink is now Server 2, so we update the warning message
+        // UPDATED: Warn user that Watch Party only works on Server 1
         if (server !== 'vidlink') {
-            Toast.show({ type: 'hotstarInfo', text1: 'Watch party is only available on Server 2 (Vidlink)', position: 'top' });
+            Toast.show({ type: 'hotstarInfo', text1: 'Watch party is only available on Server 1 (Vidlink)', position: 'top' });
             return;
         }
 

@@ -12,18 +12,18 @@ import { getImageUrl } from '../../constants/config';
 
 const DESKTOP_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
 
-// UPDATED: Filmu is Server 1, Vidlink is Server 2
+// UPDATED: Corrected the numbering so Vidlink = 1, Filmu = 2, Vidsrc = 3
 const SERVERS = {
+    vidlink: {
+        label: 'Server 1', host: 'vidlink.pro', referer: 'https://vidlink.pro/',
+        movieUrl: (id) => `https://vidlink.pro/movie/${id}?autoplay=1`,
+        tvUrl: (id, s, e) => `https://vidlink.pro/tv/${id}/${s}/${e}?autoplay=1`
+    },
     filmu: {
-        label: 'Server 1', host: 'embed.filmu.in', referer: 'https://embed.filmu.in/',
+        label: 'Server 2', host: 'embed.filmu.in', referer: 'https://embed.filmu.in/',
         movieUrl: (id) => `https://embed.filmu.in/movie/${id}`,
         tvUrl: (id, s, e) => `https://embed.filmu.in/tv/${id}/${s}/${e}`,
         animeUrl: (anilistId, s, e) => (s && e) ? `https://embed.filmu.in/anime/${anilistId}/${s}/${e}` : `https://embed.filmu.in/anime/${anilistId}`
-    },
-    vidlink: {
-        label: 'Server 2', host: 'vidlink.pro', referer: 'https://vidlink.pro/',
-        movieUrl: (id) => `https://vidlink.pro/movie/${id}?autoplay=1`,
-        tvUrl: (id, s, e) => `https://vidlink.pro/tv/${id}/${s}/${e}?autoplay=1`
     },
     vidsrc: {
         label: 'Server 3', host: 'vidsrc.sbs', referer: 'https://vidsrc.sbs/',
@@ -132,12 +132,12 @@ export const VideoPlayerUI = ({
         true;
     `, [server]);
 
-    // UPDATED: Shift order -> Filmu -> Vidlink -> Vidsrc
+    // UPDATED: Shift logic to Vidlink -> Filmu -> Vidsrc
     const handleServerFallback = useCallback(() => {
-        if (server === 'filmu') {
+        if (server === 'vidlink') {
             Toast.show({ type: 'hotstarInfo', text1: 'Not available on Server 1. Trying Server 2...', position: 'top' });
-            setServer('vidlink');
-        } else if (server === 'vidlink') {
+            setServer('filmu');
+        } else if (server === 'filmu') {
             Toast.show({ type: 'hotstarInfo', text1: 'Not available on Server 2. Trying Server 3...', position: 'top' });
             setServer('vidsrc');
         }
@@ -266,6 +266,7 @@ export const VideoPlayerUI = ({
                                 }}
                                 onHttpError={(syntheticEvent) => {
                                     const { nativeEvent } = syntheticEvent;
+                                    // Trigger fallback on severe HTTP errors from the main stream host
                                     if (nativeEvent.statusCode >= 400 && nativeEvent.url.includes(SERVERS[server].host)) {
                                         handleServerFallback();
                                     }
@@ -366,17 +367,17 @@ export const VideoPlayerUI = ({
                             )
                         )}
 
-                        {/* UPDATED: Server switcher UI matches new layout order */}
+                        {/* UPDATED: Server switcher chips in proper 1, 2, 3 order */}
                         {activeMediaView === 'movie' && !streamUrl && !ytId && (
                             <View style={styles.tvControlsContainer}>
                                 <Text style={styles.tvControlsLabel}>Server</Text>
                                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tvControlsRow}>
-                                    <TouchableOpacity style={[styles.tvChip, server === 'filmu' && styles.tvChipActive]} onPress={() => setServer('filmu')}>
-                                        <Text style={[styles.tvChipText, server === 'filmu' && styles.tvChipTextActive]}>{SERVERS.filmu.label}</Text>
-                                    </TouchableOpacity>
-
                                     <TouchableOpacity style={[styles.tvChip, server === 'vidlink' && styles.tvChipActive]} onPress={() => setServer('vidlink')}>
                                         <Text style={[styles.tvChipText, server === 'vidlink' && styles.tvChipTextActive]}>{SERVERS.vidlink.label}</Text>
+                                    </TouchableOpacity>
+
+                                    <TouchableOpacity style={[styles.tvChip, server === 'filmu' && styles.tvChipActive]} onPress={() => setServer('filmu')}>
+                                        <Text style={[styles.tvChipText, server === 'filmu' && styles.tvChipTextActive]}>{SERVERS.filmu.label}</Text>
                                     </TouchableOpacity>
 
                                     <TouchableOpacity style={[styles.tvChip, server === 'vidsrc' && styles.tvChipActive]} onPress={() => setServer('vidsrc')}>
