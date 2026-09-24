@@ -29,10 +29,11 @@ export default function PlayerScreen() {
     const [selectedSeason, setSelectedSeason] = useState(1);
     const [selectedEpisode, setSelectedEpisode] = useState(1);
 
-    // NEW: Separate local state specifically for the Video/Trailer player
     const [isVideoPlaying, setIsVideoPlaying] = useState(true);
 
-    // Guards against double taps on "Start Watch Party" while the room is being created
+    // UPDATED: Filmu is now the default server
+    const [server, setServer] = useState('filmu');
+
     const creatingRoomRef = useRef(false);
 
     const livePlayer = useVideoPlayer(null, (player) => {
@@ -41,18 +42,15 @@ export default function PlayerScreen() {
         player.showNowPlayingNotification = true;
     });
 
-    // 1. Music Logic Hook (signature is useMusicEngine(type, token, insets))
     const musicState = useMusicEngine(type, token, insets);
 
-    // NEW: Automatically pause background music when opening a movie/show screen
     useEffect(() => {
         if (type !== 'music' && musicState.isPlaying) {
             musicState.setIsPlaying(false);
         }
     }, [type]);
 
-    // 2. Data Fetching Hook
-    const { isLoading, mediaDetails, trailerKey, isVidkingAvailable } = useMediaDetails({
+    const { isLoading, mediaDetails, trailerKey, isVidkingAvailable, anilistId } = useMediaDetails({
         id, type, ytId, streamUrl, channelName, artworkUrl,
         livePlayer,
         setMusicQueue: musicState.setMusicQueue,
@@ -81,12 +79,17 @@ export default function PlayerScreen() {
     };
 
     const handleCreateWatchParty = (vidIdArg, titleArg) => {
+        // UPDATED: Vidlink is now Server 2, so we update the warning message
+        if (server !== 'vidlink') {
+            Toast.show({ type: 'hotstarInfo', text1: 'Watch party is only available on Server 2 (Vidlink)', position: 'top' });
+            return;
+        }
+
         handleAuthAction(async () => {
             if (creatingRoomRef.current) return;
             creatingRoomRef.current = true;
 
             try {
-                // The room code is issued (and reserved) by the server
                 const res = await fetch(`${BACKEND_URL}/rooms`, {
                     method: 'POST',
                     headers: { Authorization: `Bearer ${token}` },
@@ -94,7 +97,6 @@ export default function PlayerScreen() {
                 const data = await res.json();
                 if (!res.ok || !data.roomId) throw new Error(data.message || 'Could not create room');
 
-                // Use what VideoPlayerUI sends; fall back only if it sent nothing
                 const vidId = vidIdArg || (
                     (id && type && activeMediaView === 'movie')
                         ? (type === 'tv'
@@ -137,7 +139,7 @@ export default function PlayerScreen() {
     return (
         <VideoPlayerUI
             mediaDetails={mediaDetails} streamUrl={streamUrl} ytId={ytId} trailerKey={trailerKey}
-            isPlaying={isVideoPlaying} setIsPlaying={setIsVideoPlaying} // UPDATED: Now uses local video state
+            isPlaying={isVideoPlaying} setIsPlaying={setIsVideoPlaying}
             activeMediaView={activeMediaView} setActiveMediaView={setActiveMediaView}
             isVidkingAvailable={isVidkingAvailable}
             selectedSeason={selectedSeason} setSelectedSeason={setSelectedSeason}
@@ -145,6 +147,8 @@ export default function PlayerScreen() {
             handleCreateWatchParty={handleCreateWatchParty} handleAuthAction={handleAuthAction}
             handleToggleAction={handleToggleAction} watchlist={watchlist} watched={watched}
             livePlayer={livePlayer} id={id} type={type} channelName={channelName} router={router}
+            server={server} setServer={setServer}
+            anilistId={anilistId}
         />
     );
 }

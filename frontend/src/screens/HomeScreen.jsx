@@ -104,7 +104,7 @@ const HomeScreen = () => {
 
     // --- SLEEP TIMER STATE ---
     const [isSleepTimerModalOpen, setIsSleepTimerModalOpen] = useState(false);
-    const [isActiveTimerAlertOpen, setIsActiveTimerAlertOpen] = useState(false); // NEW STATE FOR ACTIVE THEMED ALERT
+    const [isActiveTimerAlertOpen, setIsActiveTimerAlertOpen] = useState(false);
     const [showCustomTimerInput, setShowCustomTimerInput] = useState(false);
     const [customTimerValue, setCustomTimerValue] = useState('');
 
@@ -130,7 +130,7 @@ const HomeScreen = () => {
         setShowCustomTimerInput(false);
         setCustomTimerValue('');
         if (sleepTimerRemaining > 0) {
-            setIsActiveTimerAlertOpen(true); // OPENS THE NEW CUSTOM ALERT
+            setIsActiveTimerAlertOpen(true);
         } else {
             setIsSleepTimerModalOpen(true);
         }
@@ -375,7 +375,23 @@ const HomeScreen = () => {
                             <LinearGradient colors={['#00E5FF', '#9B51E0', '#FF007A']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}><Text style={[styles.appName, { opacity: 0 }]}>CinePlay</Text></LinearGradient>
                         </MaskedView>
                     </View>
-                    <TouchableOpacity style={styles.headerRightBtn} onPress={() => handleAuthAction(() => router.push('/my-list'))}><Ionicons name="bookmarks" size={24} color="#E0E0E0" /></TouchableOpacity>
+
+                    <View style={styles.headerRightContainer}>
+                        <TouchableOpacity
+                            style={styles.headerRightBtn}
+                            // UPDATED: Toggle between 'music' and 'all'
+                            onPress={() => setFilter('type', filters.type === 'music' ? 'all' : 'music')}
+                        >
+                            <Ionicons
+                                name={filters.type === 'music' ? "musical-notes" : "musical-notes-outline"}
+                                size={26}
+                                color={filters.type === 'music' ? "#00E5FF" : "#E0E0E0"}
+                            />
+                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.headerRightBtn} onPress={() => handleAuthAction(() => router.push('/my-list'))}>
+                            <Ionicons name="bookmarks" size={24} color="#E0E0E0" />
+                        </TouchableOpacity>
+                    </View>
                 </View>
 
                 <ScrollView
@@ -725,6 +741,7 @@ const styles = StyleSheet.create({
     logoContainer: { flexDirection: 'row', alignItems: 'center', gap: 6 },
     maskedView: { height: 32, flexDirection: 'row', alignItems: 'center' },
     appName: { fontSize: 26, fontWeight: '900', letterSpacing: 0.5, lineHeight: 32, includeFontPadding: false },
+    headerRightContainer: { flexDirection: 'row', alignItems: 'center', gap: 8 },
     headerRightBtn: { padding: 4 },
     scrollContent: { paddingBottom: 60 },
     categoriesWrapper: { paddingTop: 4 },

@@ -8,13 +8,13 @@ export const useMediaDetails = ({ id, type, ytId, streamUrl, channelName, artwor
     const [mediaDetails, setMediaDetails] = useState(null);
     const [trailerKey, setTrailerKey] = useState(null);
     const [isVidkingAvailable, setIsVidkingAvailable] = useState(null);
+    const [anilistId, setAnilistId] = useState(null); // NEW: Track mapped AniList ID
 
     useEffect(() => {
         const fetchAllData = async () => {
             setIsLoading(true);
             try {
                 if (type === 'music') {
-                    // Handled entirely by TrackPlayer now, just clear loading
                     setIsLoading(false);
                     return;
                 }
@@ -47,13 +47,23 @@ export const useMediaDetails = ({ id, type, ytId, streamUrl, channelName, artwor
                 }
 
                 if (id && type !== 'music') {
-                    const [details, videos] = await Promise.all([
-                        tmdbService.getDetails(id, type), tmdbService.getVideos(id, type)
+                    // NEW: Non-blocking fetch for the AniList mapping
+                    const fetchAnilist = fetch(`https://api.ani.zip/mappings?tmdb_id=${id}`)
+                        .then(res => res.ok ? res.json() : null)
+                        .then(data => data?.mappings?.anilist_id || null)
+                        .catch(() => null);
+
+                    const [details, videos, mappedAnilistId] = await Promise.all([
+                        tmdbService.getDetails(id, type),
+                        tmdbService.getVideos(id, type),
+                        fetchAnilist
                     ]);
+
                     const trailer = videos.find(v => v.type === 'Trailer' && v.site === 'YouTube') || videos.find(v => v.site === 'YouTube');
                     setTrailerKey(trailer ? trailer.key : null);
 
                     setMediaDetails(details);
+                    setAnilistId(mappedAnilistId); // NEW: Save mapping
                     setIsVidkingAvailable(true);
                 }
             } catch (error) {
@@ -65,5 +75,5 @@ export const useMediaDetails = ({ id, type, ytId, streamUrl, channelName, artwor
         if (livePlayer) fetchAllData();
     }, [id, type, ytId, streamUrl, livePlayer]);
 
-    return { isLoading, mediaDetails, trailerKey, isVidkingAvailable };
+    return { isLoading, mediaDetails, trailerKey, isVidkingAvailable, anilistId }; // NEW: Export the ID
 };
