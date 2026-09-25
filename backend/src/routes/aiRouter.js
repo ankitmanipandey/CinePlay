@@ -43,6 +43,26 @@ const resolveIdsToTitles = async (idTypeStrings) => {
         });
 };
 
+const callGeminiWithRetry = async (url, body, maxRetries = 2) => {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        const data = await response.json();
+
+        if (response.ok) return { data, response };
+
+        const isOverloaded = response.status === 503 || data.error?.status === 'UNAVAILABLE';
+        if (isOverloaded && attempt < maxRetries) {
+            await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+            continue;
+        }
+        return { data, response };
+    }
+};
+
 const geminiKeys = [
     process.env.GEMINI_API_KEY1,
     process.env.GEMINI_API_KEY2,
@@ -56,7 +76,7 @@ const geminiKeys = [
 ].filter(Boolean);
 
 // Using your specified model constant
-const GEMINI_MODEL = "gemini-3.5-flash"; // Updated to the standard fast model, adjust if you strictly need 3.5
+const GEMINI_MODEL = "gemini-3.5-flash";
 
 let currentKeyIndex = 0;
 
@@ -89,13 +109,16 @@ aiRouter.post('/youtube-search', optionalProtect, async (req, res) => {
         User: "${prompt}"
         You:`;
 
-        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${activeKey}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ contents: [{ parts: [{ text: aiPrompt }] }] })
-        });
-
-        const data = await response.json();
+        const { data, response } = await callGeminiWithRetry(
+            `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${activeKey}`,
+            {
+                contents: [{ parts: [{ text: prompt }] }],
+                generationConfig: {
+                    temperature: 0.9,
+                    maxOutputTokens: 150 // 9 short titles in a JSON array needs very little
+                }
+            }
+        );
 
         if (!response.ok) {
             console.error("Gemini API Error (YouTube):", data.error?.message);
@@ -136,8 +159,10 @@ aiRouter.post('/recommend', optionalProtect, async (req, res) => {
         let exclusionList = "";
 
         if (req.user) {
-            const watchedTitles = await resolveIdsToTitles(req.user.watched);
-            const watchlistTitles = await resolveIdsToTitles(req.user.watchlist);
+            const [watchedTitles, watchlistTitles] = await Promise.all([
+                resolveIdsToTitles(req.user.watched),
+                resolveIdsToTitles(req.user.watchlist)
+            ]);
 
             if (watchedTitles.length > 0) {
                 tasteProfile = `\nUSER TASTE PROFILE: To understand their preferences, they have previously watched and enjoyed: ${watchedTitles.join(', ')}.`;
@@ -145,29 +170,32 @@ aiRouter.post('/recommend', optionalProtect, async (req, res) => {
             }
         }
 
-        const prompt = `You are an elite film and TV curator. Based on the following user prompt: "${query}", recommend exactly 9 highly-rated, real movies or TV shows.
-        ${tasteProfile}
-        ${exclusionList}
+        const prompt = `You are a film curator. For the prompt "${query}", return exactly 6 real, highly-rated movie/TV titles.
+                        ${tasteProfile}
+                        ${exclusionList}
+                        Rules: exact official titles only, no years/subtitles, avoid obscure picks unless asked.
+                        Return ONLY a raw JSON array of strings, no markdown, no commentary.
+                        Example: ["Inception", "Parasite", "The Dark Knight"]`;
 
-        CRITICAL RULES:
-        1. Exact Titles Only: Provide the exact, official release titles to ensure 100% compatibility with TMDB search.
-        2. No Extra Metadata: Do NOT include release years, directors, or subtitles in the string (e.g., return "The Matrix", NOT "The Matrix (1999)").
-        3. Quality Control: Prioritize critically acclaimed, culturally significant, or universally loved titles over obscure B-movies, unless the prompt specifically asks for them.
-        4. Failsafe: If the prompt is vague, inappropriate, or completely unrelated to movies/TV, gracefully default to recommending 12 universally popular, highly-rated blockbusters.
-
-        Return ONLY a raw, valid JSON array of strings. Do NOT wrap the response in markdown blocks, do NOT use backticks (\`\`\`), and do NOT include any conversational text.
-        Example: ["Inception", "Parasite", "The Dark Knight"]`;
-
-        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${activeKey}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
-        });
-
-        const data = await response.json();
+        const { data, response } = await callGeminiWithRetry(
+            `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${activeKey}`,
+            {
+                contents: [{ parts: [{ text: prompt }] }],
+                generationConfig: {
+                    temperature: 0.9,
+                    maxOutputTokens: 150 // 9 short titles in a JSON array needs very little
+                }
+            }
+        );
 
         if (!response.ok) {
-            return res.status(500).json({ error: data.error?.message || 'Google API rejected the key' });
+            console.error("Gemini API Error (recommend):", data.error);
+            const status = response.status === 503 ? 503 : 500;
+            return res.status(status).json({
+                error: status === 503
+                    ? 'AI recommendations are temporarily unavailable, please try again shortly.'
+                    : (data.error?.message || 'Google API rejected the key')
+            });
         }
 
         if (!data.candidates || !data.candidates[0].content) {
